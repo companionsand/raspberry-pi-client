@@ -626,15 +626,31 @@ class KinClient:
         self.orchestrator_client = OrchestratorClient()
         self.running = True
         self.conversation_active = False
+        self.awaiting_agent_details = False
         self.user_terminate = [False]  # Use list for mutable reference
+        self.shutdown_requested = False
         
-        # Setup signal handler for user-initiated termination
+        # Setup signal handlers
         signal.signal(signal.SIGUSR1, self._handle_terminate_signal)
+        signal.signal(signal.SIGINT, self._handle_interrupt_signal)
+        signal.signal(signal.SIGTERM, self._handle_interrupt_signal)
     
     def _handle_terminate_signal(self, sig, frame):
         """Handle user-initiated termination signal"""
         print("\n🛑 User termination signal received")
         self.user_terminate[0] = True
+    
+    def _handle_interrupt_signal(self, sig, frame):
+        """Handle interrupt/termination signals (Ctrl+C, SIGTERM)."""
+        signal_name = getattr(signal, "Signals", lambda s: s)(sig)
+        print(f"\n🛑 Received {signal_name} - ", end="")
+        if self.conversation_active:
+            print("ending current conversation...")
+            self.user_terminate[0] = True
+        else:
+            print("shutting down...")
+            self.shutdown_requested = True
+            self.running = False
     
     async def run(self):
         """Main application loop"""
@@ -718,6 +734,7 @@ class KinClient:
     async def _handle_conversation(self):
         """Handle a single conversation session"""
         self.conversation_active = True
+        self.awaiting_agent_details = True
         self.user_terminate[0] = False
         
         # Send user_initiated request
@@ -738,9 +755,10 @@ class KinClient:
             # Small sleep to prevent busy loop
             await asyncio.sleep(0.1)
         
-        if self.conversation_active:
+        if self.awaiting_agent_details:
             print("✗ Timeout waiting for agent details")
             self.conversation_active = False
+            self.awaiting_agent_details = False
         
     async def _handle_orchestrator_message(self, message: dict):
         """Handle messages from conversation-orchestrator"""
@@ -748,9 +766,12 @@ class KinClient:
         
         if message_type == "agent_details" or message_type == "start_conversation":
             # Check if conversation is already active
-            if self.conversation_active:
+            if self.conversation_active and not self.awaiting_agent_details:
                 print("⚠ Conversation already active, ignoring new request")
                 return
+            
+            # Clear pending flag once we have agent details
+            self.awaiting_agent_details = False
             
             # Extract agent details
             agent_id = message.get("agent_id")
@@ -792,6 +813,7 @@ class KinClient:
             error_msg = message.get("message", "Unknown error")
             print(f"✗ Orchestrator error: {error_msg}")
             self.conversation_active = False
+            self.awaiting_agent_details = False
     
     async def cleanup(self):
         """Clean up resources"""
@@ -808,14 +830,6 @@ class KinClient:
 
 def main():
     """Application entry point"""
-    # Setup signal handlers for graceful shutdown
-    def signal_handler(sig, frame):
-        print("\n\n🛑 Received interrupt signal...")
-        sys.exit(0)
-    
-    signal.signal(signal.SIGINT, signal_handler)
-    signal.signal(signal.SIGTERM, signal_handler)
-    
     # Run the client
     client = KinClient()
     asyncio.run(client.run())
@@ -823,4 +837,3 @@ def main():
 
 if __name__ == "__main__":
     main()
-
