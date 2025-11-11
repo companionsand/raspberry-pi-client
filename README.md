@@ -262,7 +262,7 @@ Conversations end when:
   "device_id": "device-id",
   "user_id": "user-id",
   "end_time": "2024-01-01T00:00:00Z",
-  "end_reason": "normal|silence|network_failure|user_terminated"
+  "end_reason": "normal|silence|network_failure|power_loss|user_terminated|unknown"
 }
 ```
 
