@@ -179,34 +179,47 @@ class WakeWordDetector:
         self.porcupine = None
         self.audio_stream = None
         self.detected = False
+        self.running = False
         
     def start(self):
         """Initialize Porcupine and start listening"""
+        if self.running:
+            return
+
+        # Reset detection flag each time we enter listening mode
+        self.detected = False
+
         print(f"\n🎤 Initializing wake word detection...")
         print(f"   Wake word: '{Config.WAKE_WORD}'")
         
-        # Initialize Porcupine with built-in keyword
-        self.porcupine = pvporcupine.create(
-            access_key=Config.PICOVOICE_ACCESS_KEY,
-            keywords=[Config.WAKE_WORD],
-            sensitivities=[0.7]  # 0.0 (least sensitive) to 1.0 (most sensitive)
-        )
-        
-        # Get audio device
-        mic_index = get_audio_device_index(Config.MIC_DEVICE, "input")
-        
-        # Start audio stream for wake word detection
-        self.audio_stream = sd.InputStream(
-            device=mic_index,
-            channels=Config.CHANNELS,
-            samplerate=self.porcupine.sample_rate,
-            blocksize=self.porcupine.frame_length,
-            dtype='int16',
-            callback=self._audio_callback
-        )
-        
-        self.audio_stream.start()
-        print(f"✓ Listening for wake word...")
+        try:
+            # Initialize Porcupine with built-in keyword
+            self.porcupine = pvporcupine.create(
+                access_key=Config.PICOVOICE_ACCESS_KEY,
+                keywords=[Config.WAKE_WORD],
+                sensitivities=[0.7]  # 0.0 (least sensitive) to 1.0 (most sensitive)
+            )
+            
+            # Get audio device
+            mic_index = get_audio_device_index(Config.MIC_DEVICE, "input")
+            
+            # Start audio stream for wake word detection
+            self.audio_stream = sd.InputStream(
+                device=mic_index,
+                channels=Config.CHANNELS,
+                samplerate=self.porcupine.sample_rate,
+                blocksize=self.porcupine.frame_length,
+                dtype='int16',
+                callback=self._audio_callback
+            )
+            
+            self.audio_stream.start()
+            self.running = True
+            print(f"✓ Listening for wake word...")
+        except Exception:
+            # Ensure partially-initialized resources are cleaned up
+            self.stop()
+            raise
         
     def _audio_callback(self, indata, frames, time_info, status):
         """Process audio frames for wake word detection"""
@@ -228,12 +241,17 @@ class WakeWordDetector:
         if self.audio_stream:
             self.audio_stream.stop()
             self.audio_stream.close()
+            self.audio_stream = None
         
+        if self.porcupine:
+            self.porcupine.delete()
+            self.porcupine = None
+        
+        self.running = False
+    
     def cleanup(self):
         """Clean up resources"""
         self.stop()
-        if self.porcupine:
-            self.porcupine.delete()
 
 
 # =============================================================================
@@ -652,6 +670,14 @@ class KinClient:
             self.shutdown_requested = True
             self.running = False
     
+    def _resume_wake_word_detection(self):
+        """Start wake word detector again if it is not already running."""
+        if self.wake_detector.running:
+            return
+        
+        self.wake_detector.start()
+        print(f"\n✓ Listening for '{Config.WAKE_WORD}' again...")
+    
     async def run(self):
         """Main application loop"""
         print("\n" + "="*60)
@@ -693,10 +719,6 @@ class KinClient:
                     
                     # Handle conversation
                     await self._handle_conversation()
-                    
-                    # Resume wake word detection
-                    self.wake_detector.start()
-                    print(f"\n✓ Listening for '{Config.WAKE_WORD}' again...")
                 
                 # Check for messages from orchestrator
                 message = await self.orchestrator_client.receive_message()
@@ -759,6 +781,7 @@ class KinClient:
             print("✗ Timeout waiting for agent details")
             self.conversation_active = False
             self.awaiting_agent_details = False
+            self._resume_wake_word_detection()
         
     async def _handle_orchestrator_message(self, message: dict):
         """Handle messages from conversation-orchestrator"""
@@ -803,8 +826,7 @@ class KinClient:
                 print("✓ User terminated conversation")
             
             # Resume wake word detection
-            self.wake_detector.start()
-            print(f"\n✓ Listening for '{Config.WAKE_WORD}' again...")
+            self._resume_wake_word_detection()
             
             self.conversation_active = False
             self.user_terminate[0] = False
@@ -814,6 +836,9 @@ class KinClient:
             print(f"✗ Orchestrator error: {error_msg}")
             self.conversation_active = False
             self.awaiting_agent_details = False
+            
+            # If we were waiting on a conversation that failed, resume wake word detection
+            self._resume_wake_word_detection()
     
     async def cleanup(self):
         """Clean up resources"""
