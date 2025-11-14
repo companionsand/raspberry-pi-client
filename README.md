@@ -108,8 +108,12 @@ Create `.env` file:
 ```bash
 # Device credentials
 DEVICE_ID=your-device-id-here
-USER_ID=your-user-id-here
-AUTH_TOKEN=your-supabase-jwt-token-here
+
+# Supabase authentication (authenticates on startup)
+SUPABASE_URL=https://your-project.supabase.co
+SUPABASE_ANON_KEY=your-supabase-anon-key-here
+EMAIL=your-email@example.com
+PASSWORD=your-password-here
 
 # Backend
 CONVERSATION_ORCHESTRATOR_URL=ws://localhost:8001/ws
@@ -190,8 +194,10 @@ Conversations end when:
 | Variable | Description | Required |
 |----------|-------------|----------|
 | `DEVICE_ID` | Unique device identifier | Yes |
-| `USER_ID` | User ID from Supabase Auth | Yes |
-| `AUTH_TOKEN` | Supabase JWT token | Yes |
+| `SUPABASE_URL` | Supabase project URL | Yes |
+| `SUPABASE_ANON_KEY` | Supabase anonymous key | Yes |
+| `EMAIL` | Email for Supabase authentication | Yes |
+| `PASSWORD` | Password for Supabase authentication | Yes |
 | `CONVERSATION_ORCHESTRATOR_URL` | WebSocket URL for orchestrator | Yes |
 | `ELEVENLABS_API_KEY` | ElevenLabs API key | Yes |
 | `PICOVOICE_ACCESS_KEY` | Picovoice access key | Yes |
@@ -213,9 +219,9 @@ Conversations end when:
 ```json
 {
   "type": "auth",
-  "token": "supabase-jwt-token",
+  "token": "supabase-jwt-token-obtained-on-startup",
   "device_id": "device-id",
-  "user_id": "user-id"
+  "user_id": "user-id-from-supabase-auth"
 }
 ```
 
@@ -339,12 +345,13 @@ pactl list short sources | grep echo_cancel
 - Check `CONVERSATION_ORCHESTRATOR_URL` is correct
 - Verify network connectivity
 - Check orchestrator is running
-- Verify `AUTH_TOKEN` is valid
+- Verify authentication succeeded
 
 **Problem**: Authentication fails
-- Verify `AUTH_TOKEN` is a valid Supabase JWT token
-- Check token hasn't expired
-- Verify `USER_ID` matches token user
+- Verify `SUPABASE_URL` and `SUPABASE_ANON_KEY` are correct
+- Check `EMAIL` and `PASSWORD` are valid
+- Ensure user account exists in Supabase
+- Check network connectivity to Supabase
 
 ### Wake Word Issues
 
@@ -356,6 +363,7 @@ pactl list short sources | grep echo_cancel
 
 ## Notes
 
+- The client authenticates with Supabase on every startup to fetch a fresh auth token
 - The client assumes the device is already set up and registered
 - Device setup code will be added later
 - User termination signal: `kill -USR1 <pid>`
@@ -365,7 +373,8 @@ pactl list short sources | grep echo_cancel
 ## Security
 
 - Never commit `.env` file to version control
-- Keep `AUTH_TOKEN` secure and rotate regularly
+- Keep `EMAIL` and `PASSWORD` secure
+- Auth tokens are fetched fresh on every startup
 - Use HTTPS/WSS in production
 - Validate all environment variables before running
 

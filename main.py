@@ -9,6 +9,7 @@ Features:
 - Real-time conversation via ElevenLabs WebSocket API
 - PipeWire echo cancellation for barge-in capability
 - Communication with conversation-orchestrator via WebSocket
+- Supabase authentication on startup
 
 Usage:
     python main.py
@@ -16,7 +17,8 @@ Usage:
 Requirements:
     - Raspberry Pi OS with PipeWire
     - USB microphone and speaker
-    - Environment variables: DEVICE_ID, USER_ID, AUTH_TOKEN, CONVERSATION_ORCHESTRATOR_URL, ELEVENLABS_API_KEY, PICOVOICE_ACCESS_KEY
+    - Environment variables: DEVICE_ID, SUPABASE_URL, SUPABASE_ANON_KEY, EMAIL, PASSWORD, 
+                            CONVERSATION_ORCHESTRATOR_URL, ELEVENLABS_API_KEY, PICOVOICE_ACCESS_KEY
 """
 
 import os
@@ -42,6 +44,7 @@ try:
     import websockets
     import certifi
     import ssl
+    from supabase import create_client, Client
 except ImportError as e:
     print(f"✗ Missing required package: {e}")
     print("Install dependencies: pip install -r requirements.txt")
@@ -57,8 +60,16 @@ class Config:
     
     # Device credentials
     DEVICE_ID = os.getenv("DEVICE_ID")
-    USER_ID = os.getenv("USER_ID")
-    AUTH_TOKEN = os.getenv("AUTH_TOKEN")  # Supabase JWT token
+    
+    # Supabase authentication
+    SUPABASE_URL = os.getenv("SUPABASE_URL")
+    SUPABASE_ANON_KEY = os.getenv("SUPABASE_ANON_KEY")
+    EMAIL = os.getenv("EMAIL")
+    PASSWORD = os.getenv("PASSWORD")
+    
+    # These will be set after authentication
+    USER_ID = None
+    AUTH_TOKEN = None
     
     # Backend
     CONVERSATION_ORCHESTRATOR_URL = os.getenv("CONVERSATION_ORCHESTRATOR_URL", "ws://localhost:8001/ws")
@@ -89,10 +100,14 @@ class Config:
         
         if not cls.DEVICE_ID:
             missing.append("DEVICE_ID")
-        if not cls.USER_ID:
-            missing.append("USER_ID")
-        if not cls.AUTH_TOKEN:
-            missing.append("AUTH_TOKEN")
+        if not cls.SUPABASE_URL:
+            missing.append("SUPABASE_URL")
+        if not cls.SUPABASE_ANON_KEY:
+            missing.append("SUPABASE_ANON_KEY")
+        if not cls.EMAIL:
+            missing.append("EMAIL")
+        if not cls.PASSWORD:
+            missing.append("PASSWORD")
         if not cls.ELEVENLABS_API_KEY:
             missing.append("ELEVENLABS_API_KEY")
         if not cls.PICOVOICE_ACCESS_KEY:
@@ -102,6 +117,43 @@ class Config:
             print(f"✗ Missing required environment variables: {', '.join(missing)}")
             print("Create a .env file with required credentials")
             sys.exit(1)
+
+
+# =============================================================================
+# AUTHENTICATION
+# =============================================================================
+
+def authenticate_with_supabase():
+    """
+    Authenticate with Supabase and fetch auth token and user ID.
+    Sets Config.AUTH_TOKEN and Config.USER_ID on success.
+    """
+    print("\n🔐 Authenticating with Supabase...")
+    
+    try:
+        # Create Supabase client
+        supabase: Client = create_client(Config.SUPABASE_URL, Config.SUPABASE_ANON_KEY)
+        
+        # Sign in with email and password
+        response = supabase.auth.sign_in_with_password({
+            "email": Config.EMAIL,
+            "password": Config.PASSWORD
+        })
+        
+        # Extract auth token and user ID
+        if response.user and response.session:
+            Config.AUTH_TOKEN = response.session.access_token
+            Config.USER_ID = response.user.id
+            print(f"✓ Successfully authenticated")
+            print(f"   User ID: {Config.USER_ID}")
+            return True
+        else:
+            print("✗ Authentication failed: No user or session returned")
+            return False
+            
+    except Exception as e:
+        print(f"✗ Authentication error: {e}")
+        return False
 
 
 # =============================================================================
@@ -686,6 +738,11 @@ class KinClient:
         
         # Validate configuration
         Config.validate()
+        
+        # Authenticate with Supabase
+        if not authenticate_with_supabase():
+            print("✗ Failed to authenticate with Supabase")
+            return
         
         # Setup audio routing
         setup_audio_routing()

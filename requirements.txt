@@ -13,6 +13,9 @@ certifi>=2023.0.0
 # Environment and configuration
 python-dotenv>=1.0.0
 
+# Supabase authentication
+supabase>=2.0.0
+
 # UUID generation
 # (built-in, no package needed)
 
