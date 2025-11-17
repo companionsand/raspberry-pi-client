@@ -156,15 +156,15 @@ source venv/bin/activate
 python main.py
 ```
 
-### User-Initiated Conversations
+### Reactive Conversations
 
 1. Say the wake word ("Porcupine" by default)
-2. Client sends `user_initiated` request to orchestrator
+2. Client sends `reactive` request to orchestrator
 3. Orchestrator responds with `agent_details` message
 4. Client connects to ElevenLabs WebSocket
 5. Conversation begins
 
-### Trigger-Initiated Conversations
+### Proactive Conversations
 
 1. Orchestrator detects a trigger is ready
 2. Orchestrator sends `start_conversation` message
@@ -225,10 +225,10 @@ Conversations end when:
 }
 ```
 
-#### User Initiated
+#### Reactive
 ```json
 {
-  "type": "user_initiated",
+  "type": "reactive",
   "user_id": "user-id",
   "device_id": "device-id"
 }

@@ -361,19 +361,19 @@ class OrchestratorClient:
             print(f"✗ Connection error: {e}")
             return False
     
-    async def send_user_initiated(self):
-        """Send user-initiated conversation request"""
+    async def send_reactive(self):
+        """Send reactive conversation request"""
         if not self.connected:
             return
         
         message = {
-            "type": "user_initiated",
+            "type": "reactive",
             "user_id": Config.USER_ID,
             "device_id": Config.DEVICE_ID,
         }
         
         await self.websocket.send(json.dumps(message))
-        print("✓ Sent user_initiated request")
+        print("✓ Sent reactive request")
     
     async def send_heartbeat(self, device_status: str = "online"):
         """Send heartbeat message"""
@@ -816,8 +816,8 @@ class KinClient:
         self.awaiting_agent_details = True
         self.user_terminate[0] = False
         
-        # Send user_initiated request
-        await self.orchestrator_client.send_user_initiated()
+        # Send reactive request
+        await self.orchestrator_client.send_reactive()
         
         # Wait for agent_details message (with timeout)
         timeout = 10.0  # seconds
