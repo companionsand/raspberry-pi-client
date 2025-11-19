@@ -106,8 +106,10 @@ class Config:
     CHANNELS = 1
     CHUNK_SIZE = 512  # ~32ms frames for low latency
     
-    # Heartbeat interval
-    HEARTBEAT_INTERVAL = 10  # seconds
+    # OpenTelemetry
+    OTEL_ENABLED = os.getenv("OTEL_ENABLED", "true").lower() == "true"
+    OTEL_EXPORTER_ENDPOINT = os.getenv("OTEL_EXPORTER_ENDPOINT", "http://localhost:4318")
+    ENV = os.getenv("ENV", "production")
     
     # OpenTelemetry
     OTEL_ENABLED = os.getenv("OTEL_ENABLED", "true").lower() == "true"
@@ -395,21 +397,6 @@ class OrchestratorClient:
         
         await self.websocket.send(json.dumps(message))
         print("✓ Sent reactive request")
-    
-    async def send_heartbeat(self, device_status: str = "online"):
-        """Send heartbeat message"""
-        if not self.connected:
-            return
-        
-        message = {
-            "type": "heartbeat",
-            "user_id": Config.USER_ID,
-            "device_id": Config.DEVICE_ID,
-            "device_status": device_status,
-            "timestamp": datetime.now(timezone.utc).isoformat(),
-        }
-        
-        await self.websocket.send(json.dumps(message))
     
     async def send_conversation_start(
         self, conversation_id: str, elevenlabs_conversation_id: str, agent_id: str
@@ -810,9 +797,6 @@ class KinClient:
         print("  Press Ctrl+C to exit")
         print("="*60 + "\n")
         
-        # Start heartbeat task
-        heartbeat_task = asyncio.create_task(self._heartbeat_loop())
-        
         # Main loop
         try:
             while self.running:
@@ -852,23 +836,6 @@ class KinClient:
             print("\n\n🛑 Shutting down...")
         finally:
             await self.cleanup()
-            heartbeat_task.cancel()
-            try:
-                await heartbeat_task
-            except asyncio.CancelledError:
-                pass
-    
-    async def _heartbeat_loop(self):
-        """Send heartbeat messages periodically"""
-        while self.running:
-            try:
-                await asyncio.sleep(Config.HEARTBEAT_INTERVAL)
-                if self.running:
-                    await self.orchestrator_client.send_heartbeat("online")
-            except asyncio.CancelledError:
-                break
-            except Exception as e:
-                print(f"✗ Heartbeat error: {e}")
     
     async def _handle_conversation(self):
         """Handle a single conversation session"""
