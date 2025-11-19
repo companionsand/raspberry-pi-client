@@ -30,11 +30,19 @@ import base64
 import asyncio
 import subprocess
 import uuid
+import logging
 from datetime import datetime, timezone
 from dotenv import load_dotenv
 
 # Load environment variables
 load_dotenv()
+
+# Configure logging so OTEL handler captures console output.
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(message)s",
+    force=True,
+)
 
 # Import required packages
 try:
