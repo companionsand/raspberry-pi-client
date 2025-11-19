@@ -8,8 +8,8 @@ A minimalistic Raspberry Pi client for Kin AI companion devices. Features wake w
 - **Echo Cancellation**: PipeWire-based AEC for barge-in capability
 - **Real-time Conversation**: WebSocket streaming with ElevenLabs
 - **Backend Communication**: WebSocket connection to conversation-orchestrator
-- **Heartbeat Monitoring**: Periodic status updates to backend
 - **Conversation Management**: Handles start/end notifications and user-initiated conversations
+- **Telemetry**: OpenTelemetry integration for metrics and tracing
 
 ## Architecture
 
@@ -171,13 +171,12 @@ python main.py
 3. Client connects to ElevenLabs WebSocket
 4. Conversation begins
 
-### Heartbeat Messages
+### Connection Management
 
-The client automatically sends heartbeat messages every 10 seconds to the orchestrator, including:
-- `user_id`
-- `device_id`
-- `device_status` (online/offline/error/setup)
-- `timestamp`
+The client maintains a persistent WebSocket connection to the conversation orchestrator. Connection health is monitored through:
+- **WebSocket ping/pong**: Automatic keep-alive mechanism (every 60 seconds)
+- **Device status updates**: Set to "online" on connect, "offline" on disconnect
+- **Last seen timestamp**: Updated on connect and disconnect events
 
 ### Conversation End Detection
 
@@ -231,17 +230,6 @@ Conversations end when:
   "type": "reactive",
   "user_id": "user-id",
   "device_id": "device-id"
-}
-```
-
-#### Heartbeat
-```json
-{
-  "type": "heartbeat",
-  "user_id": "user-id",
-  "device_id": "device-id",
-  "device_status": "online",
-  "timestamp": "2024-01-01T00:00:00Z"
 }
 ```
 
@@ -367,7 +355,7 @@ pactl list short sources | grep echo_cancel
 - The client assumes the device is already set up and registered
 - Device setup code will be added later
 - User termination signal: `kill -USR1 <pid>`
-- Heartbeat interval: 10 seconds (configurable via `Config.HEARTBEAT_INTERVAL`)
+- WebSocket ping interval: 60 seconds (configured on server)
 - Silence timeout: 30 seconds (configurable in `ElevenLabsConversationClient`)
 
 ## Security
