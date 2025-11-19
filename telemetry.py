@@ -192,6 +192,33 @@ def get_meter(name: str):
     return metrics.get_meter(name)
 
 
+def get_logger(name: str, device_id: str = None):
+    """Get a logger instance with structured logging support.
+    
+    Args:
+        name: Logger name (typically __name__)
+        device_id: Device ID to include in all logs
+        
+    Returns:
+        Logger instance configured with OTEL handler
+    """
+    logger = logging.getLogger(name)
+    
+    # Create custom adapter that adds device_id to all log records
+    if device_id:
+        class DeviceAdapter(logging.LoggerAdapter):
+            def process(self, msg, kwargs):
+                # Add device_id to extra
+                extra = kwargs.get('extra', {})
+                extra['device_id'] = device_id
+                kwargs['extra'] = extra
+                return msg, kwargs
+        
+        return DeviceAdapter(logger, {'device_id': device_id})
+    
+    return logger
+
+
 def add_span_attributes(**attributes):
     """Add attributes to the current span.
     
@@ -253,6 +280,69 @@ def create_span(name: str, **attributes):
             span.set_attribute(key, str(value))
     
     return trace.use_span(span, end_on_exit=True)
+
+
+def create_conversation_trace(name: str, **attributes):
+    """Create a new root trace for a conversation.
+    
+    This creates a completely new trace (not a child of any existing trace)
+    for conversation-level tracking across services.
+    
+    Args:
+        name: Span name (e.g., "conversation")
+        **attributes: Span attributes
+        
+    Returns:
+        Span context manager
+        
+    Example:
+        with create_conversation_trace("conversation", conversation_id=conv_id):
+            # Conversation code here
+            pass
+    """
+    tracer = get_tracer(__name__)
+    # Start a new span without parent context (new root trace)
+    span = tracer.start_span(name)
+    
+    # Add attributes
+    for key, value in attributes.items():
+        if value is not None:
+            span.set_attribute(key, str(value))
+    
+    return trace.use_span(span, end_on_exit=True)
+
+
+def inject_trace_context(carrier: dict):
+    """Inject current trace context into a carrier dictionary.
+    
+    This is used to propagate trace context across service boundaries
+    via WebSocket messages.
+    
+    Args:
+        carrier: Dictionary to inject trace context into (will add 'traceparent' field)
+    """
+    from opentelemetry.trace.propagation.tracecontext import TraceContextTextMapPropagator
+    propagator = TraceContextTextMapPropagator()
+    propagator.inject(carrier)
+
+
+def extract_trace_context(carrier: dict):
+    """Extract trace context from a carrier dictionary and set as current context.
+    
+    This is used to continue a trace that was started in another service.
+    
+    Args:
+        carrier: Dictionary with trace context (should have 'traceparent' field)
+        
+    Returns:
+        Context token that should be detached when done
+    """
+    from opentelemetry.trace.propagation.tracecontext import TraceContextTextMapPropagator
+    from opentelemetry import context
+    
+    propagator = TraceContextTextMapPropagator()
+    ctx = propagator.extract(carrier)
+    return context.attach(ctx)
 
 
 # Custom metrics for Raspberry Pi client

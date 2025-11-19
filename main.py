@@ -55,16 +55,24 @@ try:
     from telemetry import (
         setup_telemetry,
         get_tracer,
+        get_logger as get_otel_logger,
         create_client_metrics,
         add_span_attributes,
         add_span_event,
         create_span,
+        create_conversation_trace,
+        inject_trace_context,
+        extract_trace_context,
         record_exception
     )
     TELEMETRY_AVAILABLE = True
 except ImportError:
     print("⚠️  Telemetry module not available - running without telemetry")
     TELEMETRY_AVAILABLE = False
+    # Provide no-op fallbacks
+    def get_otel_logger(name, device_id=None):
+        import logging
+        return logging.getLogger(name)
 
 
 # =============================================================================
@@ -76,6 +84,9 @@ class Config:
     
     # Device credentials
     DEVICE_ID = os.getenv("DEVICE_ID")
+    
+    # Logger (will be set after device_id is validated)
+    LOGGER = None
     
     # Supabase authentication
     SUPABASE_URL = os.getenv("SUPABASE_URL")
@@ -151,6 +162,7 @@ def authenticate_with_supabase():
     Authenticate with Supabase and fetch auth token and user ID.
     Sets Config.AUTH_TOKEN and Config.USER_ID on success.
     """
+    logger = Config.LOGGER
     print("\n🔐 Authenticating with Supabase...")
     
     try:
@@ -169,13 +181,29 @@ def authenticate_with_supabase():
             Config.USER_ID = response.user.id
             print(f"✓ Successfully authenticated")
             print(f"   User ID: {Config.USER_ID}")
+            if logger:
+                logger.info(
+                    "supabase_authenticated",
+                    extra={
+                        "user_id": Config.USER_ID,
+                        "device_id": Config.DEVICE_ID
+                    }
+                )
             return True
         else:
             print("✗ Authentication failed: No user or session returned")
+            if logger:
+                logger.error("supabase_authentication_failed", extra={"reason": "no_user_or_session"})
             return False
             
     except Exception as e:
         print(f"✗ Authentication error: {e}")
+        if logger:
+            logger.error(
+                "supabase_authentication_error",
+                extra={"error": str(e)},
+                exc_info=True
+            )
         return False
 
 
@@ -188,6 +216,7 @@ def setup_audio_routing():
     Configure PipeWire audio routing for echo cancellation.
     Sets default source/sink to AEC nodes if available.
     """
+    logger = Config.LOGGER
     print("\n🔊 Setting up audio routing...")
     
     # Check if AEC nodes exist
@@ -204,6 +233,15 @@ def setup_audio_routing():
         print(f"  Mic: {Config.MIC_DEVICE}")
         print(f"  Speaker: {Config.SPEAKER_DEVICE}")
         
+        if logger:
+            logger.info(
+                "echo_cancellation_available",
+                extra={
+                    "mic_device": Config.MIC_DEVICE,
+                    "speaker_device": Config.SPEAKER_DEVICE
+                }
+            )
+        
         # Set as default devices
         subprocess.run(["pactl", "set-default-source", Config.MIC_DEVICE], 
                       capture_output=True)
@@ -213,6 +251,12 @@ def setup_audio_routing():
         print("⚠ Echo cancellation not available")
         print("  Using default audio devices")
         print("  Note: Barge-in may not work properly")
+        
+        if logger:
+            logger.warning(
+                "echo_cancellation_unavailable",
+                extra={"user_id": Config.USER_ID}
+            )
 
 
 def get_audio_device_index(device_name: str, kind: str = "input") -> int:
@@ -255,6 +299,7 @@ class WakeWordDetector:
         self.audio_stream = None
         self.detected = False
         self.running = False
+        self.logger = Config.LOGGER
         
     def start(self):
         """Initialize Porcupine and start listening"""
@@ -291,8 +336,22 @@ class WakeWordDetector:
             self.audio_stream.start()
             self.running = True
             print(f"✓ Listening for wake word...")
-        except Exception:
+            if self.logger:
+                self.logger.info(
+                    "listening_for_wake_word",
+                    extra={
+                        "wake_word": Config.WAKE_WORD,
+                        "user_id": Config.USER_ID
+                    }
+                )
+        except Exception as e:
             # Ensure partially-initialized resources are cleaned up
+            if self.logger:
+                self.logger.error(
+                    "wake_word_detection_start_failed",
+                    extra={"error": str(e)},
+                    exc_info=True
+                )
             self.stop()
             raise
         
@@ -310,6 +369,14 @@ class WakeWordDetector:
         if keyword_index >= 0:
             print(f"\n🎯 Wake word '{Config.WAKE_WORD}' detected!")
             self.detected = True
+            if self.logger:
+                self.logger.info(
+                    "wake_word_detected",
+                    extra={
+                        "wake_word": Config.WAKE_WORD,
+                        "user_id": Config.USER_ID
+                    }
+                )
     
     def stop(self):
         """Stop wake word detection"""
@@ -340,9 +407,11 @@ class OrchestratorClient:
         self.websocket = None
         self.connected = False
         self.running = False
+        self.logger = Config.LOGGER
         
     async def connect(self):
         """Connect to conversation-orchestrator"""
+        logger = self.logger
         print(f"\n🔌 Connecting to conversation-orchestrator...")
         print(f"   URL: {Config.CONVERSATION_ORCHESTRATOR_URL}")
         
@@ -375,17 +444,33 @@ class OrchestratorClient:
                 self.connected = True
                 self.running = True
                 print("✓ Connected to conversation-orchestrator")
+                if logger:
+                    logger.info(
+                        "conversation_orchestrator_connected",
+                        extra={
+                            "url": Config.CONVERSATION_ORCHESTRATOR_URL,
+                            "user_id": Config.USER_ID
+                        }
+                    )
                 return True
             else:
                 print(f"✗ Connection failed: {data}")
+                if logger:
+                    logger.error("conversation_orchestrator_connection_failed", extra={"response": str(data)})
                 return False
                 
         except Exception as e:
             print(f"✗ Connection error: {e}")
+            if logger:
+                logger.error(
+                    "conversation_orchestrator_connection_error",
+                    extra={"error": str(e)},
+                    exc_info=True
+                )
             return False
     
     async def send_reactive(self):
-        """Send reactive conversation request"""
+        """Send reactive conversation request with trace context"""
         if not self.connected:
             return
         
@@ -395,13 +480,22 @@ class OrchestratorClient:
             "device_id": Config.DEVICE_ID,
         }
         
+        # Inject trace context for propagation
+        if TELEMETRY_AVAILABLE:
+            inject_trace_context(message)
+        
         await self.websocket.send(json.dumps(message))
         print("✓ Sent reactive request")
+        if self.logger:
+            self.logger.info(
+                "reactive_request_sent",
+                extra={"user_id": Config.USER_ID}
+            )
     
     async def send_conversation_start(
         self, conversation_id: str, elevenlabs_conversation_id: str, agent_id: str
     ):
-        """Send conversation start notification"""
+        """Send conversation start notification with trace context"""
         if not self.connected:
             return
         
@@ -415,14 +509,28 @@ class OrchestratorClient:
             "start_time": datetime.now(timezone.utc).isoformat(),
         }
         
+        # Inject trace context for propagation
+        if TELEMETRY_AVAILABLE:
+            inject_trace_context(message)
+        
         await self.websocket.send(json.dumps(message))
         print("✓ Sent conversation_start notification")
+        if self.logger:
+            self.logger.info(
+                "conversation_start_notification_sent",
+                extra={
+                    "conversation_id": conversation_id,
+                    "elevenlabs_conversation_id": elevenlabs_conversation_id,
+                    "agent_id": agent_id,
+                    "user_id": Config.USER_ID
+                }
+            )
     
     async def send_conversation_end(
         self, conversation_id: str, elevenlabs_conversation_id: str, 
         agent_id: str, end_reason: str
     ):
-        """Send conversation end notification"""
+        """Send conversation end notification with trace context"""
         if not self.connected:
             return
         
@@ -437,8 +545,23 @@ class OrchestratorClient:
             "end_reason": end_reason,
         }
         
+        # Inject trace context for propagation
+        if TELEMETRY_AVAILABLE:
+            inject_trace_context(message)
+        
         await self.websocket.send(json.dumps(message))
         print("✓ Sent conversation_end notification")
+        if self.logger:
+            self.logger.info(
+                "conversation_end_notification_sent",
+                extra={
+                    "conversation_id": conversation_id,
+                    "elevenlabs_conversation_id": elevenlabs_conversation_id,
+                    "agent_id": agent_id,
+                    "end_reason": end_reason,
+                    "user_id": Config.USER_ID
+                }
+            )
     
     async def receive_message(self):
         """Receive and return a message from orchestrator"""
@@ -460,6 +583,11 @@ class OrchestratorClient:
         self.running = False
         if self.websocket:
             await self.websocket.close()
+        if self.logger:
+            self.logger.info(
+                "conversation_orchestrator_disconnected",
+                extra={"user_id": Config.USER_ID}
+            )
 
 
 # =============================================================================
@@ -481,6 +609,7 @@ class ElevenLabsConversationClient:
         self.silence_timeout = 30.0  # seconds
         self.last_audio_time = None
         self.user_terminate_flag = user_terminate_flag  # Reference to shared flag
+        self.logger = Config.LOGGER
         
     async def start(self, orchestrator_client: OrchestratorClient):
         """Start a conversation session"""
@@ -516,6 +645,15 @@ class ElevenLabsConversationClient:
                 self.last_audio_time = time.time()
                 
                 print("✓ Connected to ElevenLabs")
+                if self.logger:
+                    self.logger.info(
+                        "elevenlabs_connected",
+                        extra={
+                            "conversation_id": self.conversation_id,
+                            "agent_id": self.agent_id,
+                            "user_id": Config.USER_ID
+                        }
+                    )
                 
                 # Send conversation initiation
                 await websocket.send(json.dumps({
@@ -523,6 +661,15 @@ class ElevenLabsConversationClient:
                 }))
                 
                 print("✓ Conversation started - speak now!")
+                if self.logger:
+                    self.logger.info(
+                        "conversation_started",
+                        extra={
+                            "conversation_id": self.conversation_id,
+                            "agent_id": self.agent_id,
+                            "user_id": Config.USER_ID
+                        }
+                    )
                 
                 # Run send and receive tasks concurrently
                 send_task = asyncio.create_task(self._send_audio())
@@ -544,6 +691,17 @@ class ElevenLabsConversationClient:
                 
         except Exception as e:
             print(f"✗ Conversation error: {e}")
+            if self.logger:
+                self.logger.error(
+                    "conversation_error",
+                    extra={
+                        "conversation_id": self.conversation_id,
+                        "agent_id": self.agent_id,
+                        "user_id": Config.USER_ID,
+                        "error": str(e)
+                    },
+                    exc_info=True
+                )
             self.end_reason = "network_failure"
         finally:
             await self.stop(orchestrator_client)
@@ -569,6 +727,14 @@ class ElevenLabsConversationClient:
                 # Check for silence timeout
                 if self.last_audio_time and (time.time() - self.last_audio_time) > self.silence_timeout:
                     print("\n⏱️  Silence timeout - ending conversation")
+                    if self.logger:
+                        self.logger.info(
+                            "conversation_silence_timeout",
+                            extra={
+                                "conversation_id": self.conversation_id,
+                                "user_id": Config.USER_ID
+                            }
+                        )
                     self.end_reason = "silence"
                     self.running = False
                     break
@@ -576,6 +742,14 @@ class ElevenLabsConversationClient:
                 # Check for user termination
                 if self.user_terminate_flag and self.user_terminate_flag[0]:
                     print("\n🛑 User termination - ending conversation")
+                    if self.logger:
+                        self.logger.info(
+                            "conversation_user_terminated",
+                            extra={
+                                "conversation_id": self.conversation_id,
+                                "user_id": Config.USER_ID
+                            }
+                        )
                     self.end_reason = "user_terminated"
                     self.running = False
                     break
@@ -663,6 +837,15 @@ class ElevenLabsConversationClient:
                 self.end_reason = "user_terminated"
             else:
                 self.end_reason = "normal"
+            if self.logger:
+                self.logger.info(
+                    "conversation_connection_closed",
+                    extra={
+                        "conversation_id": self.conversation_id,
+                        "end_reason": self.end_reason,
+                        "user_id": Config.USER_ID
+                    }
+                )
             self.running = False
         except asyncio.CancelledError:
             self.end_reason = "user_terminated"
@@ -688,6 +871,18 @@ class ElevenLabsConversationClient:
             end_reason=self.end_reason,
         )
         
+        if self.logger:
+            self.logger.info(
+                "conversation_ended",
+                extra={
+                    "conversation_id": self.conversation_id,
+                    "elevenlabs_conversation_id": self.elevenlabs_conversation_id or "",
+                    "agent_id": self.agent_id,
+                    "end_reason": self.end_reason,
+                    "user_id": Config.USER_ID
+                }
+            )
+        
         if self.websocket:
             await self.websocket.close()
 
@@ -708,6 +903,7 @@ class KinClient:
         self.user_terminate = [False]  # Use list for mutable reference
         self.shutdown_requested = False
         self.conversation_start_time = None
+        self.conversation_trace_context = None
         
         # Setup telemetry if available
         self.metrics = None
@@ -718,9 +914,21 @@ class KinClient:
                     endpoint=Config.OTEL_EXPORTER_ENDPOINT
                 )
                 self.metrics = create_client_metrics()
+                
+                # Initialize logger with device_id
+                Config.LOGGER = get_otel_logger(__name__, device_id=Config.DEVICE_ID)
+                self.logger = Config.LOGGER
+                
                 print("✓ OpenTelemetry initialized")
             except Exception as e:
                 print(f"⚠️  Failed to initialize telemetry: {e}")
+                Config.LOGGER = None
+                self.logger = None
+        else:
+            # Fallback logger without telemetry
+            import logging
+            Config.LOGGER = logging.getLogger(__name__)
+            self.logger = Config.LOGGER
         
         # Setup signal handlers
         signal.signal(signal.SIGUSR1, self._handle_terminate_signal)
@@ -730,6 +938,14 @@ class KinClient:
     def _handle_terminate_signal(self, sig, frame):
         """Handle user-initiated termination signal"""
         print("\n🛑 User termination signal received")
+        if self.logger:
+            self.logger.info(
+                "terminate_signal_received",
+                extra={
+                    "signal": "SIGUSR1",
+                    "user_id": Config.USER_ID
+                }
+            )
         self.user_terminate[0] = True
     
     def _handle_interrupt_signal(self, sig, frame):
@@ -810,15 +1026,11 @@ class KinClient:
                             "device_id": Config.DEVICE_ID,
                             "wake_word": Config.WAKE_WORD
                         })
-                        if TELEMETRY_AVAILABLE:
-                            add_span_event("wake_word_detected", 
-                                         device_id=Config.DEVICE_ID,
-                                         wake_word=Config.WAKE_WORD)
                     
                     # Stop wake word detection during conversation
                     self.wake_detector.stop()
                     
-                    # Handle conversation
+                    # Handle conversation (creates trace inside)
                     await self._handle_conversation()
                 
                 # Check for messages from orchestrator
@@ -838,34 +1050,61 @@ class KinClient:
             await self.cleanup()
     
     async def _handle_conversation(self):
-        """Handle a single conversation session"""
-        self.conversation_active = True
-        self.awaiting_agent_details = True
-        self.user_terminate[0] = False
+        """Handle a single conversation session with conversation-level tracing"""
+        # Create a new conversation trace (root trace for this conversation)
+        if TELEMETRY_AVAILABLE:
+            conversation_trace = create_conversation_trace(
+                "conversation",
+                conversation_type="reactive",
+                device_id=Config.DEVICE_ID,
+                user_id=Config.USER_ID,
+                wake_word=Config.WAKE_WORD
+            )
+            self.conversation_trace_context = conversation_trace
+        else:
+            self.conversation_trace_context = None
         
-        # Send reactive request
-        await self.orchestrator_client.send_reactive()
-        
-        # Wait for agent_details message (with timeout)
-        timeout = 10.0  # seconds
-        start_time = time.time()
-        
-        while self.conversation_active and (time.time() - start_time) < timeout:
-            # Check for messages from orchestrator
-            message = await self.orchestrator_client.receive_message()
-            if message:
-                await self._handle_orchestrator_message(message)
-                if not self.conversation_active:
-                    break
+        # Use the conversation trace as context for all operations
+        async def _handle_with_trace():
+            self.conversation_active = True
+            self.awaiting_agent_details = True
+            self.user_terminate[0] = False
             
-            # Small sleep to prevent busy loop
-            await asyncio.sleep(0.1)
+            # Send reactive request (will inject trace context)
+            await self.orchestrator_client.send_reactive()
+            
+            # Wait for agent_details message (with timeout)
+            timeout = 10.0  # seconds
+            start_time = time.time()
+            
+            while self.conversation_active and (time.time() - start_time) < timeout:
+                # Check for messages from orchestrator
+                message = await self.orchestrator_client.receive_message()
+                if message:
+                    await self._handle_orchestrator_message(message)
+                    if not self.conversation_active:
+                        break
+                
+                # Small sleep to prevent busy loop
+                await asyncio.sleep(0.1)
+            
+            if self.awaiting_agent_details:
+                print("✗ Timeout waiting for agent details")
+                if self.logger:
+                    self.logger.error(
+                        "agent_details_timeout",
+                        extra={"user_id": Config.USER_ID}
+                    )
+                self.conversation_active = False
+                self.awaiting_agent_details = False
+                self._resume_wake_word_detection()
         
-        if self.awaiting_agent_details:
-            print("✗ Timeout waiting for agent details")
-            self.conversation_active = False
-            self.awaiting_agent_details = False
-            self._resume_wake_word_detection()
+        # Execute with trace context if available
+        if self.conversation_trace_context:
+            with self.conversation_trace_context:
+                await _handle_with_trace()
+        else:
+            await _handle_with_trace()
         
     async def _handle_orchestrator_message(self, message: dict):
         """Handle messages from conversation-orchestrator"""
@@ -886,71 +1125,116 @@ class KinClient:
             
             if not agent_id or not web_socket_url:
                 print("✗ Invalid agent details received")
+                if self.logger:
+                    self.logger.error("invalid_agent_details", extra={"message": message})
                 return
             
             print(f"✓ Received agent details: {agent_id}")
+            if self.logger:
+                self.logger.info(
+                    "agent_details_received",
+                    extra={
+                        "agent_id": agent_id,
+                        "message_type": message_type,
+                        "user_id": Config.USER_ID
+                    }
+                )
             
-            # Mark conversation as active
-            self.conversation_active = True
-            self.user_terminate[0] = False
-            self.conversation_start_time = time.time()
+            # For proactive conversations (start_conversation), extract and use trace context
+            # For reactive conversations (agent_details), trace context is already set from _handle_conversation
+            context_token = None
+            if message_type == "start_conversation" and TELEMETRY_AVAILABLE:
+                # Extract trace context from the proactive trigger message
+                context_token = extract_trace_context(message)
+                if self.logger:
+                    self.logger.info(
+                        "proactive_conversation_trace_extracted",
+                        extra={
+                            "has_traceparent": "traceparent" in message,
+                            "user_id": Config.USER_ID
+                        }
+                    )
             
-            # Record conversation start telemetry
-            if self.metrics:
-                self.metrics["conversations_started"].add(1, {
-                    "device_id": Config.DEVICE_ID,
-                    "user_id": Config.USER_ID,
-                    "agent_id": agent_id
-                })
-                if TELEMETRY_AVAILABLE:
-                    add_span_event("conversation_started",
-                                 device_id=Config.DEVICE_ID,
-                                 user_id=Config.USER_ID,
-                                 agent_id=agent_id)
+            # Execute conversation handling with proper trace context
+            async def _handle_conversation_with_context():
+                # Mark conversation as active
+                self.conversation_active = True
+                self.user_terminate[0] = False
+                self.conversation_start_time = time.time()
+                
+                # Record conversation start telemetry
+                if self.metrics:
+                    self.metrics["conversations_started"].add(1, {
+                        "device_id": Config.DEVICE_ID,
+                        "user_id": Config.USER_ID,
+                        "agent_id": agent_id
+                    })
+                
+                # Stop wake word detection during conversation
+                self.wake_detector.stop()
+                
+                # Start ElevenLabs conversation
+                client = ElevenLabsConversationClient(
+                    web_socket_url, 
+                    agent_id,
+                    user_terminate_flag=self.user_terminate
+                )
+                await client.start(self.orchestrator_client)
             
-            # Stop wake word detection during conversation
-            self.wake_detector.stop()
+                # Check if user terminated
+                if self.user_terminate[0]:
+                    print("✓ User terminated conversation")
+                
+                # Record conversation completion telemetry
+                if self.metrics and self.conversation_start_time:
+                    duration = time.time() - self.conversation_start_time
+                    self.metrics["conversations_completed"].add(1, {
+                        "device_id": Config.DEVICE_ID,
+                        "user_id": Config.USER_ID,
+                        "agent_id": agent_id
+                    })
+                    self.metrics["conversation_duration"].record(duration, {
+                        "device_id": Config.DEVICE_ID,
+                        "user_id": Config.USER_ID
+                    })
+                    self.conversation_start_time = None
+                
+                # Resume wake word detection
+                self._resume_wake_word_detection()
+                
+                if self.logger:
+                    self.logger.info(
+                        "wake_word_detection_resumed",
+                        extra={"user_id": Config.USER_ID}
+                    )
+                
+                self.conversation_active = False
+                self.user_terminate[0] = False
             
-            # Start ElevenLabs conversation
-            client = ElevenLabsConversationClient(
-                web_socket_url, 
-                agent_id,
-                user_terminate_flag=self.user_terminate
-            )
-            await client.start(self.orchestrator_client)
-            
-            # Check if user terminated
-            if self.user_terminate[0]:
-                print("✓ User terminated conversation")
-            
-            # Record conversation completion telemetry
-            if self.metrics and self.conversation_start_time:
-                duration = time.time() - self.conversation_start_time
-                self.metrics["conversations_completed"].add(1, {
-                    "device_id": Config.DEVICE_ID,
-                    "user_id": Config.USER_ID,
-                    "agent_id": agent_id
-                })
-                self.metrics["conversation_duration"].record(duration, {
-                    "device_id": Config.DEVICE_ID,
-                    "user_id": Config.USER_ID
-                })
-                if TELEMETRY_AVAILABLE:
-                    add_span_event("conversation_completed",
-                                 device_id=Config.DEVICE_ID,
-                                 user_id=Config.USER_ID,
-                                 duration=duration)
-                self.conversation_start_time = None
-            
-            # Resume wake word detection
-            self._resume_wake_word_detection()
-            
-            self.conversation_active = False
-            self.user_terminate[0] = False
+            # Execute with trace context if we have one (proactive)
+            if context_token is not None:
+                try:
+                    await _handle_conversation_with_context()
+                finally:
+                    # Detach the context
+                    from opentelemetry import context
+                    context.detach(context_token)
+            else:
+                # For reactive conversations, we're already in the trace context from _handle_conversation
+                await _handle_conversation_with_context()
             
         elif message_type == "error":
             error_msg = message.get("message", "Unknown error")
             print(f"✗ Orchestrator error: {error_msg}")
+            
+            if self.logger:
+                self.logger.error(
+                    "orchestrator_error_received",
+                    extra={
+                        "error_message": error_msg,
+                        "user_id": Config.USER_ID
+                    }
+                )
             
             # Record error telemetry
             if self.metrics:
@@ -959,11 +1243,6 @@ class KinClient:
                     "error_type": "orchestrator_error",
                     "error_message": error_msg
                 })
-                if TELEMETRY_AVAILABLE:
-                    add_span_event("error_occurred",
-                                 device_id=Config.DEVICE_ID,
-                                 error_type="orchestrator_error",
-                                 error_message=error_msg)
             
             self.conversation_active = False
             self.awaiting_agent_details = False
