@@ -50,6 +50,22 @@ except ImportError as e:
     print("Install dependencies: pip install -r requirements.txt")
     sys.exit(1)
 
+# Import telemetry (optional - graceful degradation)
+try:
+    from telemetry import (
+        setup_telemetry,
+        get_tracer,
+        create_client_metrics,
+        add_span_attributes,
+        add_span_event,
+        create_span,
+        record_exception
+    )
+    TELEMETRY_AVAILABLE = True
+except ImportError:
+    print("⚠️  Telemetry module not available - running without telemetry")
+    TELEMETRY_AVAILABLE = False
+
 
 # =============================================================================
 # CONFIGURATION
@@ -85,13 +101,18 @@ class Config:
     MIC_DEVICE = os.getenv("MIC_DEVICE", "echo_cancel.mic")
     SPEAKER_DEVICE = os.getenv("SPEAKER_DEVICE", "echo_cancel.speaker")
     
-    # Audio settings (matches ElevenLabs requirements)
-    SAMPLE_RATE = 16000
+    # Audio settings
+    SAMPLE_RATE = int(os.getenv("SAMPLE_RATE", "16000"))  # Configurable sample rate
     CHANNELS = 1
     CHUNK_SIZE = 512  # ~32ms frames for low latency
     
     # Heartbeat interval
     HEARTBEAT_INTERVAL = 10  # seconds
+    
+    # OpenTelemetry
+    OTEL_ENABLED = os.getenv("OTEL_ENABLED", "true").lower() == "true"
+    OTEL_EXPORTER_ENDPOINT = os.getenv("OTEL_EXPORTER_ENDPOINT", "http://localhost:4318")
+    ENV = os.getenv("ENV", "production")
     
     @classmethod
     def validate(cls):
@@ -699,6 +720,20 @@ class KinClient:
         self.awaiting_agent_details = False
         self.user_terminate = [False]  # Use list for mutable reference
         self.shutdown_requested = False
+        self.conversation_start_time = None
+        
+        # Setup telemetry if available
+        self.metrics = None
+        if TELEMETRY_AVAILABLE and Config.OTEL_ENABLED:
+            try:
+                setup_telemetry(
+                    device_id=Config.DEVICE_ID,
+                    endpoint=Config.OTEL_EXPORTER_ENDPOINT
+                )
+                self.metrics = create_client_metrics()
+                print("✓ OpenTelemetry initialized")
+            except Exception as e:
+                print(f"⚠️  Failed to initialize telemetry: {e}")
         
         # Setup signal handlers
         signal.signal(signal.SIGUSR1, self._handle_terminate_signal)
@@ -751,7 +786,21 @@ class KinClient:
         connected = await self.orchestrator_client.connect()
         if not connected:
             print("✗ Failed to connect to conversation-orchestrator")
+            # Record connection failure
+            if self.metrics:
+                self.metrics["connection_status"].add(-1, {
+                    "device_id": Config.DEVICE_ID
+                })
             return
+        
+        # Record successful connection
+        if self.metrics:
+            self.metrics["connection_status"].add(1, {
+                "device_id": Config.DEVICE_ID
+            })
+            if TELEMETRY_AVAILABLE:
+                add_span_event("orchestrator_connected",
+                             device_id=Config.DEVICE_ID)
         
         # Start wake word detection
         self.wake_detector.start()
@@ -770,6 +819,17 @@ class KinClient:
                 # Check if wake word was detected
                 if self.wake_detector.detected and not self.conversation_active:
                     self.wake_detector.detected = False
+                    
+                    # Record wake word detection telemetry
+                    if self.metrics:
+                        self.metrics["wake_word_detections"].add(1, {
+                            "device_id": Config.DEVICE_ID,
+                            "wake_word": Config.WAKE_WORD
+                        })
+                        if TELEMETRY_AVAILABLE:
+                            add_span_event("wake_word_detected", 
+                                         device_id=Config.DEVICE_ID,
+                                         wake_word=Config.WAKE_WORD)
                     
                     # Stop wake word detection during conversation
                     self.wake_detector.stop()
@@ -866,6 +926,20 @@ class KinClient:
             # Mark conversation as active
             self.conversation_active = True
             self.user_terminate[0] = False
+            self.conversation_start_time = time.time()
+            
+            # Record conversation start telemetry
+            if self.metrics:
+                self.metrics["conversations_started"].add(1, {
+                    "device_id": Config.DEVICE_ID,
+                    "user_id": Config.USER_ID,
+                    "agent_id": agent_id
+                })
+                if TELEMETRY_AVAILABLE:
+                    add_span_event("conversation_started",
+                                 device_id=Config.DEVICE_ID,
+                                 user_id=Config.USER_ID,
+                                 agent_id=agent_id)
             
             # Stop wake word detection during conversation
             self.wake_detector.stop()
@@ -882,6 +956,25 @@ class KinClient:
             if self.user_terminate[0]:
                 print("✓ User terminated conversation")
             
+            # Record conversation completion telemetry
+            if self.metrics and self.conversation_start_time:
+                duration = time.time() - self.conversation_start_time
+                self.metrics["conversations_completed"].add(1, {
+                    "device_id": Config.DEVICE_ID,
+                    "user_id": Config.USER_ID,
+                    "agent_id": agent_id
+                })
+                self.metrics["conversation_duration"].record(duration, {
+                    "device_id": Config.DEVICE_ID,
+                    "user_id": Config.USER_ID
+                })
+                if TELEMETRY_AVAILABLE:
+                    add_span_event("conversation_completed",
+                                 device_id=Config.DEVICE_ID,
+                                 user_id=Config.USER_ID,
+                                 duration=duration)
+                self.conversation_start_time = None
+            
             # Resume wake word detection
             self._resume_wake_word_detection()
             
@@ -891,6 +984,20 @@ class KinClient:
         elif message_type == "error":
             error_msg = message.get("message", "Unknown error")
             print(f"✗ Orchestrator error: {error_msg}")
+            
+            # Record error telemetry
+            if self.metrics:
+                self.metrics["errors"].add(1, {
+                    "device_id": Config.DEVICE_ID,
+                    "error_type": "orchestrator_error",
+                    "error_message": error_msg
+                })
+                if TELEMETRY_AVAILABLE:
+                    add_span_event("error_occurred",
+                                 device_id=Config.DEVICE_ID,
+                                 error_type="orchestrator_error",
+                                 error_message=error_msg)
+            
             self.conversation_active = False
             self.awaiting_agent_details = False
             
@@ -902,6 +1009,16 @@ class KinClient:
         self.running = False
         self.wake_detector.cleanup()
         await self.orchestrator_client.disconnect()
+        
+        # Record disconnection
+        if self.metrics:
+            self.metrics["connection_status"].add(-1, {
+                "device_id": Config.DEVICE_ID
+            })
+            if TELEMETRY_AVAILABLE:
+                add_span_event("orchestrator_disconnected",
+                             device_id=Config.DEVICE_ID)
+        
         print("✓ Cleanup complete")
         print("👋 Goodbye!\n")
 
