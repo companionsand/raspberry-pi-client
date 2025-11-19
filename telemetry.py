@@ -208,12 +208,15 @@ def get_logger(name: str, device_id: str = None):
     if device_id:
         class DeviceAdapter(logging.LoggerAdapter):
             def process(self, msg, kwargs):
-                # Add device_id to extra
+                # Add OTEL attributes to every log record
                 extra = kwargs.get('extra', {})
                 extra['device_id'] = device_id
+                extra['service.name'] = "raspberry-pi-client"
+                extra['service.namespace'] = "kin-voice-ai"
+                extra['telemetry.sdk.language'] = "python"
                 kwargs['extra'] = extra
                 return msg, kwargs
-        
+
         return DeviceAdapter(logger, {'device_id': device_id})
     
     return logger
@@ -404,4 +407,3 @@ def create_client_metrics():
             unit="1",
         ),
     }
-
