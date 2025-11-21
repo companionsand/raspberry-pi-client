@@ -71,8 +71,13 @@ class LEDController:
             self.pixel_ring.off()
             print("✓ LED controller initialized")
         except ImportError:
-            print("⚠ pixel_ring not available - LED control disabled")
+            print("⚠ pixel_ring library not available - LED control disabled")
             print("  Install with: pip install pixel-ring")
+            self.enabled = False
+        except (FileNotFoundError, PermissionError, OSError) as e:
+            print("⚠ LED hardware not detected - LED control disabled")
+            print(f"  Reason: {e}")
+            print("  Note: LED control requires ReSpeaker with LED ring hardware")
             self.enabled = False
     
     def set_state(self, state: int):
