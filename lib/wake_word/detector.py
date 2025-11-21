@@ -42,13 +42,17 @@ class WakeWordDetector:
                 sensitivities=[0.7]  # 0.0 (least sensitive) to 1.0 (most sensitive)
             )
             
+            # Query devices for logging and error messages
+            devices = sd.query_devices()
+            
             # Log device being used
             if self.mic_device_index is not None:
-                devices = sd.query_devices()
                 dev = devices[self.mic_device_index]
                 print(f"   Using microphone: {dev['name']} (index {self.mic_device_index})")
             else:
                 print(f"   Using default microphone")
+            
+            print(f"   Required sample rate: {self.porcupine.sample_rate} Hz")
             
             # Start audio stream for wake word detection
             self.audio_stream = sd.InputStream(
@@ -73,6 +77,48 @@ class WakeWordDetector:
                         "device_id": Config.DEVICE_ID
                     }
                 )
+        except sd.PortAudioError as e:
+            # Handle audio device errors with helpful message
+            error_msg = str(e)
+            if "Invalid sample rate" in error_msg or "paInvalidSampleRate" in error_msg:
+                # Get device name for error message
+                try:
+                    device_name = devices[self.mic_device_index]['name'] if self.mic_device_index is not None else 'default'
+                except:
+                    device_name = f"index {self.mic_device_index}" if self.mic_device_index is not None else "default"
+                
+                print(f"\n✗ ERROR: Microphone doesn't support required sample rate")
+                print(f"   Required: {self.porcupine.sample_rate} Hz (Porcupine requirement)")
+                print(f"   Device: {device_name}")
+                print(f"\n   Solutions:")
+                print(f"   1. Use a different USB microphone that supports 16kHz")
+                print(f"   2. Use ReSpeaker 4 Mic Array (recommended - has hardware AEC)")
+                print(f"   3. Check device supported rates with: python -m sounddevice")
+                
+                if self.logger:
+                    self.logger.error(
+                        "wake_word_unsupported_sample_rate",
+                        extra={
+                            "error": error_msg,
+                            "required_rate": self.porcupine.sample_rate,
+                            "device_index": self.mic_device_index,
+                            "user_id": Config.USER_ID
+                        }
+                    )
+            else:
+                print(f"\n✗ ERROR: Audio device error: {error_msg}")
+                if self.logger:
+                    self.logger.error(
+                        "wake_word_audio_device_error",
+                        extra={
+                            "error": error_msg,
+                            "user_id": Config.USER_ID
+                        },
+                        exc_info=True
+                    )
+            
+            self.stop()
+            raise
         except Exception as e:
             # Ensure partially-initialized resources are cleaned up
             if self.logger:

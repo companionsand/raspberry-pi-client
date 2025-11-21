@@ -54,26 +54,11 @@ def get_audio_devices():
                 
                 return respeaker_idx, respeaker_idx, True
     
-    # ReSpeaker not found - fall back to default devices
-    print("⚠ ReSpeaker not detected - using default audio devices")
+    # ReSpeaker not found - fall back to system default
+    print("⚠ ReSpeaker not detected - using system default audio")
     print("  Hardware echo cancellation: NOT available")
     print("  Note: Barge-in may not work properly without AEC")
-    
-    # Get default devices
-    default_input = sd.default.device[0]
-    default_output = sd.default.device[1]
-    
-    if default_input is not None:
-        input_dev = devices[default_input]
-        print(f"  Default microphone: {input_dev['name']} (index {default_input})")
-    else:
-        print(f"  Default microphone: system default")
-    
-    if default_output is not None:
-        output_dev = devices[default_output]
-        print(f"  Default speaker: {output_dev['name']} (index {default_output})")
-    else:
-        print(f"  Default speaker: system default")
+    print("  System will auto-select audio devices via ALSA/PulseAudio")
     
     if logger:
         logger.warning(
@@ -81,13 +66,15 @@ def get_audio_devices():
             extra={
                 "respeaker_found": False,
                 "hardware_aec": False,
-                "default_input": default_input,
-                "default_output": default_output,
+                "using_system_default": True,
                 "user_id": Config.USER_ID
             }
         )
     
-    return default_input, default_output, False
+    # Return None for both - let sounddevice/ALSA/PulseAudio choose the best device
+    # This allows the audio system to route through the appropriate interface (e.g., IEC958 vs USB Audio)
+    # that supports the required sample rate
+    return None, None, False
 
 
 def verify_audio_setup():
