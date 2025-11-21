@@ -28,7 +28,7 @@ A minimalistic Raspberry Pi client for Kin AI companion devices. Features wake w
 ┌─────────────────────────────────────────┐
 │   Conversation Orchestrator (Backend)   │
 │  - Agent management                     │
-│  - Trigger monitoring                  │
+│  - Schedule monitoring                 │
 │  - Conversation coordination            │
 └─────────────────────────────────────────┘
 ```
@@ -166,7 +166,7 @@ python main.py
 
 ### Proactive Conversations
 
-1. Orchestrator detects a trigger is ready
+1. Orchestrator detects a schedule is ready
 2. Orchestrator sends `start_conversation` message
 3. Client connects to ElevenLabs WebSocket
 4. Conversation begins
@@ -281,7 +281,7 @@ Conversations end when:
 }
 ```
 
-#### Start Conversation (Trigger-based)
+#### Start Conversation (Schedule-based)
 ```json
 {
   "type": "start_conversation",

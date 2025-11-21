@@ -1046,7 +1046,7 @@ class KinClient:
                 if message:
                     await self._handle_orchestrator_message(message)
                 
-                # Handle trigger-initiated conversations (start_conversation message)
+                # Handle proactive conversations (start_conversation message)
                 # This is handled in _handle_orchestrator_message
                 
                 # Small sleep to prevent busy loop
@@ -1152,7 +1152,7 @@ class KinClient:
             # For reactive conversations (agent_details), trace context is already set from _handle_conversation
             context_token = None
             if message_type == "start_conversation" and TELEMETRY_AVAILABLE:
-                # Extract trace context from the proactive trigger message
+                # Extract trace context from the proactive conversation message
                 context_token = extract_trace_context(message)
                 if self.logger:
                     self.logger.info(
