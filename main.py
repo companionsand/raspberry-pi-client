@@ -89,6 +89,9 @@ class KinClient:
         self.speaker_device_index = None
         self.has_hardware_aec = False
         
+        # Activity tracking for wrapper idle monitoring
+        self.activity_file = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", ".last_activity")
+        
         # Setup telemetry if available
         if TELEMETRY_AVAILABLE and Config.OTEL_ENABLED:
             try:
@@ -115,6 +118,15 @@ class KinClient:
         signal.signal(signal.SIGUSR1, self._handle_terminate_signal)
         signal.signal(signal.SIGINT, self._handle_interrupt_signal)
         signal.signal(signal.SIGTERM, self._handle_interrupt_signal)
+    
+    def _update_activity(self):
+        """Update activity timestamp for wrapper idle monitoring"""
+        try:
+            # Touch the activity file to update its modification time
+            os.utime(self.activity_file, None)
+        except Exception:
+            # If file doesn't exist or can't be touched, silently ignore
+            pass
     
     def _handle_terminate_signal(self, sig, frame):
         """Handle user-initiated conversation termination signal (SIGUSR1)"""
@@ -220,9 +232,36 @@ class KinClient:
                     print("🛑 Shutdown requested, exiting main loop...")
                     break
                 
+                # Periodic connection health check
+                if not await self.orchestrator_client.check_connection_health():
+                    # Connection is unhealthy, attempt to reconnect
+                    print("⚠️  Connection unhealthy, attempting to reconnect...")
+                    self.led_controller.set_state(LEDController.STATE_ERROR)
+                    
+                    # Attempt reconnection
+                    reconnected = await self.orchestrator_client.reconnect()
+                    if reconnected:
+                        self.led_controller.set_state(LEDController.STATE_IDLE)
+                    else:
+                        # Failed to reconnect, continue loop and try again later
+                        await asyncio.sleep(5)
+                        continue
+                
                 # Check if wake word was detected
                 if self.wake_detector.detected and not self.conversation_active:
                     self.wake_detector.detected = False
+                    
+                    # Update activity - wake word detected
+                    self._update_activity()
+                    
+                    # Verify connection before starting conversation
+                    if not self.orchestrator_client.is_connection_alive():
+                        print("✗ Cannot start conversation: not connected to orchestrator")
+                        self.led_controller.set_state(LEDController.STATE_ERROR)
+                        await asyncio.sleep(2)
+                        self.led_controller.set_state(LEDController.STATE_IDLE)
+                        self._resume_wake_word_detection()
+                        continue
                     
                     # Show wake word detected state (color burst)
                     self.led_controller.set_state(LEDController.STATE_WAKE_WORD_DETECTED)
@@ -236,7 +275,21 @@ class KinClient:
                 # Check for messages from orchestrator
                 message = await self.orchestrator_client.receive_message()
                 if message:
+                    # Update activity - message received
+                    self._update_activity()
                     await self._handle_orchestrator_message(message)
+                elif not self.orchestrator_client.is_connection_alive() and not self.conversation_active:
+                    # Connection lost, attempt to reconnect (only if not in conversation)
+                    print("⚠️  Connection lost, attempting to reconnect...")
+                    self.led_controller.set_state(LEDController.STATE_ERROR)
+                    
+                    reconnected = await self.orchestrator_client.reconnect()
+                    if reconnected:
+                        self.led_controller.set_state(LEDController.STATE_IDLE)
+                    else:
+                        # Failed to reconnect, wait and try again
+                        await asyncio.sleep(5)
+                        continue
                 
                 # Handle proactive conversations (start_conversation message)
                 # This is handled in _handle_orchestrator_message
@@ -271,7 +324,25 @@ class KinClient:
             self.user_terminate[0] = False
             
             # Send reactive request (will inject trace context)
-            await self.orchestrator_client.send_reactive()
+            send_success = await self.orchestrator_client.send_reactive()
+            
+            if not send_success:
+                print("✗ Failed to send reactive request")
+                if self.logger:
+                    self.logger.error(
+                        "reactive_request_send_failed",
+                        extra={
+                            "user_id": Config.USER_ID,
+                            "device_id": Config.DEVICE_ID
+                        }
+                    )
+                self.conversation_active = False
+                self.awaiting_agent_details = False
+                self.led_controller.set_state(LEDController.STATE_ERROR)
+                await asyncio.sleep(2)  # Brief pause to show error
+                self._resume_wake_word_detection()
+                self.led_controller.set_state(LEDController.STATE_IDLE)
+                return
             
             # Wait for agent_details message (with timeout)
             timeout = 10.0  # seconds
@@ -284,6 +355,19 @@ class KinClient:
                     await self._handle_orchestrator_message(message)
                     if not self.conversation_active:
                         break
+                
+                # Check if connection died while waiting
+                if not self.orchestrator_client.is_connection_alive():
+                    print("✗ Connection lost while waiting for agent details")
+                    if self.logger:
+                        self.logger.error(
+                            "connection_lost_during_agent_wait",
+                            extra={
+                                "user_id": Config.USER_ID,
+                                "device_id": Config.DEVICE_ID
+                            }
+                        )
+                    break
                 
                 # Small sleep to prevent busy loop
                 await asyncio.sleep(0.1)
@@ -376,6 +460,9 @@ class KinClient:
                 self.user_terminate[0] = False
                 self.conversation_start_time = time.time()
                 
+                # Update activity - conversation starting
+                self._update_activity()
+                
                 # Stop wake word detection during conversation
                 self.wake_detector.stop()
                 
@@ -392,6 +479,9 @@ class KinClient:
                 )
                 await client.start(self.orchestrator_client)
             
+                # Update activity - conversation ended
+                self._update_activity()
+                
                 # Check if user terminated
                 if self.user_terminate[0]:
                     print("✓ User terminated conversation")

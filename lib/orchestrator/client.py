@@ -24,12 +24,37 @@ class OrchestratorClient:
         self.connected = False
         self.running = False
         self.logger = Config.LOGGER
+        self.reconnect_attempts = 0
+        self.max_reconnect_attempts = 10
+        self.reconnect_base_delay = 1.0  # Base delay for exponential backoff
+        self.last_health_check = 0
+        self.health_check_interval = 30  # Check connection health every 30 seconds
         
-    async def connect(self):
-        """Connect to conversation-orchestrator"""
+    def is_connection_alive(self):
+        """Check if the WebSocket connection is actually alive"""
+        if not self.connected:
+            return False
+        if not self.websocket:
+            self.connected = False
+            return False
+        if self.websocket.closed:
+            self.connected = False
+            return False
+        return True
+    
+    async def connect(self, is_reconnect=False):
+        """Connect to conversation-orchestrator
+        
+        Args:
+            is_reconnect: True if this is a reconnection attempt
+        """
         logger = self.logger
-        print(f"\n🔌 Connecting to conversation-orchestrator...")
-        print(f"   URL: {Config.CONVERSATION_ORCHESTRATOR_URL}")
+        
+        if is_reconnect:
+            print(f"\n🔄 Reconnecting to conversation-orchestrator (attempt {self.reconnect_attempts + 1}/{self.max_reconnect_attempts})...")
+        else:
+            print(f"\n🔌 Connecting to conversation-orchestrator...")
+            print(f"   URL: {Config.CONVERSATION_ORCHESTRATOR_URL}")
         
         try:
             # Create SSL context if using wss://
@@ -59,14 +84,21 @@ class OrchestratorClient:
             if data.get("type") == "connected":
                 self.connected = True
                 self.running = True
-                print("✓ Connected to conversation-orchestrator")
+                self.reconnect_attempts = 0  # Reset on successful connection
+                
+                if is_reconnect:
+                    print("✓ Reconnected to conversation-orchestrator")
+                else:
+                    print("✓ Connected to conversation-orchestrator")
+                    
                 if logger:
                     logger.info(
                         "conversation_orchestrator_connected",
                         extra={
                             "url": Config.CONVERSATION_ORCHESTRATOR_URL,
                             "user_id": Config.USER_ID,
-                            "device_id": Config.DEVICE_ID
+                            "device_id": Config.DEVICE_ID,
+                            "is_reconnect": is_reconnect
                         }
                     )
                 return True
@@ -77,7 +109,8 @@ class OrchestratorClient:
                         "conversation_orchestrator_connection_failed",
                         extra={
                             "response": str(data),
-                            "user_id": Config.USER_ID
+                            "user_id": Config.USER_ID,
+                            "is_reconnect": is_reconnect
                         }
                     )
                 return False
@@ -89,114 +122,255 @@ class OrchestratorClient:
                     "conversation_orchestrator_connection_error",
                     extra={
                         "error": str(e),
-                        "user_id": Config.USER_ID
+                        "user_id": Config.USER_ID,
+                        "is_reconnect": is_reconnect
                     },
                     exc_info=True
                 )
             return False
     
-    async def send_reactive(self):
-        """Send reactive conversation request with trace context"""
-        if not self.connected:
-            return
+    async def reconnect(self):
+        """Attempt to reconnect with exponential backoff"""
+        if self.reconnect_attempts >= self.max_reconnect_attempts:
+            print(f"✗ Max reconnection attempts ({self.max_reconnect_attempts}) reached")
+            if self.logger:
+                self.logger.error(
+                    "max_reconnection_attempts_reached",
+                    extra={
+                        "attempts": self.reconnect_attempts,
+                        "user_id": Config.USER_ID,
+                        "device_id": Config.DEVICE_ID
+                    }
+                )
+            return False
         
-        message = {
-            "type": "reactive",
-            "user_id": Config.USER_ID,
-            "device_id": Config.DEVICE_ID,
-        }
+        # Calculate exponential backoff delay
+        delay = self.reconnect_base_delay * (2 ** self.reconnect_attempts)
+        delay = min(delay, 60)  # Cap at 60 seconds
         
-        # Inject trace context for propagation
-        if TELEMETRY_AVAILABLE:
-            inject_trace_context(message)
-        
-        await self.websocket.send(json.dumps(message))
-        print("✓ Sent reactive request")
+        print(f"⏳ Waiting {delay:.1f}s before reconnection attempt...")
         if self.logger:
             self.logger.info(
-                "reactive_request_sent",
+                "reconnection_scheduled",
                 extra={
+                    "delay_seconds": delay,
+                    "attempt": self.reconnect_attempts + 1,
                     "user_id": Config.USER_ID,
                     "device_id": Config.DEVICE_ID
                 }
             )
+        
+        await asyncio.sleep(delay)
+        self.reconnect_attempts += 1
+        
+        return await self.connect(is_reconnect=True)
+    
+    async def send_reactive(self):
+        """Send reactive conversation request with trace context"""
+        if not self.is_connection_alive():
+            print("✗ Cannot send reactive request: connection not alive")
+            if self.logger:
+                self.logger.warning(
+                    "send_reactive_failed_disconnected",
+                    extra={
+                        "user_id": Config.USER_ID,
+                        "device_id": Config.DEVICE_ID
+                    }
+                )
+            return False
+        
+        try:
+            message = {
+                "type": "reactive",
+                "user_id": Config.USER_ID,
+                "device_id": Config.DEVICE_ID,
+            }
+            
+            # Inject trace context for propagation
+            if TELEMETRY_AVAILABLE:
+                inject_trace_context(message)
+            
+            await self.websocket.send(json.dumps(message))
+            print("✓ Sent reactive request")
+            if self.logger:
+                self.logger.info(
+                    "reactive_request_sent",
+                    extra={
+                        "user_id": Config.USER_ID,
+                        "device_id": Config.DEVICE_ID
+                    }
+                )
+            return True
+        except Exception as e:
+            print(f"✗ Failed to send reactive request: {e}")
+            if self.logger:
+                self.logger.error(
+                    "send_reactive_error",
+                    extra={
+                        "error": str(e),
+                        "user_id": Config.USER_ID,
+                        "device_id": Config.DEVICE_ID
+                    }
+                )
+            self.connected = False
+            return False
     
     async def send_conversation_start(
         self, conversation_id: str, elevenlabs_conversation_id: str, agent_id: str
     ):
         """Send conversation start notification with trace context"""
-        if not self.connected:
-            return
+        if not self.is_connection_alive():
+            print("✗ Cannot send conversation_start: connection not alive")
+            if self.logger:
+                self.logger.warning(
+                    "send_conversation_start_failed_disconnected",
+                    extra={
+                        "conversation_id": conversation_id,
+                        "user_id": Config.USER_ID,
+                        "device_id": Config.DEVICE_ID
+                    }
+                )
+            return False
         
-        message = {
-            "type": "conversation_start",
-            "conversation_id": conversation_id,
-            "elevenlabs_conversation_id": elevenlabs_conversation_id,
-            "agent_id": agent_id,
-            "device_id": Config.DEVICE_ID,
-            "user_id": Config.USER_ID,
-            "start_time": datetime.now(timezone.utc).isoformat(),
-        }
-        
-        # Inject trace context for propagation
-        if TELEMETRY_AVAILABLE:
-            inject_trace_context(message)
-        
-        await self.websocket.send(json.dumps(message))
-        print("✓ Sent conversation_start notification")
-        if self.logger:
-            self.logger.info(
-                "conversation_start_notification_sent",
-                extra={
-                    "conversation_id": conversation_id,
-                    "elevenlabs_conversation_id": elevenlabs_conversation_id,
-                    "agent_id": agent_id,
-                    "user_id": Config.USER_ID,
-                    "device_id": Config.DEVICE_ID
-                }
-            )
+        try:
+            message = {
+                "type": "conversation_start",
+                "conversation_id": conversation_id,
+                "elevenlabs_conversation_id": elevenlabs_conversation_id,
+                "agent_id": agent_id,
+                "device_id": Config.DEVICE_ID,
+                "user_id": Config.USER_ID,
+                "start_time": datetime.now(timezone.utc).isoformat(),
+            }
+            
+            # Inject trace context for propagation
+            if TELEMETRY_AVAILABLE:
+                inject_trace_context(message)
+            
+            await self.websocket.send(json.dumps(message))
+            print("✓ Sent conversation_start notification")
+            if self.logger:
+                self.logger.info(
+                    "conversation_start_notification_sent",
+                    extra={
+                        "conversation_id": conversation_id,
+                        "elevenlabs_conversation_id": elevenlabs_conversation_id,
+                        "agent_id": agent_id,
+                        "user_id": Config.USER_ID,
+                        "device_id": Config.DEVICE_ID
+                    }
+                )
+            return True
+        except Exception as e:
+            print(f"✗ Failed to send conversation_start: {e}")
+            if self.logger:
+                self.logger.error(
+                    "send_conversation_start_error",
+                    extra={
+                        "error": str(e),
+                        "conversation_id": conversation_id,
+                        "user_id": Config.USER_ID,
+                        "device_id": Config.DEVICE_ID
+                    }
+                )
+            self.connected = False
+            return False
     
     async def send_conversation_end(
         self, conversation_id: str, elevenlabs_conversation_id: str, 
         agent_id: str, end_reason: str
     ):
         """Send conversation end notification with trace context"""
-        if not self.connected:
-            return
+        if not self.is_connection_alive():
+            print("✗ Cannot send conversation_end: connection not alive")
+            if self.logger:
+                self.logger.warning(
+                    "send_conversation_end_failed_disconnected",
+                    extra={
+                        "conversation_id": conversation_id,
+                        "user_id": Config.USER_ID,
+                        "device_id": Config.DEVICE_ID
+                    }
+                )
+            return False
         
-        message = {
-            "type": "conversation_end",
-            "conversation_id": conversation_id,
-            "elevenlabs_conversation_id": elevenlabs_conversation_id,
-            "agent_id": agent_id,
-            "device_id": Config.DEVICE_ID,
-            "user_id": Config.USER_ID,
-            "end_time": datetime.now(timezone.utc).isoformat(),
-            "end_reason": end_reason,
-        }
+        try:
+            message = {
+                "type": "conversation_end",
+                "conversation_id": conversation_id,
+                "elevenlabs_conversation_id": elevenlabs_conversation_id,
+                "agent_id": agent_id,
+                "device_id": Config.DEVICE_ID,
+                "user_id": Config.USER_ID,
+                "end_time": datetime.now(timezone.utc).isoformat(),
+                "end_reason": end_reason,
+            }
+            
+            # Inject trace context for propagation
+            if TELEMETRY_AVAILABLE:
+                inject_trace_context(message)
+            
+            await self.websocket.send(json.dumps(message))
+            print("✓ Sent conversation_end notification")
+            if self.logger:
+                self.logger.info(
+                    "conversation_end_notification_sent",
+                    extra={
+                        "conversation_id": conversation_id,
+                        "elevenlabs_conversation_id": elevenlabs_conversation_id,
+                        "agent_id": agent_id,
+                        "end_reason": end_reason,
+                        "user_id": Config.USER_ID,
+                        "device_id": Config.DEVICE_ID
+                    }
+                )
+            return True
+        except Exception as e:
+            print(f"✗ Failed to send conversation_end: {e}")
+            if self.logger:
+                self.logger.error(
+                    "send_conversation_end_error",
+                    extra={
+                        "error": str(e),
+                        "conversation_id": conversation_id,
+                        "user_id": Config.USER_ID,
+                        "device_id": Config.DEVICE_ID
+                    }
+                )
+            self.connected = False
+            return False
+    
+    async def check_connection_health(self):
+        """Periodically check if connection is still healthy (silent check)"""
+        import time
+        current_time = time.time()
         
-        # Inject trace context for propagation
-        if TELEMETRY_AVAILABLE:
-            inject_trace_context(message)
+        # Only check at intervals to avoid overhead
+        if current_time - self.last_health_check < self.health_check_interval:
+            return True
         
-        await self.websocket.send(json.dumps(message))
-        print("✓ Sent conversation_end notification")
-        if self.logger:
-            self.logger.info(
-                "conversation_end_notification_sent",
-                extra={
-                    "conversation_id": conversation_id,
-                    "elevenlabs_conversation_id": elevenlabs_conversation_id,
-                    "agent_id": agent_id,
-                    "end_reason": end_reason,
-                    "user_id": Config.USER_ID,
-                    "device_id": Config.DEVICE_ID
-                }
-            )
+        self.last_health_check = current_time
+        
+        # Check if connection is alive (silently - no logging on success)
+        if not self.is_connection_alive():
+            # Only log when health check actually fails
+            print("⚠️  Connection health check failed: connection not alive")
+            if self.logger:
+                self.logger.warning(
+                    "connection_health_check_failed",
+                    extra={
+                        "user_id": Config.USER_ID,
+                        "device_id": Config.DEVICE_ID
+                    }
+                )
+            return False
+        
+        # Health check passed - no logging needed
+        return True
     
     async def receive_message(self):
         """Receive and return a message from orchestrator"""
-        if not self.connected:
+        if not self.is_connection_alive():
             return None
         
         try:
@@ -208,6 +382,7 @@ class OrchestratorClient:
             # Normal closure (1000/1001) is expected, don't spam logs
             if e.code in (1000, 1001):
                 # Clean disconnect, mark as disconnected
+                print("ℹ️  Connection closed normally")
                 self.connected = False
                 return None
             else:
@@ -219,22 +394,25 @@ class OrchestratorClient:
                         extra={
                             "code": e.code,
                             "reason": e.reason,
-                            "user_id": Config.USER_ID
+                            "user_id": Config.USER_ID,
+                            "device_id": Config.DEVICE_ID
                         }
                     )
                 self.connected = False
                 return None
         except Exception as e:
-            # Only log unexpected errors
+            # Mark as disconnected and log error
             print(f"✗ Receive error: {e}")
             if self.logger:
                 self.logger.error(
                     "orchestrator_receive_error",
                     extra={
                         "error": str(e),
-                        "user_id": Config.USER_ID
+                        "user_id": Config.USER_ID,
+                        "device_id": Config.DEVICE_ID
                     }
                 )
+            self.connected = False
             return None
     
     async def disconnect(self):
