@@ -37,7 +37,13 @@ class OrchestratorClient:
         if not self.websocket:
             self.connected = False
             return False
-        if self.websocket.closed:
+        # Check if websocket is open (more compatible than checking 'closed')
+        try:
+            if not self.websocket.open:
+                self.connected = False
+                return False
+        except AttributeError:
+            # Fallback if 'open' attribute doesn't exist
             self.connected = False
             return False
         return True
