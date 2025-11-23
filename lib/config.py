@@ -24,7 +24,7 @@ class Config:
     # HARDCODED CONFIGURATION
     # =========================================================================
     # Backend (hardcoded - can be changed via software update)
-    ORCHESTRATOR_URL = os.getenv("CONVERSATION_ORCHESTRATOR_URL", "ws://localhost:8001/ws")
+    ORCHESTRATOR_URL = "wss://conversation-orchestrator.onrender.com/ws"
     
     # Audio settings (ALSA-only, single ReSpeaker device for both capture and playback)
     SAMPLE_RATE = 16000  # 16kHz for both capture and playback (hardcoded)
