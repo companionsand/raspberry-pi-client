@@ -46,8 +46,10 @@ class Config:
     WAKE_WORD = None
     LED_ENABLED = None
     LED_BRIGHTNESS = 60  # Default, may be overridden
-    OTEL_ENABLED = None
-    OTEL_EXPORTER_ENDPOINT = None
+    
+    # OTEL defaults come from env so telemetry can start before runtime config arrives
+    OTEL_ENABLED = os.getenv("OTEL_ENABLED", "true").lower() == "true"
+    OTEL_EXPORTER_ENDPOINT = os.getenv("OTEL_EXPORTER_ENDPOINT", "http://localhost:4318")
     
     # Environment
     ENV = os.getenv("ENV", "production")
