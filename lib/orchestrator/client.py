@@ -27,8 +27,6 @@ class OrchestratorClient:
         self.reconnect_attempts = 0
         self.max_reconnect_attempts = 10
         self.reconnect_base_delay = 1.0  # Base delay for exponential backoff
-        self.last_health_check = 0
-        self.health_check_interval = 30  # Check connection health every 30 seconds
         
     def is_connection_alive(self):
         """Check if the WebSocket connection is actually alive"""
@@ -102,7 +100,6 @@ class OrchestratorClient:
                 self.connected = True
                 self.running = True
                 self.reconnect_attempts = 0  # Reset on successful connection
-                self.last_health_check = 0  # Reset health check timer to allow grace period
                 
                 if is_reconnect:
                     print("✓ Reconnected to conversation-orchestrator")
@@ -357,34 +354,6 @@ class OrchestratorClient:
                 )
             self.connected = False
             return False
-    
-    async def check_connection_health(self):
-        """Periodically check if connection is still healthy (silent check)"""
-        import time
-        current_time = time.time()
-        
-        # Only check at intervals to avoid overhead
-        if current_time - self.last_health_check < self.health_check_interval:
-            return True
-        
-        self.last_health_check = current_time
-        
-        # Check if connection is alive (silently - no logging on success)
-        if not self.is_connection_alive():
-            # Only log when health check actually fails
-            print("⚠️  Connection health check failed: connection not alive")
-            if self.logger:
-                self.logger.warning(
-                    "connection_health_check_failed",
-                    extra={
-                        "user_id": Config.USER_ID,
-                        "device_id": Config.DEVICE_ID
-                    }
-                )
-            return False
-        
-        # Health check passed - no logging needed
-        return True
     
     async def receive_message(self):
         """Receive and return a message from orchestrator"""

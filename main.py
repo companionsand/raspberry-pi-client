@@ -232,21 +232,6 @@ class KinClient:
                     print("🛑 Shutdown requested, exiting main loop...")
                     break
                 
-                # Periodic connection health check
-                if not await self.orchestrator_client.check_connection_health():
-                    # Connection is unhealthy, attempt to reconnect
-                    print("⚠️  Connection unhealthy, attempting to reconnect...")
-                    self.led_controller.set_state(LEDController.STATE_ERROR)
-                    
-                    # Attempt reconnection
-                    reconnected = await self.orchestrator_client.reconnect()
-                    if reconnected:
-                        self.led_controller.set_state(LEDController.STATE_IDLE)
-                    else:
-                        # Failed to reconnect, continue loop and try again later
-                        await asyncio.sleep(5)
-                        continue
-                
                 # Check if wake word was detected
                 if self.wake_detector.detected and not self.conversation_active:
                     self.wake_detector.detected = False
