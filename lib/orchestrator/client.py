@@ -37,15 +37,26 @@ class OrchestratorClient:
         if not self.websocket:
             self.connected = False
             return False
-        # Check if websocket is open (more compatible than checking 'closed')
+        # Check if websocket is open and not closed
         try:
-            if not self.websocket.open:
-                self.connected = False
-                return False
-        except AttributeError:
-            # Fallback if 'open' attribute doesn't exist
-            self.connected = False
-            return False
+            # Check the state attribute which is more reliable than 'open'
+            # State 1 = OPEN, State 2 = CLOSING, State 3 = CLOSED
+            if hasattr(self.websocket, 'state'):
+                from websockets.protocol import State
+                if self.websocket.state != State.OPEN:
+                    self.connected = False
+                    return False
+            # Fallback to 'open' attribute if state not available
+            elif hasattr(self.websocket, 'open'):
+                if not self.websocket.open:
+                    self.connected = False
+                    return False
+            # If neither attribute exists, assume connection is alive
+            # (will fail on actual send/recv if not)
+        except (AttributeError, ImportError):
+            # If we can't check the state, rely on connected flag
+            # Actual send/recv operations will catch connection failures
+            pass
         return True
     
     async def connect(self, is_reconnect=False):
@@ -91,6 +102,7 @@ class OrchestratorClient:
                 self.connected = True
                 self.running = True
                 self.reconnect_attempts = 0  # Reset on successful connection
+                self.last_health_check = 0  # Reset health check timer to allow grace period
                 
                 if is_reconnect:
                     print("✓ Reconnected to conversation-orchestrator")

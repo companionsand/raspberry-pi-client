@@ -278,8 +278,9 @@ class KinClient:
                     # Update activity - message received
                     self._update_activity()
                     await self._handle_orchestrator_message(message)
-                elif not self.orchestrator_client.is_connection_alive() and not self.conversation_active:
-                    # Connection lost, attempt to reconnect (only if not in conversation)
+                elif not self.orchestrator_client.connected and not self.conversation_active:
+                    # Connection lost (detected by receive_message setting connected=False)
+                    # Attempt to reconnect only if not in conversation
                     print("⚠️  Connection lost, attempting to reconnect...")
                     self.led_controller.set_state(LEDController.STATE_ERROR)
                     
