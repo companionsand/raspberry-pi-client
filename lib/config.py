@@ -27,7 +27,7 @@ class Config:
     ORCHESTRATOR_URL = os.getenv("CONVERSATION_ORCHESTRATOR_URL", "ws://localhost:8001/ws")
     
     # Audio settings (ALSA-only, single ReSpeaker device for both capture and playback)
-    SAMPLE_RATE = 16000  # 16kHz for both capture and playback (may be overridden by backend)
+    SAMPLE_RATE = 16000  # 16kHz for both capture and playback (hardcoded)
     CHANNELS = 1  # Mono (ReSpeaker AEC expects mono reference)
     CHUNK_SIZE = 512  # ~32ms frames for low latency
     
@@ -101,18 +101,16 @@ class Config:
         cls.WAKE_WORD = system_config.get("wake_word", "porcupine")
         cls.LED_ENABLED = system_config.get("led_enabled", "true").lower() == "true"
         cls.OTEL_ENABLED = system_config.get("otel_enabled", "true").lower() == "true"
-        cls.OTEL_EXPORTER_ENDPOINT = system_config.get("otel_endpoint", "http://localhost:4318")
         
-        # Override sample rate if provided
-        sample_rate_str = system_config.get("sample_rate")
-        if sample_rate_str:
-            try:
-                cls.SAMPLE_RATE = int(sample_rate_str)
-            except (ValueError, TypeError):
-                pass
+        # OTEL endpoint is ALWAYS the local collector on the device
+        # The local collector forwards to the central endpoint (configured by wrapper)
+        cls.OTEL_EXPORTER_ENDPOINT = "http://localhost:4318"
+        
+        # Note: SAMPLE_RATE is hardcoded (16000 Hz) - not configurable
         
         print(f"✓ Runtime configuration loaded")
         print(f"   Wake Word: {cls.WAKE_WORD}")
+        print(f"   Sample Rate: {cls.SAMPLE_RATE} Hz")
         print(f"   OTEL Enabled: {cls.OTEL_ENABLED}")
         print(f"   LED Enabled: {cls.LED_ENABLED}")
 
