@@ -39,7 +39,7 @@ logging.basicConfig(
 
 # Import local modules
 from lib.config import Config
-from lib.auth import authenticate_with_supabase
+from lib.auth import authenticate
 from lib.audio import get_audio_devices, verify_audio_setup, LEDController
 from lib.wake_word import WakeWordDetector
 from lib.orchestrator import OrchestratorClient
@@ -188,10 +188,10 @@ class KinClient:
         # Validate configuration
         Config.validate()
         
-        # Authenticate with Supabase
-        if not authenticate_with_supabase():
+        # Authenticate device and fetch runtime configuration
+        if not authenticate():
             self.led_controller.set_state(LEDController.STATE_ERROR)
-            print("✗ Failed to authenticate with Supabase")
+            print("✗ Failed to authenticate device")
             return
         
         # Verify and detect audio devices

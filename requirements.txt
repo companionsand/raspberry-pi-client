@@ -13,8 +13,12 @@ certifi>=2023.0.0
 # Environment and configuration
 python-dotenv>=1.0.0
 
-# Supabase authentication
+# Supabase authentication (optional - backward compatibility)
 supabase>=2.0.0
+
+# Device authentication
+cryptography>=41.0.0
+requests>=2.31.0
 
 # LED control for ReSpeaker (optional)
 pixel-ring>=0.1.0

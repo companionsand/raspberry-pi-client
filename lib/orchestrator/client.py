@@ -54,17 +54,17 @@ class OrchestratorClient:
             print(f"\n🔄 Reconnecting to conversation-orchestrator (attempt {self.reconnect_attempts + 1}/{self.max_reconnect_attempts})...")
         else:
             print(f"\n🔌 Connecting to conversation-orchestrator...")
-            print(f"   URL: {Config.CONVERSATION_ORCHESTRATOR_URL}")
+            print(f"   URL: {Config.ORCHESTRATOR_URL}")
         
         try:
             # Create SSL context if using wss://
             ssl_context = None
-            if Config.CONVERSATION_ORCHESTRATOR_URL.startswith("wss://"):
+            if Config.ORCHESTRATOR_URL.startswith("wss://"):
                 ssl_context = ssl.create_default_context(cafile=certifi.where())
             
             # Connect to WebSocket
             self.websocket = await websockets.connect(
-                Config.CONVERSATION_ORCHESTRATOR_URL,
+                Config.ORCHESTRATOR_URL,
                 ssl=ssl_context
             )
             
@@ -95,7 +95,7 @@ class OrchestratorClient:
                     logger.info(
                         "conversation_orchestrator_connected",
                         extra={
-                            "url": Config.CONVERSATION_ORCHESTRATOR_URL,
+                            "url": Config.ORCHESTRATOR_URL,
                             "user_id": Config.USER_ID,
                             "device_id": Config.DEVICE_ID,
                             "is_reconnect": is_reconnect
