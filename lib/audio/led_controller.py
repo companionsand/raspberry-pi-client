@@ -44,7 +44,7 @@ class LEDController:
         'wake_word_1': (100, 149, 237), # Cornflower blue
         'wake_word_2': (255, 228, 181), # Warm white
         'wake_word_3': (244, 162, 97),  # Amber
-        'conversation': (0, 255, 0),    # Green - active engagement
+        'conversation': (255, 255, 255),    # Green - active engagement
         'error': (255, 107, 107),       # Soft red - non-alarming indicator
         'off': (0, 0, 0)                # No light
     }
@@ -313,8 +313,8 @@ class LEDController:
         
         CYCLE_SECONDS = 2.0  # 2 second pulse (faster than idle, shows activity)
         UPDATE_INTERVAL = 0.05  # 50ms updates
-        MIN_BRIGHTNESS = 0.2  # 20% minimum
-        MAX_BRIGHTNESS = 0.5  # 50% maximum
+        MIN_BRIGHTNESS = 0.6  # 20% minimum
+        MAX_BRIGHTNESS = 1  # 50% maximum
         
         base_color = self.COLORS['conversation']  # Green
         start_time = time.time()
