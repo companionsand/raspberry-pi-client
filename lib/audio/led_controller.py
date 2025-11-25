@@ -22,10 +22,10 @@ class LEDController:
     
     LED States:
     - BOOT: Soft amber pulse (20-40% brightness) during startup
-    - IDLE: Soft breathing (50-70% brightness) in white when ready
+    - IDLE: Soft breathing (20-100% brightness) in white when ready
     - WAKE_WORD_DETECTED: Very visible burst at 100% brightness with amber/gold/orange/white
     - CONVERSATION: Pulsating amber/gold (70-90% brightness) when listening
-    - SPEAKING: White at 90% brightness, beating with voice energy
+    - SPEAKING: White at 40-100% brightness, beating with voice energy
     - ERROR: Soft red slow blink (2s on/off) for issues
     - OFF: No lights during shutdown
     """
@@ -43,7 +43,7 @@ class LEDController:
     # Colors are applied with brightness multipliers for visibility
     COLORS = {
         'boot': (244, 162, 97),         # Soft amber - warm startup
-        'idle': (244, 162, 97),        # White - clear presence
+        'idle': (255, 255, 255),        # White - clear presence
         'wake_word_amber': (255, 180, 20),  # Amber/Gold - visible through red tinted glass
         'wake_word_orange': (255, 120, 0),  # Orange - visible through red tinted glass
         'wake_word_white': (255, 228, 181),  # Warm white - visible through red tinted glass
@@ -105,7 +105,7 @@ class LEDController:
         state_names = {
             self.STATE_OFF: "OFF (no lights)",
             self.STATE_BOOT: "BOOT (soft amber pulse)",
-            self.STATE_IDLE: "IDLE (white breathing 50-70%)",
+            self.STATE_IDLE: "IDLE (white breathing 20-100%)",
             self.STATE_WAKE_WORD_DETECTED: "WAKE_WORD_DETECTED (100% brightness burst - amber/gold/orange/white)",
             self.STATE_CONVERSATION: "CONVERSATION (amber/gold pulsing 70-90%)",
             self.STATE_SPEAKING: "SPEAKING (white 40-100% beating with voice)",
@@ -136,6 +136,12 @@ class LEDController:
         elif state == self.STATE_CONVERSATION:
             # Pulsating white during conversation
             self._start_animation(self._conversation_pulse_loop)
+        
+        elif state == self.STATE_SPEAKING:
+            # Audio-reactive state - no animation loop needed
+            # LEDs will be updated directly by update_speaking_leds()
+            # Just ensure any previous animation is stopped (already done above)
+            pass
         
         elif state == self.STATE_ERROR:
             # Soft red slow blink (2s on/off)
@@ -224,7 +230,7 @@ class LEDController:
     
     async def _idle_breathing_loop(self):
         """
-        White breathing effect for IDLE state (10-60% brightness).
+        White breathing effect for IDLE state (20-100% brightness).
         Clear, visible presence indicating device is ready.
         """
         if not self.enabled or not self.pixel_ring:
@@ -305,7 +311,7 @@ class LEDController:
     
     async def _conversation_pulse_loop(self):
         """
-        Pulsating amber/gold during conversation when listening (0-90% brightness).
+        Pulsating amber/gold during conversation when listening (70-90% brightness).
         Indicates device is engaged in conversation but not currently speaking.
         Warm, inviting color that shows the device is ready to listen.
         """
@@ -314,8 +320,8 @@ class LEDController:
         
         CYCLE_SECONDS = 2.0  # 2 second pulse (faster than idle, shows activity)
         UPDATE_INTERVAL = 0.05  # 50ms updates
-        MIN_BRIGHTNESS = 0.0  # 70% minimum
-        MAX_BRIGHTNESS = 0.8  # 90% maximum
+        MIN_BRIGHTNESS = 0.7  # 70% minimum
+        MAX_BRIGHTNESS = 0.9  # 90% maximum
         
         base_color = self.COLORS['conversation']  # Amber/Gold (255, 180, 20)
         start_time = time.time()
@@ -407,11 +413,10 @@ class LEDController:
                 self.set_state(self.STATE_CONVERSATION)
             return
         
-        # Mark that we're in speaking state and stop any background animations
-        # Only do this if we have actual audio (not silence)
+        # Transition to speaking state if not already there
+        # This properly cancels any running animation (like _conversation_pulse_loop)
         if self.current_state != self.STATE_SPEAKING:
-            self.current_state = self.STATE_SPEAKING
-            self._stop_animation()
+            self.set_state(self.STATE_SPEAKING)
         
         # Normalize energy: int16 max is 32767, but typical speech peaks around 15000-20000
         # Using 20000 gives more headroom so it doesn't saturate at 100% constantly
@@ -425,7 +430,7 @@ class LEDController:
         # - Base brightness: 40% (dimmer baseline to allow visible upward pulse)
         # - Modulation: +60% based on voice energy (swings from 40% to 100%)
         # This creates a massive dynamic range for the "beating" effect
-        base_brightness = 0.2
+        base_brightness = 0.4
         modulation_range = 0.6
         brightness = base_brightness + (modulation_range * normalized_energy)
         
