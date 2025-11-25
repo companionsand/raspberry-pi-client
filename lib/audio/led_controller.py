@@ -24,8 +24,8 @@ class LEDController:
     - BOOT: Soft amber pulse (20-40% brightness) during startup
     - IDLE: Soft breathing (20-100% brightness) in white when ready
     - WAKE_WORD_DETECTED: Very visible burst at 100% brightness with amber/gold/orange/white
-    - CONVERSATION: Pulsating amber/gold (70-90% brightness) when listening
-    - SPEAKING: White at 40-100% brightness, beating with voice energy
+    - CONVERSATION: Pulsating amber/gold (0-70% brightness) when listening, fast pulse (1.5s)
+    - SPEAKING: White at 20-100% brightness, beating with voice energy
     - ERROR: Soft red slow blink (2s on/off) for issues
     - OFF: No lights during shutdown
     """
@@ -107,8 +107,8 @@ class LEDController:
             self.STATE_BOOT: "BOOT (soft amber pulse)",
             self.STATE_IDLE: "IDLE (white breathing 20-100%)",
             self.STATE_WAKE_WORD_DETECTED: "WAKE_WORD_DETECTED (100% brightness burst - amber/gold/orange/white)",
-            self.STATE_CONVERSATION: "CONVERSATION (amber/gold pulsing 70-90%)",
-            self.STATE_SPEAKING: "SPEAKING (white 40-100% beating with voice)",
+            self.STATE_CONVERSATION: "CONVERSATION (amber/gold pulsing 0-70%, 1.5s cycle)",
+            self.STATE_SPEAKING: "SPEAKING (white 20-100% beating with voice)",
             self.STATE_ERROR: "ERROR (soft red blink)"
         }
         print(f"💡 LED: {state_names.get(state, f'UNKNOWN({state})')}")
@@ -311,17 +311,18 @@ class LEDController:
     
     async def _conversation_pulse_loop(self):
         """
-        Pulsating amber/gold during conversation when listening (70-90% brightness).
+        Pulsating amber/gold during conversation when listening (0-70% brightness).
+        Faster pulse rate (1.5s cycle) compared to idle for more active feel.
         Indicates device is engaged in conversation but not currently speaking.
         Warm, inviting color that shows the device is ready to listen.
         """
         if not self.enabled or not self.pixel_ring:
             return
         
-        CYCLE_SECONDS = 2.0  # 2 second pulse (faster than idle, shows activity)
+        CYCLE_SECONDS = 1.5  # 1.5 second pulse (much faster than idle, shows activity)
         UPDATE_INTERVAL = 0.05  # 50ms updates
-        MIN_BRIGHTNESS = 0.7  # 70% minimum
-        MAX_BRIGHTNESS = 0.9  # 90% maximum
+        MIN_BRIGHTNESS = 0.0  # 0% minimum (dims to black)
+        MAX_BRIGHTNESS = 0.7  # 70% maximum
         
         base_color = self.COLORS['conversation']  # Amber/Gold (255, 180, 20)
         start_time = time.time()
@@ -385,7 +386,7 @@ class LEDController:
         Creates a dynamic "breathing with the voice" effect that makes the interaction
         feel more alive and responsive.
         
-        The effect swings from 40% to 100% brightness based on volume, with non-linear
+        The effect swings from 20% to 100% brightness based on volume, with non-linear
         scaling to make the "beat" more punchy and visible.
         
         Args:
@@ -427,15 +428,15 @@ class LEDController:
         normalized_energy = normalized_energy ** 1.5
         
         # Map energy to brightness range:
-        # - Base brightness: 40% (dimmer baseline to allow visible upward pulse)
-        # - Modulation: +60% based on voice energy (swings from 40% to 100%)
+        # - Base brightness: 20% (dimmer baseline for more dramatic upward pulse)
+        # - Modulation: +80% based on voice energy (swings from 20% to 100%)
         # This creates a massive dynamic range for the "beating" effect
-        base_brightness = 0.4
-        modulation_range = 0.6
+        base_brightness = 0.2
+        modulation_range = 0.8
         brightness = base_brightness + (modulation_range * normalized_energy)
         
-        # Clamp brightness to valid range (40% to 100%)
-        brightness = max(0.4, min(1.0, brightness))
+        # Clamp brightness to valid range (20% to 100%)
+        brightness = max(0.2, min(1.0, brightness))
         
         # Use white color for speaking state
         base_color = self.COLORS['speaking']  # White (255, 255, 255)
