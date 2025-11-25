@@ -232,8 +232,8 @@ class LEDController:
         
         CYCLE_SECONDS = 4.0  # 4 second breathing cycle (calm, steady)
         UPDATE_INTERVAL = 0.1  # 50ms updates
-        MIN_BRIGHTNESS = 0.05  # 5% minimum
-        MAX_BRIGHTNESS = 0.8  # 80% maximum
+        MIN_BRIGHTNESS = 0.2  # 5% minimum
+        MAX_BRIGHTNESS = 1  # 80% maximum
         
         base_color = self.COLORS['idle']  # White
         start_time = time.time()
