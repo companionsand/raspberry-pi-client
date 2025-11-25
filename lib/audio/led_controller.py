@@ -43,7 +43,7 @@ class LEDController:
     # Colors are applied with brightness multipliers for visibility
     COLORS = {
         'boot': (244, 162, 97),         # Soft amber - warm startup
-        'idle': (255, 255, 255),        # White - clear presence
+        'idle': (244, 162, 97),        # White - clear presence
         'wake_word_amber': (255, 180, 20),  # Amber/Gold - visible through red tinted glass
         'wake_word_orange': (255, 120, 0),  # Orange - visible through red tinted glass
         'wake_word_white': (255, 228, 181),  # Warm white - visible through red tinted glass
@@ -232,8 +232,8 @@ class LEDController:
         
         CYCLE_SECONDS = 4.0  # 4 second breathing cycle (calm, steady)
         UPDATE_INTERVAL = 0.1  # 50ms updates
-        MIN_BRIGHTNESS = 0.1  # 50% minimum
-        MAX_BRIGHTNESS = 0.7  # 70% maximum
+        MIN_BRIGHTNESS = 0.05  # 5% minimum
+        MAX_BRIGHTNESS = 0.8  # 80% maximum
         
         base_color = self.COLORS['idle']  # White
         start_time = time.time()
