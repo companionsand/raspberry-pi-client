@@ -236,10 +236,10 @@ class LEDController:
         if not self.enabled or not self.pixel_ring:
             return
         
-        CYCLE_SECONDS = 4.0  # 4 second breathing cycle (calm, steady)
+        CYCLE_SECONDS = 3.0  # 4 second breathing cycle (calm, steady)
         UPDATE_INTERVAL = 0.1  # 50ms updates
-        MIN_BRIGHTNESS = 0.2  # 5% minimum
-        MAX_BRIGHTNESS = 1  # 80% maximum
+        MIN_BRIGHTNESS = 0.2  # 20% minimum
+        MAX_BRIGHTNESS = 1  # 100% maximum
         
         base_color = self.COLORS['idle']  # White
         start_time = time.time()
