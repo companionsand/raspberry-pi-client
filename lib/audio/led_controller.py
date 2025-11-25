@@ -327,6 +327,9 @@ class LEDController:
         base_color = self.COLORS['conversation']  # Amber/Gold (255, 180, 20)
         start_time = time.time()
         
+        # Diagnostic: Log when conversation pulse loop starts
+        print("💡 LED diag: starting CONVERSATION pulse loop (0-70%, 1.5s cycle)")
+        
         try:
             while self.current_state == self.STATE_CONVERSATION:
                 elapsed = time.time() - start_time
@@ -411,6 +414,7 @@ class LEDController:
         if rms < SILENCE_THRESHOLD:
             # Return to conversation state (listening mode) if we were speaking
             if self.current_state == self.STATE_SPEAKING:
+                print(f"💡 LED diag: silence detected (rms={rms:.1f}) -> CONVERSATION")
                 self.set_state(self.STATE_CONVERSATION)
             return
         
@@ -437,6 +441,9 @@ class LEDController:
         
         # Clamp brightness to valid range (20% to 100%)
         brightness = max(0.2, min(1.0, brightness))
+        
+        # Diagnostic: Log RMS, normalized energy, and brightness for each audio chunk
+        print(f"💡 LED diag: speaking rms={rms:.1f} normalized={normalized_energy:.2f} brightness={brightness:.2f}")
         
         # Use white color for speaking state
         base_color = self.COLORS['speaking']  # White (255, 255, 255)
