@@ -108,7 +108,7 @@ class LEDController:
             self.STATE_IDLE: "IDLE (white breathing 50-70%)",
             self.STATE_WAKE_WORD_DETECTED: "WAKE_WORD_DETECTED (100% brightness burst - amber/gold/orange/white)",
             self.STATE_CONVERSATION: "CONVERSATION (amber/gold pulsing 70-90%)",
-            self.STATE_SPEAKING: "SPEAKING (white 90% beating with voice)",
+            self.STATE_SPEAKING: "SPEAKING (white 40-100% beating with voice)",
             self.STATE_ERROR: "ERROR (soft red blink)"
         }
         print(f"💡 LED: {state_names.get(state, f'UNKNOWN({state})')}")
@@ -375,9 +375,12 @@ class LEDController:
         Call this for every audio chunk played by the agent to create real-time
         audio-reactive LED visualization.
         
-        Uses white color at 90% base brightness, beating/pulsing with voice energy.
+        Uses white color at dynamic brightness, beating/pulsing with voice energy.
         Creates a dynamic "breathing with the voice" effect that makes the interaction
         feel more alive and responsive.
+        
+        The effect swings from 40% to 100% brightness based on volume, with non-linear
+        scaling to make the "beat" more punchy and visible.
         
         Args:
             audio_chunk: numpy array of int16 audio samples from the agent
@@ -410,20 +413,24 @@ class LEDController:
             self.current_state = self.STATE_SPEAKING
             self._stop_animation()
         
-        # Normalize energy: int16 max is 32767, but typical speech peaks around 15000
-        # Using 15000 as denominator gives good visual response to normal speech levels
-        normalized_energy = min(rms / 15000.0, 1.0)
+        # Normalize energy: int16 max is 32767, but typical speech peaks around 15000-20000
+        # Using 20000 gives more headroom so it doesn't saturate at 100% constantly
+        normalized_energy = min(rms / 20000.0, 1.0)
+        
+        # Apply non-linear scaling (gamma) to make the beat more pronounced
+        # Squaring/powering makes quiet sounds dimmer and loud sounds punchier
+        normalized_energy = normalized_energy ** 1.5
         
         # Map energy to brightness range:
-        # - Base brightness: 90% (bright white when speaking)
-        # - Modulation: ±10% based on voice energy (80% to 100%)
-        # This creates a "beating with voice" effect - bright base with energy-based pulsing
-        base_brightness = 0.9  # 90% base brightness
-        modulation_range = 0.1  # ±10% modulation
-        brightness = base_brightness - (modulation_range * (1.0 - normalized_energy))
+        # - Base brightness: 40% (dimmer baseline to allow visible upward pulse)
+        # - Modulation: +60% based on voice energy (swings from 40% to 100%)
+        # This creates a massive dynamic range for the "beating" effect
+        base_brightness = 0.4
+        modulation_range = 0.6
+        brightness = base_brightness + (modulation_range * normalized_energy)
         
-        # Clamp brightness to valid range (80% to 100%)
-        brightness = max(0.8, min(1.0, brightness))
+        # Clamp brightness to valid range (40% to 100%)
+        brightness = max(0.4, min(1.0, brightness))
         
         # Use white color for speaking state
         base_color = self.COLORS['speaking']  # White (255, 255, 255)
