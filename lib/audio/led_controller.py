@@ -224,15 +224,15 @@ class LEDController:
     
     async def _idle_breathing_loop(self):
         """
-        White breathing effect for IDLE state (50-70% brightness).
+        White breathing effect for IDLE state (10-60% brightness).
         Clear, visible presence indicating device is ready.
         """
         if not self.enabled or not self.pixel_ring:
             return
         
         CYCLE_SECONDS = 4.0  # 4 second breathing cycle (calm, steady)
-        UPDATE_INTERVAL = 0.05  # 50ms updates
-        MIN_BRIGHTNESS = 0.5  # 50% minimum
+        UPDATE_INTERVAL = 0.1  # 50ms updates
+        MIN_BRIGHTNESS = 0.1  # 50% minimum
         MAX_BRIGHTNESS = 0.7  # 70% maximum
         
         base_color = self.COLORS['idle']  # White
@@ -305,7 +305,7 @@ class LEDController:
     
     async def _conversation_pulse_loop(self):
         """
-        Pulsating amber/gold during conversation when listening (70-90% brightness).
+        Pulsating amber/gold during conversation when listening (0-90% brightness).
         Indicates device is engaged in conversation but not currently speaking.
         Warm, inviting color that shows the device is ready to listen.
         """
@@ -314,8 +314,8 @@ class LEDController:
         
         CYCLE_SECONDS = 2.0  # 2 second pulse (faster than idle, shows activity)
         UPDATE_INTERVAL = 0.05  # 50ms updates
-        MIN_BRIGHTNESS = 0.7  # 70% minimum
-        MAX_BRIGHTNESS = 0.9  # 90% maximum
+        MIN_BRIGHTNESS = 0.0  # 70% minimum
+        MAX_BRIGHTNESS = 0.8  # 90% maximum
         
         base_color = self.COLORS['conversation']  # Amber/Gold (255, 180, 20)
         start_time = time.time()
@@ -425,7 +425,7 @@ class LEDController:
         # - Base brightness: 40% (dimmer baseline to allow visible upward pulse)
         # - Modulation: +60% based on voice energy (swings from 40% to 100%)
         # This creates a massive dynamic range for the "beating" effect
-        base_brightness = 0.4
+        base_brightness = 0.2
         modulation_range = 0.6
         brightness = base_brightness + (modulation_range * normalized_energy)
         
