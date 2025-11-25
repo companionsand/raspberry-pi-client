@@ -462,7 +462,8 @@ class KinClient:
                     agent_id,
                     mic_device_index=self.mic_device_index,
                     speaker_device_index=self.speaker_device_index,
-                    user_terminate_flag=self.user_terminate
+                    user_terminate_flag=self.user_terminate,
+                    led_controller=self.led_controller  # Pass LED controller for audio-reactive feedback
                 )
                 await client.start(self.orchestrator_client)
             

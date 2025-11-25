@@ -19,7 +19,7 @@ class ElevenLabsConversationClient:
     
     def __init__(self, web_socket_url: str, agent_id: str, 
                  mic_device_index=None, speaker_device_index=None,
-                 user_terminate_flag=None):
+                 user_terminate_flag=None, led_controller=None):
         """
         Initialize ElevenLabs conversation client.
         
@@ -29,6 +29,7 @@ class ElevenLabsConversationClient:
             mic_device_index: Microphone device index (None for default)
             speaker_device_index: Speaker device index (None for default)
             user_terminate_flag: Mutable flag [False] for user termination
+            led_controller: LEDController instance for visual feedback (optional)
         """
         self.web_socket_url = web_socket_url
         self.agent_id = agent_id
@@ -43,6 +44,7 @@ class ElevenLabsConversationClient:
         self.silence_timeout = 30.0  # seconds
         self.last_audio_time = None
         self.user_terminate_flag = user_terminate_flag  # Reference to shared flag
+        self.led_controller = led_controller  # LED controller for visual feedback
         self.logger = Config.LOGGER
         
     async def start(self, orchestrator_client: OrchestratorClient):
@@ -265,6 +267,11 @@ class ElevenLabsConversationClient:
                     if audio_b64:
                         audio_bytes = base64.b64decode(audio_b64)
                         audio_array = np.frombuffer(audio_bytes, dtype=np.int16)
+                        
+                        # Update LEDs synchronized with agent speech (audio-reactive)
+                        if self.led_controller:
+                            self.led_controller.update_speaking_leds(audio_array)
+                        
                         self.audio_stream.write(audio_array)
                         self.last_audio_time = time.time()  # Reset silence timer
                 
