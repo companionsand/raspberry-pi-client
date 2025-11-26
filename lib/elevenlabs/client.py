@@ -12,6 +12,7 @@ import sounddevice as sd
 import numpy as np
 from lib.config import Config
 from lib.orchestrator.client import OrchestratorClient
+from lib.local_storage import ContextManager
 
 
 class ElevenLabsConversationClient:
@@ -102,9 +103,26 @@ class ElevenLabsConversationClient:
                         }
                     )
                 
-                # Send conversation initiation
+                # Get dynamic variables from context manager
+                context_manager = ContextManager()
+                dynamic_variables = context_manager.get_dynamic_variables()
+                
+                # Log dynamic variables being sent
+                if logger:
+                    logger.info(
+                        "sending_dynamic_variables",
+                        extra={
+                            "conversation_id": self.conversation_id,
+                            "has_location": context_manager.has_location_data,
+                            "has_weather": context_manager.has_weather_data,
+                            "variable_count": len(dynamic_variables)
+                        }
+                    )
+                
+                # Send conversation initiation with dynamic variables
                 await websocket.send(json.dumps({
-                    "type": "conversation_initiation_client_data"
+                    "type": "conversation_initiation_client_data",
+                    "dynamic_variables": dynamic_variables
                 }))
                 
                 print("✓ Conversation started - speak now!")

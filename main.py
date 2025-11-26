@@ -44,6 +44,7 @@ from lib.audio import get_audio_devices, verify_audio_setup, LEDController
 from lib.wake_word import WakeWordDetector
 from lib.orchestrator import OrchestratorClient
 from lib.elevenlabs import ElevenLabsConversationClient
+from lib.local_storage import ContextManager
 
 # Import telemetry (optional - graceful degradation)
 try:
@@ -74,7 +75,8 @@ class KinClient:
     
     def __init__(self):
         self.wake_detector = None
-        self.orchestrator_client = OrchestratorClient()
+        self.context_manager = ContextManager()
+        self.orchestrator_client = OrchestratorClient(context_manager=self.context_manager)
         self.led_controller = None
         self.running = True
         self.conversation_active = False
@@ -195,6 +197,18 @@ class KinClient:
         self.led_controller = LEDController(enabled=Config.LED_ENABLED)
         self.led_controller.set_state(LEDController.STATE_BOOT)
         
+        # Initialize context manager with logger
+        self.context_manager.set_logger(self.logger)
+        
+        # Start context manager (performs initial fetch with timeout)
+        print("📍 Fetching location and weather data...")
+        await self.context_manager.start()
+        
+        if self.context_manager.has_location_data and self.context_manager.has_weather_data:
+            print("✓ Location and weather data loaded")
+        else:
+            print("⚠️  Location/weather data unavailable - continuing with time data only")
+        
         # Verify and detect audio devices
         verify_audio_setup()
         self.mic_device_index, self.speaker_device_index, self.has_hardware_aec = get_audio_devices()
@@ -273,6 +287,8 @@ class KinClient:
                     reconnected = await self.orchestrator_client.reconnect()
                     if reconnected:
                         self.led_controller.set_state(LEDController.STATE_IDLE)
+                        # Refresh location/weather data on reconnection
+                        asyncio.create_task(self.context_manager.force_refresh())
                     else:
                         # Failed to reconnect, wait and try again
                         await asyncio.sleep(5)
@@ -533,6 +549,10 @@ class KinClient:
         """Clean up resources gracefully"""
         print("\n🧹 Cleaning up...")
         self.running = False
+        
+        # Stop context manager
+        if self.context_manager:
+            await self.context_manager.stop()
         
         # Stop LED animations and turn off
         if self.led_controller:

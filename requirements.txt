@@ -20,6 +20,9 @@ supabase>=2.0.0
 cryptography>=41.0.0
 requests>=2.31.0
 
+# Async HTTP client for location and weather
+aiohttp>=3.9.0
+
 # LED control for ReSpeaker (optional)
 pixel-ring>=0.1.0
 

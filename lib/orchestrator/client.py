@@ -19,7 +19,7 @@ except ImportError:
 class OrchestratorClient:
     """WebSocket client for conversation-orchestrator with full telemetry support"""
     
-    def __init__(self):
+    def __init__(self, context_manager=None):
         self.websocket = None
         self.connected = False
         self.running = False
@@ -27,6 +27,7 @@ class OrchestratorClient:
         self.reconnect_attempts = 0
         self.max_reconnect_attempts = 10
         self.reconnect_base_delay = 1.0  # Base delay for exponential backoff
+        self.context_manager = context_manager
         
     def is_connection_alive(self):
         """Check if the WebSocket connection is actually alive"""
@@ -84,13 +85,26 @@ class OrchestratorClient:
             )
             
             # Wait for connection acceptance (FastAPI accepts first)
-            # Then send authentication
-            await self.websocket.send(json.dumps({
+            # Then send authentication with device metadata
+            auth_message = {
                 "type": "auth",
                 "token": Config.AUTH_TOKEN,
                 "device_id": Config.DEVICE_ID,
                 "user_id": Config.USER_ID,
-            }))
+            }
+            
+            # Include location if available from context manager
+            if self.context_manager and self.context_manager.has_location_data:
+                location_data = self.context_manager._location_data
+                if location_data:
+                    city = location_data.get('city', '')
+                    region = location_data.get('region', '')
+                    country = location_data.get('country', '')
+                    location_parts = [p for p in [city, region, country] if p]
+                    if location_parts:
+                        auth_message['current_location'] = ', '.join(location_parts)
+            
+            await self.websocket.send(json.dumps(auth_message))
             
             # Wait for connection confirmation
             response = await self.websocket.recv()
