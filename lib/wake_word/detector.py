@@ -49,7 +49,12 @@ class WakeWordDetector:
         # VAD state: Combined state tensor for Silero VAD v5
         # Shape: (2, 1, 128) for v5 (was separate h/c with shape (2,1,64) in v4)
         self._vad_state = np.zeros((2, 1, 128), dtype=np.float32)
-        self._vad_threshold = 0.5  # Speech probability threshold
+        self._vad_threshold = 0.3  # Lowered to 0.3 to catch softer consonants
+        
+        # Hangover: Keep gate open for ~1 second after speech stops
+        # Prevents wake word from being chopped during natural pauses ("Hey... Kin")
+        self._hangover_frames = 30  # ~1 second at 32ms/frame
+        self._hangover_counter = 0   # Current frames remaining
         
         # Debug counters for VAD gate diagnostics
         self._vad_frame_count = 0  # Total frames processed
@@ -184,37 +189,55 @@ class WakeWordDetector:
             # Convert to float32 normalized [-1, 1] for Silero VAD
             audio_float = audio_frame.astype(np.float32) / 32768.0
             
-            # Run VAD inference (Silero VAD v5 API)
-            try:
-                ort_inputs = {
-                    'input': audio_float.reshape(1, -1),
-                    'sr': np.array([16000], dtype=np.int64),
-                    'state': self._vad_state
-                }
-                outs = self._vad_session.run(None, ort_inputs)
-                speech_prob = outs[0][0][0]  # First output is probability
-                self._vad_state = outs[1]     # Second output is new state
-                
-                # Periodic diagnostic logging (every 5 seconds)
-                now = time.time()
-                if now - self._vad_last_log_time > 5.0:
-                    pass_rate = (self._vad_passed_count / max(1, self._vad_frame_count)) * 100
-                    print(f"🔍 VAD diag: prob={speech_prob:.2f}, passed={self._vad_passed_count}/{self._vad_frame_count} ({pass_rate:.1f}%)")
-                    self._vad_last_log_time = now
-                    # Reset counters for next period
-                    self._vad_frame_count = 0
-                    self._vad_passed_count = 0
-                
-                # Gate: Skip Porcupine if no speech detected
-                if speech_prob < self._vad_threshold:
-                    return  # Noise/silence - don't waste CPU on Porcupine
-                
-                # Speech detected - increment passed counter
-                self._vad_passed_count += 1
-                
-            except Exception as e:
-                print(f"⚠ VAD inference error: {e}")
-                pass  # VAD failed - fall through to Porcupine anyway
+            # Optimization: Skip VAD if audio is effectively silent (saves CPU)
+            if np.max(np.abs(audio_float)) < 0.001:
+                # Decrement hangover counter if active
+                if self._hangover_counter > 0:
+                    self._hangover_counter -= 1
+                # Check gate with hangover
+                if self._hangover_counter == 0:
+                    return  # Pure silence and no hangover - skip Porcupine
+            else:
+                # Run VAD inference (Silero VAD v5 API)
+                try:
+                    ort_inputs = {
+                        'input': audio_float.reshape(1, -1),
+                        'sr': np.array([16000], dtype=np.int64),
+                        'state': self._vad_state
+                    }
+                    outs = self._vad_session.run(None, ort_inputs)
+                    speech_prob = outs[0][0][0]  # First output is probability
+                    self._vad_state = outs[1]     # Second output is new state (CRITICAL)
+                    
+                    # Hangover logic: Keep gate open for ~1s after speech stops
+                    if speech_prob >= self._vad_threshold:
+                        # Speech detected - reset hangover counter
+                        self._hangover_counter = self._hangover_frames
+                    elif self._hangover_counter > 0:
+                        # Below threshold but hangover active - decrement
+                        self._hangover_counter -= 1
+                    
+                    # Periodic diagnostic logging (every 5 seconds)
+                    now = time.time()
+                    if now - self._vad_last_log_time > 5.0:
+                        pass_rate = (self._vad_passed_count / max(1, self._vad_frame_count)) * 100
+                        gate_status = "OPEN" if (speech_prob >= self._vad_threshold or self._hangover_counter > 0) else "CLOSED"
+                        print(f"🔍 VAD diag: prob={speech_prob:.2f}, hangover={self._hangover_counter}, gate={gate_status}, passed={self._vad_passed_count}/{self._vad_frame_count} ({pass_rate:.1f}%)")
+                        self._vad_last_log_time = now
+                        # Reset counters for next period
+                        self._vad_frame_count = 0
+                        self._vad_passed_count = 0
+                    
+                    # Gate: Only pass if probability high OR hangover active
+                    if speech_prob < self._vad_threshold and self._hangover_counter == 0:
+                        return  # No speech and no hangover - skip Porcupine
+                    
+                    # Gate is open - increment passed counter
+                    self._vad_passed_count += 1
+                    
+                except Exception as e:
+                    print(f"⚠ VAD inference error: {e}")
+                    pass  # VAD failed - fall through to Porcupine anyway
         else:
             # VAD disabled - log warning once
             if self._vad_frame_count == 1:
