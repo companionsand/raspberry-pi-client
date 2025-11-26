@@ -117,6 +117,24 @@ def authenticate_device() -> Optional[Dict[str, Any]]:
         # Check if device is paired
         if not config_data.get("paired"):
             print(f"\n⚠️  {config_data.get('error_message', 'Device not paired with a user')}")
+            
+            # Try to pair using pairing code if available
+            pairing_code = _read_pairing_code()
+            if pairing_code:
+                print(f"   Found pairing code, attempting to pair device...")
+                serial_number = get_serial_number()
+                if serial_number:
+                    if _pair_device(pairing_code, serial_number, orchestrator_base_url):
+                        print("✓ Device paired successfully, retrying authentication...")
+                        # Retry authentication after pairing
+                        return authenticate_device()
+                    else:
+                        print("✗ Failed to pair device with pairing code")
+                else:
+                    print("✗ Could not read device serial number for pairing")
+            else:
+                print("   No pairing code found. Device needs to be paired through WiFi setup.")
+            
             if config_data.get("admin_portal_url"):
                 print(f"   Admin Portal: {config_data['admin_portal_url']}")
             return None
@@ -164,4 +182,93 @@ def get_serial_number() -> Optional[str]:
     except Exception:
         pass
     return None
+
+
+def _read_pairing_code() -> Optional[str]:
+    """
+    Read pairing code from temporary file.
+    
+    Returns:
+        Pairing code string or None if not found
+    """
+    try:
+        with open('/tmp/kin_pairing_code', 'r') as f:
+            code = f.read().strip()
+            if code and len(code) == 4 and code.isdigit():
+                return code
+    except (FileNotFoundError, IOError):
+        pass
+    return None
+
+
+def _pair_device(pairing_code: str, serial_number: str, orchestrator_base_url: str) -> bool:
+    """
+    Pair device with user using pairing code and serial number.
+    
+    Args:
+        pairing_code: 4-digit pairing code
+        serial_number: Device serial number
+        orchestrator_base_url: Base URL of conversation orchestrator
+        
+    Returns:
+        True if pairing successful, False otherwise
+    """
+    logger = Config.LOGGER
+    try:
+        print(f"   Pairing device with code {pairing_code}...")
+        response = requests.post(
+            f"{orchestrator_base_url}/pairing/pair",
+            json={
+                "pairing_code": pairing_code,
+                "serial_number": serial_number
+            },
+            timeout=10
+        )
+        
+        if response.status_code == 200:
+            result = response.json()
+            if result.get("success"):
+                print(f"✓ Device paired successfully")
+                # Remove pairing code file after successful pairing
+                try:
+                    import os
+                    os.remove('/tmp/kin_pairing_code')
+                except:
+                    pass
+                
+                if logger:
+                    logger.info(
+                        "device_paired",
+                        extra={
+                            "device_id": Config.DEVICE_ID,
+                            "serial_number": serial_number,
+                            "pairing_code": pairing_code
+                        }
+                    )
+                return True
+            else:
+                print(f"✗ Pairing failed: {result.get('message', 'Unknown error')}")
+        else:
+            error_data = response.json() if response.content else {}
+            error_msg = error_data.get("detail", f"HTTP {response.status_code}")
+            print(f"✗ Pairing failed: {error_msg}")
+            
+    except requests.exceptions.RequestException as e:
+        print(f"✗ Pairing request failed: {e}")
+        if logger:
+            logger.error(
+                "device_pairing_failed",
+                extra={"error": str(e), "pairing_code": pairing_code},
+                exc_info=True
+            )
+    except Exception as e:
+        print(f"✗ Pairing error: {e}")
+        if logger:
+            logger.error(
+                "device_pairing_error",
+                extra={"error": str(e), "pairing_code": pairing_code},
+                exc_info=True
+            )
+    
+    return False
 
