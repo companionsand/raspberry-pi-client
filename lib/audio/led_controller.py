@@ -53,6 +53,18 @@ class LEDController:
         'off': (0, 0, 0)                # No light
     }
     
+    # -------------------------------------------------------------------------
+    # Configuration Constants
+    # -------------------------------------------------------------------------
+    
+    # Audio timeout: how long to wait after last audio chunk before returning to CONVERSATION
+    # This handles the case where agent stops speaking (no more audio chunks arrive)
+    AUDIO_TIMEOUT_MS = 400  # 400ms - quick but not too twitchy
+    
+    # Silence threshold: RMS value below which we consider audio "silent"
+    # ElevenLabs TTS audio has baseline RMS ~3000-5000, so this catches true pauses
+    SILENCE_THRESHOLD = 2500
+    
     def __init__(self, enabled: bool = True):
         """
         Initialize LED controller.
@@ -64,6 +76,11 @@ class LEDController:
         self.current_state = self.STATE_OFF
         self.pixel_ring = None
         self.animation_task = None  # Async task for animations (breathing, pulsing, blinking)
+        
+        # Audio timeout tracking for SPEAKING -> CONVERSATION transition
+        # When audio stops arriving, we need to detect that and return to CONVERSATION
+        self._last_audio_time = None  # Timestamp of last audio chunk received
+        self._audio_timeout_task = None  # Task that monitors for audio timeout
         
         if not self.enabled:
             return
@@ -99,6 +116,8 @@ class LEDController:
         if state == self.current_state:
             return
         
+        # Track previous state for cleanup
+        previous_state = self.current_state
         self.current_state = state
         
         # Log state change with expected pattern
@@ -115,6 +134,11 @@ class LEDController:
         
         # Stop any running animation when changing states
         self._stop_animation()
+        
+        # Clean up audio timeout tracking when leaving SPEAKING state
+        if previous_state == self.STATE_SPEAKING:
+            self._stop_audio_timeout()
+            self._last_audio_time = None
         
         # Apply visual pattern based on state
         if state == self.STATE_OFF:
@@ -156,6 +180,56 @@ class LEDController:
         if self.animation_task and not self.animation_task.done():
             self.animation_task.cancel()
             self.animation_task = None
+    
+    def _stop_audio_timeout(self):
+        """Stop the audio timeout monitoring task"""
+        if self._audio_timeout_task and not self._audio_timeout_task.done():
+            self._audio_timeout_task.cancel()
+            self._audio_timeout_task = None
+    
+    def _start_audio_timeout_monitor(self):
+        """
+        Start monitoring for audio timeout.
+        Called when entering SPEAKING state to detect when audio stops arriving.
+        """
+        # Don't start if already running
+        if self._audio_timeout_task and not self._audio_timeout_task.done():
+            return
+        
+        try:
+            loop = asyncio.get_event_loop()
+            self._audio_timeout_task = loop.create_task(self._audio_timeout_loop())
+        except RuntimeError:
+            # No event loop - shouldn't happen in normal operation
+            pass
+    
+    async def _audio_timeout_loop(self):
+        """
+        Monitor for audio timeout while in SPEAKING state.
+        
+        When agent stops speaking, audio chunks stop arriving. This loop detects
+        that gap and transitions back to CONVERSATION (listening) state.
+        
+        This is the PRIMARY mechanism for SPEAKING -> CONVERSATION transition.
+        """
+        CHECK_INTERVAL_MS = 100  # Check every 100ms
+        
+        try:
+            while self.current_state == self.STATE_SPEAKING:
+                await asyncio.sleep(CHECK_INTERVAL_MS / 1000.0)
+                
+                # Check if audio has timed out
+                if self._last_audio_time is not None:
+                    elapsed_ms = (time.time() - self._last_audio_time) * 1000
+                    
+                    if elapsed_ms > self.AUDIO_TIMEOUT_MS:
+                        # No audio for AUDIO_TIMEOUT_MS -> agent stopped speaking
+                        print(f"💡 LED: audio timeout ({elapsed_ms:.0f}ms) -> returning to CONVERSATION")
+                        self.set_state(self.STATE_CONVERSATION)
+                        break
+                        
+        except asyncio.CancelledError:
+            pass  # Normal cancellation when state changes
     
     def _start_animation(self, animation_func):
         """Start an animation as an async task"""
@@ -382,15 +456,13 @@ class LEDController:
     def update_speaking_leds(self, audio_chunk):
         """
         Update LEDs based on audio amplitude (voice energy).
-        Call this for every audio chunk played by the agent to create real-time
-        audio-reactive LED visualization.
         
-        Uses white color at dynamic brightness, beating/pulsing with voice energy.
-        Creates a dynamic "breathing with the voice" effect that makes the interaction
-        feel more alive and responsive.
+        Called for every audio chunk from the agent. Creates real-time
+        audio-reactive LED visualization (white beating with voice).
         
-        The effect swings from 20% to 100% brightness based on volume, with non-linear
-        scaling to make the "beat" more punchy and visible.
+        State transitions:
+        - CONVERSATION -> SPEAKING: When audio with sufficient energy arrives
+        - SPEAKING -> CONVERSATION: Via audio timeout (see _audio_timeout_loop)
         
         Args:
             audio_chunk: numpy array of int16 audio samples from the agent
@@ -399,63 +471,56 @@ class LEDController:
         if not self.enabled or not self.pixel_ring:
             return
         
-        # Only update LEDs during conversation or speaking states
-        # This prevents accidental LED flashes from buffered audio during other states
+        # Only process during conversation or speaking states
+        # Prevents LED flashes from buffered audio during other states
         if self.current_state not in [self.STATE_CONVERSATION, self.STATE_SPEAKING]:
             return
         
+        # Always update timestamp when we receive audio (for timeout detection)
+        self._last_audio_time = time.time()
+        
         # Calculate RMS (Root Mean Square) amplitude for voice energy
-        # Cast to float to prevent integer overflow during squaring
         rms = np.sqrt(np.mean(audio_chunk.astype(float) ** 2))
         
-        # Detect silence: if RMS is very low (< 500), transition back to CONVERSATION state
-        # This handles pauses between words or when agent finishes speaking
-        SILENCE_THRESHOLD = 500
-        if rms < SILENCE_THRESHOLD:
-            # Return to conversation state (listening mode) if we were speaking
-            if self.current_state == self.STATE_SPEAKING:
-                print(f"💡 LED diag: silence detected (rms={rms:.1f}) -> CONVERSATION")
-                self.set_state(self.STATE_CONVERSATION)
+        # Check if audio is below silence threshold
+        # This is a SECONDARY check - primary transition is via audio timeout
+        if rms < self.SILENCE_THRESHOLD:
+            # Low energy audio chunk - don't update LEDs, let timeout handle transition
             return
         
-        # Transition to speaking state if not already there
-        # This properly cancels any running animation (like _conversation_pulse_loop)
+        # Audio has sufficient energy - transition to SPEAKING if needed
         if self.current_state != self.STATE_SPEAKING:
             self.set_state(self.STATE_SPEAKING)
+            # Start timeout monitor to detect when agent stops speaking
+            self._start_audio_timeout_monitor()
         
-        # Normalize energy: int16 max is 32767, but typical speech peaks around 15000-20000
-        # Using 20000 gives more headroom so it doesn't saturate at 100% constantly
+        # -------------------------------------------------------------------------
+        # Calculate brightness from audio energy
+        # -------------------------------------------------------------------------
+        
+        # Normalize: typical TTS speech peaks around 15000-20000 RMS
         normalized_energy = min(rms / 20000.0, 1.0)
         
-        # Apply non-linear scaling (gamma) to make the beat more pronounced
-        # Squaring/powering makes quiet sounds dimmer and loud sounds punchier
+        # Apply gamma curve for punchier visual response
+        # Makes quiet sounds dimmer and loud sounds more dramatic
         normalized_energy = normalized_energy ** 1.5
         
-        # Map energy to brightness range:
-        # - Base brightness: 20% (dimmer baseline for more dramatic upward pulse)
-        # - Modulation: +80% based on voice energy (swings from 20% to 100%)
-        # This creates a massive dynamic range for the "beating" effect
-        base_brightness = 0.2
-        modulation_range = 0.8
-        brightness = base_brightness + (modulation_range * normalized_energy)
-        
-        # Clamp brightness to valid range (20% to 100%)
+        # Map to brightness range: 20% (base) to 100% (peak)
+        brightness = 0.2 + (0.8 * normalized_energy)
         brightness = max(0.2, min(1.0, brightness))
         
-        # Diagnostic: Log RMS, normalized energy, and brightness for each audio chunk
-        print(f"💡 LED diag: speaking rms={rms:.1f} normalized={normalized_energy:.2f} brightness={brightness:.2f}")
-        
-        # Use white color for speaking state
-        base_color = self.COLORS['speaking']  # White (255, 255, 255)
-        color = self._rgb_to_int_with_brightness(base_color, brightness)
-        
-        # Update all LEDs to the calculated color/brightness
+        # Apply white color at calculated brightness
+        color = self._rgb_to_int_with_brightness(self.COLORS['speaking'], brightness)
         self.pixel_ring.mono(color)
     
     def cleanup(self):
         """Turn off LEDs during shutdown"""
-        # Stop any running animation
+        # Stop any running tasks
         self._stop_animation()
+        self._stop_audio_timeout()
+        
+        # Reset tracking state
+        self._last_audio_time = None
         
         # Turn off LEDs
         if self.enabled and self.pixel_ring:
