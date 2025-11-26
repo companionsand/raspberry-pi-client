@@ -7,6 +7,7 @@ Manages ReSpeaker LED ring with various states and animations.
 import asyncio
 import time
 import math
+import numpy as np
 
 
 class LEDController:
@@ -21,9 +22,10 @@ class LEDController:
     
     LED States:
     - BOOT: Soft amber pulse (20-40% brightness) during startup
-    - IDLE: Soft breathing (20-40% brightness) when ready
-    - WAKE_WORD_DETECTED: Blue ring with high brightness (awakening signal)
-    - CONVERSATION: Pulsating white during active conversation
+    - IDLE: Soft breathing (20-100% brightness) in white when ready
+    - WAKE_WORD_DETECTED: Very visible burst at 100% brightness with amber/gold/orange/white
+    - CONVERSATION: Pulsating amber/gold (0-70% brightness) when listening, fast pulse (1.5s)
+    - SPEAKING: White at 20-100% brightness, beating with voice energy
     - ERROR: Soft red slow blink (2s on/off) for issues
     - OFF: No lights during shutdown
     """
@@ -35,16 +37,18 @@ class LEDController:
     STATE_WAKE_WORD_DETECTED = 3
     STATE_CONVERSATION = 4
     STATE_ERROR = 5
+    STATE_SPEAKING = 6  # Agent actively speaking (audio-reactive)
     
     # Color palette (RGB, 0-255)
     # Colors are applied with brightness multipliers for visibility
     COLORS = {
         'boot': (244, 162, 97),         # Soft amber - warm startup
         'idle': (255, 255, 255),        # White - clear presence
-        'wake_word_1': (100, 149, 237), # Cornflower blue
-        'wake_word_2': (255, 228, 181), # Warm white
-        'wake_word_3': (244, 162, 97),  # Amber
-        'conversation': (0, 255, 0),    # Green - active engagement
+        'wake_word_amber': (255, 180, 20),  # Amber/Gold - visible through red tinted glass
+        'wake_word_orange': (255, 120, 0),  # Orange - visible through red tinted glass
+        'wake_word_white': (255, 228, 181),  # Warm white - visible through red tinted glass
+        'conversation': (255, 180, 20),  # Amber/Gold - warm listening state
+        'speaking': (255, 255, 255),     # White - clear speaking state
         'error': (255, 107, 107),       # Soft red - non-alarming indicator
         'off': (0, 0, 0)                # No light
     }
@@ -101,9 +105,10 @@ class LEDController:
         state_names = {
             self.STATE_OFF: "OFF (no lights)",
             self.STATE_BOOT: "BOOT (soft amber pulse)",
-            self.STATE_IDLE: "IDLE (white breathing 5-40%)",
-            self.STATE_WAKE_WORD_DETECTED: "WAKE_WORD_DETECTED (crazy color burst!)",
-            self.STATE_CONVERSATION: "CONVERSATION (pulsating green 20-50%)",
+            self.STATE_IDLE: "IDLE (white breathing 20-100%)",
+            self.STATE_WAKE_WORD_DETECTED: "WAKE_WORD_DETECTED (100% brightness burst - amber/gold/orange/white)",
+            self.STATE_CONVERSATION: "CONVERSATION (amber/gold pulsing 0-70%, 1.5s cycle)",
+            self.STATE_SPEAKING: "SPEAKING (white 20-100% beating with voice)",
             self.STATE_ERROR: "ERROR (soft red blink)"
         }
         print(f"💡 LED: {state_names.get(state, f'UNKNOWN({state})')}")
@@ -131,6 +136,12 @@ class LEDController:
         elif state == self.STATE_CONVERSATION:
             # Pulsating white during conversation
             self._start_animation(self._conversation_pulse_loop)
+        
+        elif state == self.STATE_SPEAKING:
+            # Audio-reactive state - no animation loop needed
+            # LEDs will be updated directly by update_speaking_leds()
+            # Just ensure any previous animation is stopped (already done above)
+            pass
         
         elif state == self.STATE_ERROR:
             # Soft red slow blink (2s on/off)
@@ -219,16 +230,16 @@ class LEDController:
     
     async def _idle_breathing_loop(self):
         """
-        White breathing effect for IDLE state (5-40% brightness).
+        White breathing effect for IDLE state (20-100% brightness).
         Clear, visible presence indicating device is ready.
         """
         if not self.enabled or not self.pixel_ring:
             return
         
-        CYCLE_SECONDS = 4.0  # 4 second breathing cycle (calm, steady)
-        UPDATE_INTERVAL = 0.05  # 50ms updates
-        MIN_BRIGHTNESS = 0.05  # 5% minimum (very subtle low point)
-        MAX_BRIGHTNESS = 0.4  # 40% maximum (clearly visible)
+        CYCLE_SECONDS = 3.0  # 4 second breathing cycle (calm, steady)
+        UPDATE_INTERVAL = 0.1  # 50ms updates
+        MIN_BRIGHTNESS = 0.2  # 20% minimum
+        MAX_BRIGHTNESS = 1  # 100% maximum
         
         base_color = self.COLORS['idle']  # White
         start_time = time.time()
@@ -254,20 +265,22 @@ class LEDController:
     
     async def _wake_word_burst_loop(self):
         """
-        Crazy color burst for wake word detection (1-2 seconds).
-        Rapid alternating colors and brightness to create excitement.
+        Very visible color burst for wake word detection at 100% brightness.
+        Uses amber/gold, orange, and white colors visible through red tinted glass.
+        Creates an exciting, attention-grabbing visual signal.
         """
         if not self.enabled or not self.pixel_ring:
             return
         
-        BURST_DURATION = 1.5  # 1.5 seconds of crazy animation
+        BURST_DURATION = 1.5  # 1.5 seconds of burst animation
         UPDATE_INTERVAL = 0.08  # 80ms updates (fast, energetic)
+        BRIGHTNESS = 1.0  # 100% brightness for maximum visibility
         
-        # Color sequence for burst
+        # Color sequence for burst - visible through red tinted glass
         colors = [
-            self.COLORS['wake_word_1'],  # Blue
-            self.COLORS['wake_word_2'],  # Warm white
-            self.COLORS['wake_word_3'],  # Amber
+            self.COLORS['wake_word_amber'],   # Amber/Gold (255, 180, 20)
+            self.COLORS['wake_word_orange'],   # Orange (255, 120, 0)
+            self.COLORS['wake_word_white'],   # Warm white (255, 228, 181)
         ]
         
         start_time = time.time()
@@ -275,22 +288,15 @@ class LEDController:
         
         try:
             while (time.time() - start_time) < BURST_DURATION:
-                # Alternate between 0% and 80% brightness rapidly
                 elapsed = time.time() - start_time
                 
-                # Fast toggle between bright and off
-                if int(elapsed / UPDATE_INTERVAL) % 2 == 0:
-                    brightness = 0.8  # 80% - bright
-                else:
-                    brightness = 0.0  # 0% - off
-                
-                # Cycle through colors
+                # Cycle through colors rapidly at full brightness
                 current_color = colors[color_index % len(colors)]
-                color = self._rgb_to_int_with_brightness(current_color, brightness)
+                color = self._rgb_to_int_with_brightness(current_color, BRIGHTNESS)
                 self.pixel_ring.mono(color)
                 
-                # Change color every 3 updates
-                if int(elapsed / UPDATE_INTERVAL) % 3 == 0:
+                # Change color every 2 updates for rapid color cycling
+                if int(elapsed / UPDATE_INTERVAL) % 2 == 0:
                     color_index += 1
                 
                 await asyncio.sleep(UPDATE_INTERVAL)
@@ -305,19 +311,24 @@ class LEDController:
     
     async def _conversation_pulse_loop(self):
         """
-        Pulsating green during active conversation (20-50% brightness).
-        Indicates device is engaged in conversation with user.
+        Pulsating amber/gold during conversation when listening (0-70% brightness).
+        Faster pulse rate (1.5s cycle) compared to idle for more active feel.
+        Indicates device is engaged in conversation but not currently speaking.
+        Warm, inviting color that shows the device is ready to listen.
         """
         if not self.enabled or not self.pixel_ring:
             return
         
-        CYCLE_SECONDS = 2.0  # 2 second pulse (faster than idle, shows activity)
+        CYCLE_SECONDS = 1.5  # 1.5 second pulse (much faster than idle, shows activity)
         UPDATE_INTERVAL = 0.05  # 50ms updates
-        MIN_BRIGHTNESS = 0.2  # 20% minimum
-        MAX_BRIGHTNESS = 0.5  # 50% maximum
+        MIN_BRIGHTNESS = 0.0  # 0% minimum (dims to black)
+        MAX_BRIGHTNESS = 0.7  # 70% maximum
         
-        base_color = self.COLORS['conversation']  # Green
+        base_color = self.COLORS['conversation']  # Amber/Gold (255, 180, 20)
         start_time = time.time()
+        
+        # Diagnostic: Log when conversation pulse loop starts
+        print("💡 LED diag: starting CONVERSATION pulse loop (0-70%, 1.5s cycle)")
         
         try:
             while self.current_state == self.STATE_CONVERSATION:
@@ -367,6 +378,79 @@ class LEDController:
             pass
         except Exception as e:
             print(f"  ⚠ LED error animation error: {e}")
+    
+    def update_speaking_leds(self, audio_chunk):
+        """
+        Update LEDs based on audio amplitude (voice energy).
+        Call this for every audio chunk played by the agent to create real-time
+        audio-reactive LED visualization.
+        
+        Uses white color at dynamic brightness, beating/pulsing with voice energy.
+        Creates a dynamic "breathing with the voice" effect that makes the interaction
+        feel more alive and responsive.
+        
+        The effect swings from 20% to 100% brightness based on volume, with non-linear
+        scaling to make the "beat" more punchy and visible.
+        
+        Args:
+            audio_chunk: numpy array of int16 audio samples from the agent
+        """
+        # Skip if LEDs are disabled or unavailable
+        if not self.enabled or not self.pixel_ring:
+            return
+        
+        # Only update LEDs during conversation or speaking states
+        # This prevents accidental LED flashes from buffered audio during other states
+        if self.current_state not in [self.STATE_CONVERSATION, self.STATE_SPEAKING]:
+            return
+        
+        # Calculate RMS (Root Mean Square) amplitude for voice energy
+        # Cast to float to prevent integer overflow during squaring
+        rms = np.sqrt(np.mean(audio_chunk.astype(float) ** 2))
+        
+        # Detect silence: if RMS is very low (< 500), transition back to CONVERSATION state
+        # This handles pauses between words or when agent finishes speaking
+        SILENCE_THRESHOLD = 500
+        if rms < SILENCE_THRESHOLD:
+            # Return to conversation state (listening mode) if we were speaking
+            if self.current_state == self.STATE_SPEAKING:
+                print(f"💡 LED diag: silence detected (rms={rms:.1f}) -> CONVERSATION")
+                self.set_state(self.STATE_CONVERSATION)
+            return
+        
+        # Transition to speaking state if not already there
+        # This properly cancels any running animation (like _conversation_pulse_loop)
+        if self.current_state != self.STATE_SPEAKING:
+            self.set_state(self.STATE_SPEAKING)
+        
+        # Normalize energy: int16 max is 32767, but typical speech peaks around 15000-20000
+        # Using 20000 gives more headroom so it doesn't saturate at 100% constantly
+        normalized_energy = min(rms / 20000.0, 1.0)
+        
+        # Apply non-linear scaling (gamma) to make the beat more pronounced
+        # Squaring/powering makes quiet sounds dimmer and loud sounds punchier
+        normalized_energy = normalized_energy ** 1.5
+        
+        # Map energy to brightness range:
+        # - Base brightness: 20% (dimmer baseline for more dramatic upward pulse)
+        # - Modulation: +80% based on voice energy (swings from 20% to 100%)
+        # This creates a massive dynamic range for the "beating" effect
+        base_brightness = 0.2
+        modulation_range = 0.8
+        brightness = base_brightness + (modulation_range * normalized_energy)
+        
+        # Clamp brightness to valid range (20% to 100%)
+        brightness = max(0.2, min(1.0, brightness))
+        
+        # Diagnostic: Log RMS, normalized energy, and brightness for each audio chunk
+        print(f"💡 LED diag: speaking rms={rms:.1f} normalized={normalized_energy:.2f} brightness={brightness:.2f}")
+        
+        # Use white color for speaking state
+        base_color = self.COLORS['speaking']  # White (255, 255, 255)
+        color = self._rgb_to_int_with_brightness(base_color, brightness)
+        
+        # Update all LEDs to the calculated color/brightness
+        self.pixel_ring.mono(color)
     
     def cleanup(self):
         """Turn off LEDs during shutdown"""

@@ -181,18 +181,19 @@ class KinClient:
         print("🎙️  Kin AI Raspberry Pi Client (v2)")
         print("="*60)
         
-        # Initialize LED controller and show boot state
-        self.led_controller = LEDController(enabled=Config.LED_ENABLED)
-        self.led_controller.set_state(LEDController.STATE_BOOT)
-        
         # Validate configuration
         Config.validate()
         
         # Authenticate device and fetch runtime configuration
+        # This populates Config.LED_ENABLED from backend
         if not authenticate():
-            self.led_controller.set_state(LEDController.STATE_ERROR)
             print("✗ Failed to authenticate device")
             return
+        
+        # Initialize LED controller AFTER authentication (when Config.LED_ENABLED is set)
+        # Show boot state while initializing remaining components
+        self.led_controller = LEDController(enabled=Config.LED_ENABLED)
+        self.led_controller.set_state(LEDController.STATE_BOOT)
         
         # Verify and detect audio devices
         verify_audio_setup()
@@ -461,7 +462,8 @@ class KinClient:
                     agent_id,
                     mic_device_index=self.mic_device_index,
                     speaker_device_index=self.speaker_device_index,
-                    user_terminate_flag=self.user_terminate
+                    user_terminate_flag=self.user_terminate,
+                    led_controller=self.led_controller  # Pass LED controller for audio-reactive feedback
                 )
                 await client.start(self.orchestrator_client)
             
