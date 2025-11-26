@@ -1,6 +1,7 @@
 """Wake word detection using Porcupine with Silero VAD gating"""
 
 import os
+import time
 import pvporcupine
 import sounddevice as sd
 import numpy as np
@@ -49,6 +50,11 @@ class WakeWordDetector:
         self._vad_h = np.zeros((2, 1, 64), dtype=np.float32)
         self._vad_c = np.zeros((2, 1, 64), dtype=np.float32)
         self._vad_threshold = 0.5  # Speech probability threshold
+        
+        # Debug counters for VAD gate diagnostics
+        self._vad_frame_count = 0  # Total frames processed
+        self._vad_passed_count = 0  # Frames that passed VAD (sent to Porcupine)
+        self._vad_last_log_time = 0  # For periodic logging
         
     def start(self):
         """Initialize Porcupine and start listening"""
@@ -168,6 +174,9 @@ class WakeWordDetector:
         # Convert to the format Porcupine expects (int16)
         audio_frame = indata[:, 0].astype(np.int16)
         
+        # Track frame count for diagnostics
+        self._vad_frame_count += 1
+        
         # -------------------------------------------------------------------------
         # VAD Gate: Only process with Porcupine if speech is detected
         # -------------------------------------------------------------------------
@@ -186,11 +195,30 @@ class WakeWordDetector:
                 output, self._vad_h, self._vad_c = self._vad_session.run(None, ort_inputs)
                 speech_prob = output[0][0]
                 
+                # Periodic diagnostic logging (every 5 seconds)
+                now = time.time()
+                if now - self._vad_last_log_time > 5.0:
+                    pass_rate = (self._vad_passed_count / max(1, self._vad_frame_count)) * 100
+                    print(f"🔍 VAD diag: prob={speech_prob:.2f}, passed={self._vad_passed_count}/{self._vad_frame_count} ({pass_rate:.1f}%)")
+                    self._vad_last_log_time = now
+                    # Reset counters for next period
+                    self._vad_frame_count = 0
+                    self._vad_passed_count = 0
+                
                 # Gate: Skip Porcupine if no speech detected
                 if speech_prob < self._vad_threshold:
                     return  # Noise/silence - don't waste CPU on Porcupine
-            except Exception:
+                
+                # Speech detected - increment passed counter
+                self._vad_passed_count += 1
+                
+            except Exception as e:
+                print(f"⚠ VAD inference error: {e}")
                 pass  # VAD failed - fall through to Porcupine anyway
+        else:
+            # VAD disabled - log warning once
+            if self._vad_frame_count == 1:
+                print("⚠ VAD gate DISABLED - Porcupine processing ALL audio (higher false positive risk)")
         
         # -------------------------------------------------------------------------
         # Porcupine: Check for wake word (only if VAD passed or VAD disabled)
@@ -198,7 +226,7 @@ class WakeWordDetector:
         keyword_index = self.porcupine.process(audio_frame)
         
         if keyword_index >= 0:
-            print(f"\n🎯 Wake word '{Config.WAKE_WORD}' detected!")
+            print(f"\n🎯 Wake word '{Config.WAKE_WORD}' detected! (VAD passed)")
             self.detected = True
             
             if self.logger:
