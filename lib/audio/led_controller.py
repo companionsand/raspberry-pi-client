@@ -35,9 +35,10 @@ class LEDController:
     STATE_BOOT = 1
     STATE_IDLE = 2
     STATE_WAKE_WORD_DETECTED = 3
-    STATE_CONVERSATION = 4
+    STATE_CONVERSATION = 4  # LISTENING: User is speaking, slow amber breathing
     STATE_ERROR = 5
-    STATE_SPEAKING = 6  # Agent actively speaking (audio-reactive)
+    STATE_SPEAKING = 6      # SPEAKING: Agent speaking, white audio-reactive
+    STATE_THINKING = 7      # THINKING: User paused, agent preparing response, fast amber pulse
     
     # Color palette (RGB, 0-255)
     # Colors are applied with brightness multipliers for visibility
@@ -125,9 +126,10 @@ class LEDController:
             self.STATE_OFF: "OFF (no lights)",
             self.STATE_BOOT: "BOOT (soft amber pulse)",
             self.STATE_IDLE: "IDLE (white breathing 20-100%)",
-            self.STATE_WAKE_WORD_DETECTED: "WAKE_WORD_DETECTED (100% brightness burst - amber/gold/orange/white)",
-            self.STATE_CONVERSATION: "CONVERSATION (amber/gold pulsing 0-70%, 1.5s cycle)",
-            self.STATE_SPEAKING: "SPEAKING (white 20-100% beating with voice)",
+            self.STATE_WAKE_WORD_DETECTED: "WAKE_WORD_DETECTED (100% brightness burst)",
+            self.STATE_CONVERSATION: "LISTENING (slow amber breathing, user speaking)",
+            self.STATE_THINKING: "THINKING (fast amber pulse, preparing response)",
+            self.STATE_SPEAKING: "SPEAKING (white audio-reactive, agent talking)",
             self.STATE_ERROR: "ERROR (soft red blink)"
         }
         print(f"💡 LED: {state_names.get(state, f'UNKNOWN({state})')}")
@@ -158,13 +160,16 @@ class LEDController:
             self._start_animation(self._wake_word_burst_loop)
         
         elif state == self.STATE_CONVERSATION:
-            # Pulsating white during conversation
+            # LISTENING: Slow amber breathing while user speaks
             self._start_animation(self._conversation_pulse_loop)
         
+        elif state == self.STATE_THINKING:
+            # THINKING: Fast amber pulse while agent prepares response
+            self._start_animation(self._thinking_pulse_loop)
+        
         elif state == self.STATE_SPEAKING:
-            # Audio-reactive state - no animation loop needed
+            # SPEAKING: Audio-reactive white - no animation loop needed
             # LEDs will be updated directly by update_speaking_leds()
-            # Just ensure any previous animation is stopped (already done above)
             pass
         
         elif state == self.STATE_ERROR:
@@ -423,6 +428,43 @@ class LEDController:
         except Exception as e:
             print(f"  ⚠ LED conversation animation error: {e}")
     
+    async def _thinking_pulse_loop(self):
+        """
+        Fast amber pulse during THINKING state (0-70% brightness, 0.5s cycle).
+        
+        Indicates the agent is preparing a response after user stopped speaking.
+        Faster than CONVERSATION pulse to show "processing" activity.
+        """
+        if not self.enabled or not self.pixel_ring:
+            return
+        
+        CYCLE_SECONDS = 0.5   # Fast 0.5s cycle (3x faster than conversation)
+        UPDATE_INTERVAL = 0.03  # 30ms updates for smooth fast animation
+        MIN_BRIGHTNESS = 0.15  # 15% minimum - keeps light "alive", avoids strobe effect
+        MAX_BRIGHTNESS = 0.7   # 70% maximum
+        
+        base_color = self.COLORS['conversation']  # Same amber/gold color
+        start_time = time.time()
+        
+        try:
+            while self.current_state == self.STATE_THINKING:
+                elapsed = time.time() - start_time
+                cycle_position = (elapsed % CYCLE_SECONDS) / CYCLE_SECONDS
+                
+                # Sine wave for smooth pulsing
+                sine_value = (math.sin(cycle_position * 2 * math.pi) + 1) / 2
+                brightness = MIN_BRIGHTNESS + (sine_value * (MAX_BRIGHTNESS - MIN_BRIGHTNESS))
+                
+                color = self._rgb_to_int_with_brightness(base_color, brightness)
+                self.pixel_ring.mono(color)
+                
+                await asyncio.sleep(UPDATE_INTERVAL)
+                
+        except asyncio.CancelledError:
+            pass
+        except Exception as e:
+            print(f"  ⚠ LED thinking animation error: {e}")
+    
     async def _error_blink_loop(self):
         """
         Soft red slow blink for errors (2s on/off).
@@ -471,9 +513,9 @@ class LEDController:
         if not self.enabled or not self.pixel_ring:
             return
         
-        # Only process during conversation or speaking states
+        # Only process during conversation, thinking, or speaking states
         # Prevents LED flashes from buffered audio during other states
-        if self.current_state not in [self.STATE_CONVERSATION, self.STATE_SPEAKING]:
+        if self.current_state not in [self.STATE_CONVERSATION, self.STATE_THINKING, self.STATE_SPEAKING]:
             return
         
         # Always update timestamp when we receive audio (for timeout detection)

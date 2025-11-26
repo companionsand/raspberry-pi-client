@@ -6,10 +6,12 @@ import asyncio
 import time
 import uuid
 import ssl
+import os
 import websockets
 import certifi
 import sounddevice as sd
 import numpy as np
+import onnxruntime as ort
 from lib.config import Config
 from lib.orchestrator.client import OrchestratorClient
 from lib.local_storage import ContextManager
@@ -47,6 +49,36 @@ class ElevenLabsConversationClient:
         self.user_terminate_flag = user_terminate_flag  # Reference to shared flag
         self.led_controller = led_controller  # LED controller for visual feedback
         self.logger = Config.LOGGER
+        
+        # -------------------------------------------------------------------------
+        # Silero VAD (Voice Activity Detection) - Local silence detection via ONNX
+        # -------------------------------------------------------------------------
+        self.vad_session = None
+        self.vad_enabled = False
+        
+        # Locate the Silero VAD ONNX model file
+        model_path = os.path.join(os.path.dirname(__file__), '..', '..', 'silero_vad.onnx')
+        if os.path.exists(model_path):
+            try:
+                self.vad_session = ort.InferenceSession(model_path)
+                self.vad_enabled = True
+                print("✓ Silero VAD initialized (local silence detection)")
+            except Exception as e:
+                print(f"⚠ Silero VAD init failed: {e}")
+        else:
+            print("⚠ Silero VAD model not found - using fallback silence detection")
+        
+        # VAD state: hidden states for LSTM (required for stateful inference)
+        # Shape: (2, 1, 64) for h and c states in the Silero LSTM
+        self._vad_h = np.zeros((2, 1, 64), dtype=np.float32)
+        self._vad_c = np.zeros((2, 1, 64), dtype=np.float32)
+        self.vad_threshold = 0.5  # Probability threshold for speech detection
+        
+        # THINKING state trigger: track when user stopped speaking
+        # After 400ms of silence, transition LED to THINKING state
+        # (400ms forgives micro-pauses but still beats server VAD ~1000ms)
+        self._last_speech_time = None  # When VAD last detected speech
+        self._thinking_threshold_ms = 400  # Silence duration before THINKING state
         
     async def start(self, orchestrator_client: OrchestratorClient):
         """Start a conversation session"""
@@ -181,10 +213,61 @@ class ElevenLabsConversationClient:
                 # Read audio from microphone
                 audio_data, _ = self.audio_stream.read(Config.CHUNK_SIZE)
                 
-                # Check for audio activity (simple energy detection)
-                audio_energy = np.abs(audio_data).mean()
-                if audio_energy > 100:  # Threshold for detecting speech
+                # -------------------------------------------------------------------------
+                # Voice Activity Detection (VAD) - Detect if user is speaking
+                # -------------------------------------------------------------------------
+                is_speech = False
+                
+                if self.vad_enabled and self.vad_session:
+                    # Run Silero VAD inference
+                    # Convert int16 audio to float32 normalized [-1, 1]
+                    audio_float = audio_data.flatten().astype(np.float32) / 32768.0
+                    
+                    # Prepare ONNX inputs
+                    ort_inputs = {
+                        'input': audio_float.reshape(1, -1),
+                        'sr': np.array([Config.SAMPLE_RATE], dtype=np.int64),
+                        'h': self._vad_h,
+                        'c': self._vad_c
+                    }
+                    
+                    # Run inference and update hidden states
+                    try:
+                        output, self._vad_h, self._vad_c = self.vad_session.run(None, ort_inputs)
+                        speech_prob = output[0][0]
+                        is_speech = speech_prob > self.vad_threshold
+                    except Exception:
+                        # Fallback to energy detection if VAD fails
+                        is_speech = np.abs(audio_data).mean() > 100
+                else:
+                    # Fallback: simple energy detection
+                    is_speech = np.abs(audio_data).mean() > 100
+                
+                # -------------------------------------------------------------------------
+                # LED State Management: LISTENING ↔ THINKING transitions
+                # -------------------------------------------------------------------------
+                if is_speech:
+                    # User is speaking - update timers
                     self.last_audio_time = time.time()
+                    self._last_speech_time = time.time()
+                    
+                    # Ensure LED is in LISTENING state (STATE_CONVERSATION)
+                    if self.led_controller:
+                        current = self.led_controller.current_state
+                        # Only switch if we're in THINKING (not SPEAKING - agent might be talking)
+                        if current == self.led_controller.STATE_THINKING:
+                            self.led_controller.set_state(self.led_controller.STATE_CONVERSATION)
+                else:
+                    # User is silent - check if we should transition to THINKING
+                    if self._last_speech_time and self.led_controller:
+                        silence_ms = (time.time() - self._last_speech_time) * 1000
+                        current = self.led_controller.current_state
+                        
+                        # Transition to THINKING after 200ms of silence
+                        # Only if we're in CONVERSATION (listening) state, not SPEAKING
+                        if silence_ms > self._thinking_threshold_ms:
+                            if current == self.led_controller.STATE_CONVERSATION:
+                                self.led_controller.set_state(self.led_controller.STATE_THINKING)
                 
                 # Encode as base64 and send
                 audio_b64 = base64.b64encode(audio_data.tobytes()).decode('utf-8')
