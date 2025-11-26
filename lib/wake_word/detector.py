@@ -46,9 +46,9 @@ class WakeWordDetector:
         else:
             print(f"⚠ VAD model not found at {model_path} - falling back to ungated detection")
         
-        # VAD state: LSTM hidden states preserved across frames for context
-        self._vad_h = np.zeros((2, 1, 64), dtype=np.float32)
-        self._vad_c = np.zeros((2, 1, 64), dtype=np.float32)
+        # VAD state: Combined state tensor for Silero VAD v5
+        # Shape: (2, 1, 128) for v5 (was separate h/c with shape (2,1,64) in v4)
+        self._vad_state = np.zeros((2, 1, 128), dtype=np.float32)
         self._vad_threshold = 0.5  # Speech probability threshold
         
         # Debug counters for VAD gate diagnostics
@@ -184,16 +184,16 @@ class WakeWordDetector:
             # Convert to float32 normalized [-1, 1] for Silero VAD
             audio_float = audio_frame.astype(np.float32) / 32768.0
             
-            # Run VAD inference
+            # Run VAD inference (Silero VAD v5 API)
             try:
                 ort_inputs = {
                     'input': audio_float.reshape(1, -1),
                     'sr': np.array([16000], dtype=np.int64),
-                    'h': self._vad_h,
-                    'c': self._vad_c
+                    'state': self._vad_state
                 }
-                output, self._vad_h, self._vad_c = self._vad_session.run(None, ort_inputs)
-                speech_prob = output[0][0]
+                outs = self._vad_session.run(None, ort_inputs)
+                speech_prob = outs[0][0][0]  # First output is probability
+                self._vad_state = outs[1]     # Second output is new state
                 
                 # Periodic diagnostic logging (every 5 seconds)
                 now = time.time()

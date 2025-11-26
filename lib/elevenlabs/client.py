@@ -69,10 +69,9 @@ class ElevenLabsConversationClient:
         else:
             print("⚠ Silero VAD model not found - using fallback silence detection")
         
-        # VAD state: hidden states for LSTM (required for stateful inference)
-        # Shape: (2, 1, 64) for h and c states in the Silero LSTM
-        self._vad_h = np.zeros((2, 1, 64), dtype=np.float32)
-        self._vad_c = np.zeros((2, 1, 64), dtype=np.float32)
+        # VAD state: Combined state tensor for Silero VAD v5
+        # Shape: (2, 1, 128) for v5 (was separate h/c with shape (2,1,64) in v4)
+        self._vad_state = np.zeros((2, 1, 128), dtype=np.float32)
         self.vad_threshold = 0.5  # Probability threshold for speech detection
         
         # THINKING state trigger: track when user stopped speaking
@@ -224,18 +223,18 @@ class ElevenLabsConversationClient:
                     # Convert int16 audio to float32 normalized [-1, 1]
                     audio_float = audio_data.flatten().astype(np.float32) / 32768.0
                     
-                    # Prepare ONNX inputs
+                    # Prepare ONNX inputs (Silero VAD v5 API)
                     ort_inputs = {
                         'input': audio_float.reshape(1, -1),
                         'sr': np.array([Config.SAMPLE_RATE], dtype=np.int64),
-                        'h': self._vad_h,
-                        'c': self._vad_c
+                        'state': self._vad_state
                     }
                     
-                    # Run inference and update hidden states
+                    # Run inference and update state
                     try:
-                        output, self._vad_h, self._vad_c = self.vad_session.run(None, ort_inputs)
-                        speech_prob = output[0][0]
+                        outs = self.vad_session.run(None, ort_inputs)
+                        speech_prob = outs[0][0][0]  # First output is probability
+                        self._vad_state = outs[1]     # Second output is new state
                         is_speech = speech_prob > self.vad_threshold
                     except Exception:
                         # Fallback to energy detection if VAD fails
