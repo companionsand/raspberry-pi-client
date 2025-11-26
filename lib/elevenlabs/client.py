@@ -56,8 +56,9 @@ class ElevenLabsConversationClient:
         self.vad_session = None
         self.vad_enabled = False
         
-        # Locate the Silero VAD ONNX model file
-        model_path = os.path.join(os.path.dirname(__file__), '..', '..', 'silero_vad.onnx')
+        # Locate the Silero VAD ONNX model file: project_root/models/silero_vad.onnx
+        project_root = os.path.dirname(os.path.dirname(os.path.dirname(__file__)))
+        model_path = os.path.join(project_root, 'models', 'silero_vad.onnx')
         if os.path.exists(model_path):
             try:
                 self.vad_session = ort.InferenceSession(model_path)

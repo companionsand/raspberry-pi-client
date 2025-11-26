@@ -1,8 +1,10 @@
-"""Wake word detection using Porcupine"""
+"""Wake word detection using Porcupine with Silero VAD gating"""
 
+import os
 import pvporcupine
 import sounddevice as sd
 import numpy as np
+import onnxruntime as ort
 from lib.config import Config
 
 
@@ -22,6 +24,31 @@ class WakeWordDetector:
         self.running = False
         self.mic_device_index = mic_device_index
         self.logger = Config.LOGGER
+        
+        # -------------------------------------------------------------------------
+        # Silero VAD Gate - Reduces false positives by only processing speech
+        # -------------------------------------------------------------------------
+        self._vad_session = None
+        self._vad_enabled = False
+        
+        # Locate model: project_root/models/silero_vad.onnx
+        project_root = os.path.dirname(os.path.dirname(os.path.dirname(__file__)))
+        model_path = os.path.join(project_root, 'models', 'silero_vad.onnx')
+        
+        if os.path.exists(model_path):
+            try:
+                self._vad_session = ort.InferenceSession(model_path)
+                self._vad_enabled = True
+                print("✓ VAD gate initialized (reduces false wake word triggers)")
+            except Exception as e:
+                print(f"⚠ VAD gate init failed: {e} - falling back to ungated detection")
+        else:
+            print(f"⚠ VAD model not found at {model_path} - falling back to ungated detection")
+        
+        # VAD state: LSTM hidden states preserved across frames for context
+        self._vad_h = np.zeros((2, 1, 64), dtype=np.float32)
+        self._vad_c = np.zeros((2, 1, 64), dtype=np.float32)
+        self._vad_threshold = 0.5  # Speech probability threshold
         
     def start(self):
         """Initialize Porcupine and start listening"""
@@ -134,14 +161,40 @@ class WakeWordDetector:
             raise
         
     def _audio_callback(self, indata, frames, time_info, status):
-        """Process audio frames for wake word detection"""
+        """Process audio frames for wake word detection with VAD gating"""
         if status:
             print(f"⚠ Audio status: {status}")
         
-        # Convert to the format Porcupine expects
+        # Convert to the format Porcupine expects (int16)
         audio_frame = indata[:, 0].astype(np.int16)
         
-        # Process with Porcupine
+        # -------------------------------------------------------------------------
+        # VAD Gate: Only process with Porcupine if speech is detected
+        # -------------------------------------------------------------------------
+        if self._vad_enabled and self._vad_session:
+            # Convert to float32 normalized [-1, 1] for Silero VAD
+            audio_float = audio_frame.astype(np.float32) / 32768.0
+            
+            # Run VAD inference
+            try:
+                ort_inputs = {
+                    'input': audio_float.reshape(1, -1),
+                    'sr': np.array([16000], dtype=np.int64),
+                    'h': self._vad_h,
+                    'c': self._vad_c
+                }
+                output, self._vad_h, self._vad_c = self._vad_session.run(None, ort_inputs)
+                speech_prob = output[0][0]
+                
+                # Gate: Skip Porcupine if no speech detected
+                if speech_prob < self._vad_threshold:
+                    return  # Noise/silence - don't waste CPU on Porcupine
+            except Exception:
+                pass  # VAD failed - fall through to Porcupine anyway
+        
+        # -------------------------------------------------------------------------
+        # Porcupine: Check for wake word (only if VAD passed or VAD disabled)
+        # -------------------------------------------------------------------------
         keyword_index = self.porcupine.process(audio_frame)
         
         if keyword_index >= 0:
