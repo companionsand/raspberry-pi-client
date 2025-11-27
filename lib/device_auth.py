@@ -23,9 +23,12 @@ def load_private_key(private_key_base64: str) -> ed25519.Ed25519PrivateKey:
     return ed25519.Ed25519PrivateKey.from_private_bytes(private_key_bytes)
 
 
-def authenticate_device() -> Optional[Dict[str, Any]]:
+def authenticate_device(pairing_code: Optional[str] = None) -> Optional[Dict[str, Any]]:
     """
     Authenticate device using challenge-response mechanism.
+    
+    Args:
+        pairing_code: Optional pairing code from WiFi setup (in memory only)
     
     Returns:
         Dict with authentication info:
@@ -118,15 +121,14 @@ def authenticate_device() -> Optional[Dict[str, Any]]:
         if not config_data.get("paired"):
             print(f"\n⚠️  {config_data.get('error_message', 'Device not paired with a user')}")
             
-            # Try to pair using pairing code if available
-            pairing_code = _read_pairing_code()
+            # Try to pair using pairing code if provided
             if pairing_code:
                 print(f"   Found pairing code, attempting to pair device...")
                 serial_number = get_serial_number()
                 if serial_number:
                     if _pair_device(pairing_code, serial_number, orchestrator_base_url):
                         print("✓ Device paired successfully, retrying authentication...")
-                        # Retry authentication after pairing
+                        # Retry authentication after pairing (no need to pass pairing_code again)
                         return authenticate_device()
                     else:
                         print("✗ Failed to pair device with pairing code")
@@ -184,21 +186,6 @@ def get_serial_number() -> Optional[str]:
     return None
 
 
-def _read_pairing_code() -> Optional[str]:
-    """
-    Read pairing code from temporary file.
-    
-    Returns:
-        Pairing code string or None if not found
-    """
-    try:
-        with open('/tmp/kin_pairing_code', 'r') as f:
-            code = f.read().strip()
-            if code and len(code) == 4 and code.isdigit():
-                return code
-    except (FileNotFoundError, IOError):
-        pass
-    return None
 
 
 def _pair_device(pairing_code: str, serial_number: str, orchestrator_base_url: str) -> bool:

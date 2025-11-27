@@ -198,6 +198,7 @@ class KinClient:
         
         # Check if WiFi setup should be skipped (default: yes, for backward compatibility)
         skip_wifi_setup = os.getenv('SKIP_WIFI_SETUP', 'true').lower() == 'true'
+        pairing_code = None  # Will be set by WiFi setup if needed
         
         # WiFi Setup Mode - only if enabled and available
         if not skip_wifi_setup and WIFI_SETUP_AVAILABLE:
@@ -223,11 +224,8 @@ class KinClient:
                 
                 if success and pairing_code:
                     print(f"\n✓ WiFi setup completed!")
-                    print(f"  Pairing code: {pairing_code}")
+                    print(f"  Pairing code received: {pairing_code}")
                     print("="*60)
-                    
-                    # Store pairing code for authentication
-                    os.environ['DEVICE_PAIRING_CODE'] = pairing_code
                 else:
                     print("\n✗ WiFi setup failed")
                     print("  Device will retry on next boot")
@@ -237,8 +235,8 @@ class KinClient:
                 print("✓ Connectivity confirmed")
         
         # Authenticate device and fetch runtime configuration
-        # This populates Config.LED_ENABLED from backend
-        if not authenticate():
+        # Pass pairing_code if we got it from WiFi setup (memory only, no files)
+        if not authenticate(pairing_code=pairing_code):
             print("✗ Failed to authenticate device")
             return
         

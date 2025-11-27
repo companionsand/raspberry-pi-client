@@ -1,12 +1,16 @@
 """Device authentication using Ed25519 public key cryptography"""
 
+from typing import Optional
 from lib.config import Config
 from lib.device_auth import authenticate_device
 
 
-def authenticate() -> bool:
+def authenticate(pairing_code: Optional[str] = None) -> bool:
     """
     Authenticate device using device auth system.
+    
+    Args:
+        pairing_code: Optional pairing code from WiFi setup (kept in memory only)
     
     Sets Config.AUTH_TOKEN, Config.USER_ID, and runtime configuration on success.
     
@@ -19,7 +23,7 @@ def authenticate() -> bool:
         print("   Download the installer package from admin portal and run ./install.sh")
         return False
     
-    auth_result = authenticate_device()
+    auth_result = authenticate_device(pairing_code=pairing_code)
     
     if auth_result:
         # Set auth token and user ID

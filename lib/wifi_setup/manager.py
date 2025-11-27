@@ -52,6 +52,9 @@ class WiFiSetupManager:
         """
         logger.info("Starting WiFi setup mode...")
         
+        # Clean up any old pairing code files and processes from previous runs
+        await self._cleanup_old_state()
+        
         retry_count = 0
         
         while retry_count < self.max_retries:
@@ -114,7 +117,7 @@ class WiFiSetupManager:
         Returns:
             True if configuration was accepted
         """
-        logger.info(f"Received WiFi configuration for SSID: {ssid}")
+        logger.info(f"Received WiFi configuration for SSID: {ssid}, pairing code: {pairing_code}")
         self._wifi_credentials = (ssid, password)
         self._pairing_code = pairing_code
         return True
@@ -156,6 +159,42 @@ class WiFiSetupManager:
         logger.info(f"Attempting to connect to WiFi: {ssid}")
         
         return await self.network_connector.connect(ssid, password)
+    
+    async def _cleanup_old_state(self):
+        """Clean up old pairing codes and processes from previous runs"""
+        logger.info("Cleaning up old state from previous runs...")
+        
+        # Remove old pairing code file if it exists
+        try:
+            import os
+            if os.path.exists('/tmp/kin_pairing_code'):
+                os.remove('/tmp/kin_pairing_code')
+                logger.info("Removed old pairing code file")
+        except Exception as e:
+            logger.debug(f"Could not remove old pairing code: {e}")
+        
+        # Kill any old HTTP server processes on port 8080
+        try:
+            import subprocess
+            # Try to find and kill processes on port 8080
+            result = await asyncio.create_subprocess_exec(
+                'lsof', '-ti', f':{self.http_port}',
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.DEVNULL
+            )
+            stdout, _ = await result.communicate()
+            
+            if stdout:
+                pids = stdout.decode().strip().split('\n')
+                for pid in pids:
+                    if pid:
+                        try:
+                            await asyncio.create_subprocess_exec('kill', pid)
+                            logger.info(f"Killed old HTTP server process (PID: {pid})")
+                        except:
+                            pass
+        except Exception as e:
+            logger.debug(f"Could not check for old HTTP processes: {e}")
     
     async def _cleanup(self):
         """Clean up all resources and reset state"""
