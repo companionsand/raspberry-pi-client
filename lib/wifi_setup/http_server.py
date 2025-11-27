@@ -22,61 +22,177 @@ HTML_TEMPLATE = '''<!DOCTYPE html>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Kin Device Setup</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:wght@400;500&family=Instrument+Serif:ital,wght@0,400;1,400&family=Limelight&display=swap" rel="stylesheet">
     <style>
         * { margin: 0; padding: 0; box-sizing: border-box; }
+        
+        :root {
+            --color-primary: #ed572d;
+            --color-success: #04602B;
+            --color-black: #111111;
+            --color-white: #FFFFFF;
+            --color-warm-white: #FFF8F3;
+        }
+        
         body {
-            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
-            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            font-family: 'IBM Plex Sans', -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+            background-color: var(--color-warm-white);
+            color: var(--color-black);
             min-height: 100vh;
             display: flex;
             align-items: center;
             justify-content: center;
             padding: 20px;
+            font-size: 18px;
+            line-height: 1.5;
+            filter: contrast(1.02) saturate(1.1);
+            -webkit-font-smoothing: antialiased;
+            -moz-osx-font-smoothing: grayscale;
         }
+        
+        /* Grainy overlay effect for nostalgic texture */
+        body::before {
+            content: "";
+            position: fixed;
+            inset: 0;
+            background:
+                radial-gradient(circle at 20% 20%, rgba(255,255,255,0.03) 0%, transparent 100%),
+                url("https://grainy-gradients.vercel.app/noise.svg");
+            mix-blend-mode: overlay;
+            opacity: 0.35;
+            pointer-events: none;
+            z-index: 9999;
+        }
+        
         .container {
-            background: white;
-            border-radius: 20px;
+            background: var(--color-white);
+            border-radius: 12px;
+            border: 1px solid rgba(17, 17, 17, 0.1);
             padding: 40px;
             max-width: 500px;
             width: 100%;
-            box-shadow: 0 20px 60px rgba(0,0,0,0.3);
+            box-shadow: 0 1px 3px rgba(0,0,0,0.05);
+            position: relative;
+            z-index: 1;
         }
-        h1 { color: #333; margin-bottom: 10px; font-size: 28px; }
-        .subtitle { color: #666; margin-bottom: 30px; font-size: 14px; }
+        
+        .logo {
+            font-family: 'Limelight', cursive;
+            font-size: 32px;
+            color: var(--color-black);
+            margin-bottom: 8px;
+            font-weight: 400;
+        }
+        
+        h1 { 
+            font-family: 'Instrument Serif', serif;
+            color: var(--color-black);
+            margin-bottom: 8px;
+            font-size: 28px;
+            line-height: 1.2;
+            text-transform: uppercase;
+            letter-spacing: 0.02em;
+            font-weight: 400;
+        }
+        
+        .subtitle { 
+            font-family: 'IBM Plex Sans', sans-serif;
+            color: var(--color-black);
+            opacity: 0.7;
+            margin-bottom: 32px;
+            font-size: 18px;
+            line-height: 1.5;
+        }
+        
         .form-group { margin-bottom: 20px; }
-        label { display: block; margin-bottom: 8px; color: #333; font-weight: 500; }
+        
+        label { 
+            display: block;
+            margin-bottom: 8px;
+            color: var(--color-black);
+            font-weight: 500;
+            font-size: 14px;
+        }
+        
         select, input {
             width: 100%;
-            padding: 12px;
-            border: 2px solid #e0e0e0;
+            padding: 10px 12px;
+            border: 1px solid rgba(17, 17, 17, 0.1);
             border-radius: 8px;
-            font-size: 16px;
+            font-size: 18px;
+            font-family: 'IBM Plex Sans', sans-serif;
+            background-color: var(--color-white);
+            color: var(--color-black);
+            transition: all 150ms ease;
         }
+        
         select:focus, input:focus {
             outline: none;
-            border-color: #667eea;
+            border-color: var(--color-primary);
+            box-shadow: 0 0 0 3px rgba(237, 87, 45, 0.15);
         }
+        
         button {
             width: 100%;
-            padding: 14px;
-            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
-            color: white;
+            padding: 12px 20px;
+            background: var(--color-primary);
+            color: var(--color-white);
             border: none;
-            border-radius: 8px;
-            font-size: 16px;
-            font-weight: 600;
+            border-radius: 12px;
+            font-size: 18px;
+            font-weight: 500;
+            font-family: 'IBM Plex Sans', sans-serif;
             cursor: pointer;
+            transition: all 150ms ease;
         }
-        button:disabled { opacity: 0.6; cursor: not-allowed; }
-        .message { padding: 12px; border-radius: 8px; margin-bottom: 20px; white-space: pre-line; }
-        .success { background: #d4edda; color: #155724; }
-        .error { background: #f8d7da; color: #721c24; }
-        .info { background: #d1ecf1; color: #0c5460; }
+        
+        button:hover:not(:disabled) {
+            transform: translateY(-2px);
+            box-shadow: 0 4px 12px rgba(237, 87, 45, 0.3);
+        }
+        
+        button:active:not(:disabled) {
+            transform: translateY(0);
+        }
+        
+        button:disabled { 
+            opacity: 0.5;
+            cursor: not-allowed;
+        }
+        
+        .message { 
+            padding: 12px 16px;
+            border-radius: 8px;
+            margin-bottom: 20px;
+            white-space: pre-line;
+            font-size: 16px;
+        }
+        
+        .success { 
+            background-color: rgba(4, 96, 43, 0.1);
+            color: var(--color-success);
+            border: 1px solid rgba(4, 96, 43, 0.2);
+        }
+        
+        .error { 
+            background-color: rgba(237, 87, 45, 0.1);
+            color: var(--color-primary);
+            border: 1px solid rgba(237, 87, 45, 0.2);
+        }
+        
+        .info { 
+            background-color: rgba(17, 17, 17, 0.05);
+            color: var(--color-black);
+            border: 1px solid rgba(17, 17, 17, 0.1);
+        }
     </style>
 </head>
 <body>
     <div class="container">
-        <h1>Kin Device Setup</h1>
+        <div class="logo">Kin</div>
+        <h1>Device Setup</h1>
         <p class="subtitle">Configure your WiFi network to get started</p>
         <div id="message"></div>
         <form id="setupForm">
