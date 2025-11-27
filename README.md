@@ -43,7 +43,7 @@ raspberry-pi-client/
 └── lib/
     ├── __init__.py
     ├── config.py         # Configuration from env vars
-    ├── auth.py           # Supabase authentication
+    ├── auth.py           # Device authentication (Ed25519)
     ├── audio/
     │   ├── __init__.py
     │   ├── device_detection.py  # ALSA device detection

@@ -9,7 +9,7 @@ Features:
 - Real-time conversation via ElevenLabs WebSocket API
 - ReSpeaker hardware AEC (with fallback to default devices)
 - Communication with conversation-orchestrator via WebSocket
-- Supabase authentication on startup
+- Device authentication via provisioned Ed25519 credentials
 - OpenTelemetry observability (traces, spans, logs - no metrics)
 - LED visual feedback for device states
 - WiFi setup mode for devices without internet connectivity

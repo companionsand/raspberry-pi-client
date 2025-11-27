@@ -114,7 +114,7 @@ cd ~/kin-ai-prototype
 python main.py
 ```
 
-Expected logs: Supabase auth success → ALSA verification → “Ready! Say ‘porcupine’…”.
+Expected logs: Device auth success → ALSA verification → “Ready! Say ‘porcupine’…”.
 
 ---
 
