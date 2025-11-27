@@ -215,30 +215,84 @@ class KinClient:
                 else:
                     print("✗ Internet connected but orchestrator unreachable")
                 
-                print("\n🔧 Entering WiFi setup mode...")
-                print("="*60)
+                # WiFi setup + pairing loop - retry if pairing fails
+                max_setup_attempts = 3
+                setup_attempt = 0
+                authenticated = False
                 
-                # Start WiFi setup manager
-                wifi_manager = WiFiSetupManager()
-                pairing_code, success = await wifi_manager.start_setup_mode()
-                
-                if success and pairing_code:
-                    print(f"\n✓ WiFi setup completed!")
-                    print(f"  Pairing code received: {pairing_code}")
+                while setup_attempt < max_setup_attempts and not authenticated:
+                    setup_attempt += 1
+                    print(f"\n🔧 Entering WiFi setup mode (attempt {setup_attempt}/{max_setup_attempts})...")
                     print("="*60)
-                else:
-                    print("\n✗ WiFi setup failed")
+                    
+                    # Start WiFi setup manager
+                    wifi_manager = WiFiSetupManager()
+                    pairing_code, success = await wifi_manager.start_setup_mode()
+                    
+                    if success and pairing_code:
+                        print(f"\n✓ WiFi connected!")
+                        print(f"  Pairing code received: {pairing_code}")
+                        print("="*60)
+                        
+                        # Note: AP is now stopped, user's device has disconnected
+                        # User won't see authentication status on web page
+                        # If auth fails, we'll restart AP so they can see error message
+                        
+                        print("\n🔐 Authenticating with pairing code...")
+                        
+                        if authenticate(pairing_code=pairing_code):
+                            authenticated = True
+                            print("✓ Authentication and pairing successful!")
+                            print("  Device is now paired and starting...")
+                            
+                            # Clean up (HTTP server already stopped during WiFi switch)
+                            try:
+                                await wifi_manager.http_server.stop()
+                            except:
+                                pass
+                        else:
+                            print("\n✗ Authentication or pairing failed")
+                            if setup_attempt < max_setup_attempts:
+                                print("  Possible reasons:")
+                                print("    - Incorrect pairing code")
+                                print("    - Pairing code expired or already used")
+                                print("    - Device not registered in admin portal")
+                                print(f"\n  Restarting setup mode - please reconnect to Kin_Setup")
+                                
+                                # Will loop back and restart AP with fresh state
+                                await asyncio.sleep(3)
+                            else:
+                                print(f"  Max attempts ({max_setup_attempts}) reached")
+                                await asyncio.sleep(3)
+                    else:
+                        print("\n✗ WiFi setup failed")
+                        # Clean up HTTP server if it's still running
+                        try:
+                            await wifi_manager.http_server.stop()
+                        except:
+                            pass
+                        
+                        if setup_attempt < max_setup_attempts:
+                            print(f"  Retrying... (attempt {setup_attempt + 1}/{max_setup_attempts})")
+                            await asyncio.sleep(3)
+                
+                if not authenticated:
+                    print("\n✗ Setup and authentication failed after all attempts")
                     print("  Device will retry on next boot")
                     print("="*60)
                     return
             else:
                 print("✓ Connectivity confirmed")
-        
-        # Authenticate device and fetch runtime configuration
-        # Pass pairing_code if we got it from WiFi setup (memory only, no files)
-        if not authenticate(pairing_code=pairing_code):
-            print("✗ Failed to authenticate device")
-            return
+                
+                # Authenticate without pairing code (device already paired)
+                if not authenticate():
+                    print("✗ Failed to authenticate device")
+                    return
+        else:
+            # WiFi setup skipped, authenticate normally
+            if not authenticate():
+                print("✗ Failed to authenticate device")
+                return
         
         # Initialize LED controller AFTER authentication (when Config.LED_ENABLED is set)
         # Show boot state while initializing remaining components

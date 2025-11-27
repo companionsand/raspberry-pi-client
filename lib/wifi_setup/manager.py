@@ -76,20 +76,30 @@ class WiFiSetupManager:
                 success = await self._wait_for_configuration()
                 
                 if success:
-                    # Stop AP and HTTP server
-                    await self.access_point.stop()
-                    await self.http_server.stop()
+                    # Update status: inform user they'll lose connection
+                    self.http_server.set_status("connecting", "✓ Credentials received!\n\nDevice will now connect to your WiFi network.\n\nYou can disconnect from Kin_Setup.\nThe device will reconnect to you if setup fails.")
+                    await asyncio.sleep(5)  # Give user time to read before AP stops
                     
-                    # Try to connect to configured WiFi
+                    # Try to connect to configured WiFi (this will stop the AP)
                     if await self._connect_to_wifi():
                         # Verify internet connectivity
+                        self.http_server.set_status("connecting", "Verifying internet connection...")
                         if await self.connectivity_checker.check_internet():
-                            logger.info("WiFi setup completed successfully!")
+                            self.http_server.set_status("connecting", "WiFi connected! Now ready for authentication...")
+                            
+                            # Keep AP and HTTP server running so user can see auth status
+                            # They will be stopped by main.py after showing final status
+                            
+                            logger.info("WiFi setup completed successfully! Returning to main for authentication...")
                             return self._pairing_code, True
                         else:
                             logger.warning("Connected to WiFi but no internet access")
+                            self.http_server.set_status("error", "Connected to WiFi but no internet access", "Please check your router's internet connection and try again")
+                            await asyncio.sleep(8)  # Give user time to read
                     else:
                         logger.warning("Failed to connect to configured WiFi")
+                        self.http_server.set_status("error", "Failed to connect to WiFi", "Please check your WiFi password and try again")
+                        await asyncio.sleep(8)  # Give user time to read
                 
                 retry_count += 1
                 if retry_count < self.max_retries:
@@ -164,7 +174,7 @@ class WiFiSetupManager:
         """Clean up old pairing codes and processes from previous runs"""
         logger.info("Cleaning up old state from previous runs...")
         
-        # Remove old pairing code file if it exists
+        # Remove old pairing code file if it exists (from bash script era)
         try:
             import os
             if os.path.exists('/tmp/kin_pairing_code'):
@@ -173,10 +183,18 @@ class WiFiSetupManager:
         except Exception as e:
             logger.debug(f"Could not remove old pairing code: {e}")
         
-        # Kill any old HTTP server processes on port 8080
+        # Clear environment variable if set
         try:
-            import subprocess
-            # Try to find and kill processes on port 8080
+            import os
+            if 'DEVICE_PAIRING_CODE' in os.environ:
+                del os.environ['DEVICE_PAIRING_CODE']
+                logger.info("Cleared DEVICE_PAIRING_CODE from environment")
+        except Exception as e:
+            logger.debug(f"Could not clear environment variable: {e}")
+        
+        # Kill any old HTTP server processes on our port
+        try:
+            # Try to find processes listening on our port
             result = await asyncio.create_subprocess_exec(
                 'lsof', '-ti', f':{self.http_port}',
                 stdout=asyncio.subprocess.PIPE,
@@ -187,12 +205,15 @@ class WiFiSetupManager:
             if stdout:
                 pids = stdout.decode().strip().split('\n')
                 for pid in pids:
-                    if pid:
+                    if pid.strip():
                         try:
-                            await asyncio.create_subprocess_exec('kill', pid)
-                            logger.info(f"Killed old HTTP server process (PID: {pid})")
+                            await asyncio.create_subprocess_exec('kill', pid.strip())
+                            logger.info(f"Killed old HTTP server process (PID: {pid.strip()})")
                         except:
                             pass
+        except FileNotFoundError:
+            # lsof not available, try alternative
+            logger.debug("lsof not available, skipping process cleanup")
         except Exception as e:
             logger.debug(f"Could not check for old HTTP processes: {e}")
     

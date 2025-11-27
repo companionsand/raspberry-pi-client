@@ -68,9 +68,10 @@ HTML_TEMPLATE = '''<!DOCTYPE html>
             cursor: pointer;
         }
         button:disabled { opacity: 0.6; cursor: not-allowed; }
-        .message { padding: 12px; border-radius: 8px; margin-bottom: 20px; }
+        .message { padding: 12px; border-radius: 8px; margin-bottom: 20px; white-space: pre-line; }
         .success { background: #d4edda; color: #155724; }
         .error { background: #f8d7da; color: #721c24; }
+        .info { background: #d1ecf1; color: #0c5460; }
     </style>
 </head>
 <body>
@@ -119,10 +120,37 @@ HTML_TEMPLATE = '''<!DOCTYPE html>
             })
             .catch(e => showMessage('Failed to load networks: ' + e.message, 'error'));
         
+        let statusPollInterval = null;
+        
+        function pollStatus() {
+            fetch('/status')
+                .then(r => r.json())
+                .then(data => {
+                    if (data.status === 'waiting') {
+                        showMessage(data.message, 'info');
+                    } else if (data.status === 'connecting') {
+                        showMessage('📶 ' + data.message, 'info');
+                    } else if (data.status === 'authenticating') {
+                        showMessage('🔐 ' + data.message, 'info');
+                    } else if (data.status === 'success') {
+                        showMessage('✓ ' + data.message, 'success');
+                        clearInterval(statusPollInterval);
+                        submitBtn.disabled = true;
+                        submitBtn.textContent = 'Setup Complete!';
+                    } else if (data.status === 'error') {
+                        showMessage('✗ ' + data.message + (data.error ? '\\n' + data.error : ''), 'error');
+                        clearInterval(statusPollInterval);
+                        submitBtn.disabled = false;
+                        submitBtn.textContent = 'Try Again';
+                    }
+                })
+                .catch(e => console.error('Status poll failed:', e));
+        }
+        
         form.onsubmit = async (e) => {
             e.preventDefault();
             submitBtn.disabled = true;
-            submitBtn.textContent = 'Connecting...';
+            submitBtn.textContent = 'Submitting...';
             
             try {
                 const r = await fetch('/configure', {
@@ -136,7 +164,10 @@ HTML_TEMPLATE = '''<!DOCTYPE html>
                 });
                 const result = await r.json();
                 if (result.success) {
-                    showMessage('Connected! Device is starting...', 'success');
+                    showMessage('Configuration received. Connecting to WiFi...', 'success');
+                    // Start polling for status updates
+                    statusPollInterval = setInterval(pollStatus, 2000);
+                    pollStatus(); // Poll immediately
                 } else {
                     showMessage('Error: ' + (result.error || 'Failed'), 'error');
                     submitBtn.disabled = false;
@@ -163,6 +194,9 @@ class SetupHTTPServer:
         self._server: Optional[TCPServer] = None
         self._server_thread: Optional[Thread] = None
         self._config_callback: Optional[Callable] = None
+        self._status = "waiting"  # waiting, connecting, authenticating, success, error
+        self._status_message = "Waiting for WiFi configuration..."
+        self._error_details = None
     
     async def start(self, config_callback: Callable[[str, str, str], bool]):
         """
@@ -190,6 +224,8 @@ class SetupHTTPServer:
                     self.wfile.write(HTML_TEMPLATE.encode())
                 elif self.path == '/networks':
                     self._handle_networks()
+                elif self.path == '/status':
+                    self._handle_status()
                 else:
                     self.send_error(404)
             
@@ -205,6 +241,15 @@ class SetupHTTPServer:
                 self.send_header('Access-Control-Allow-Origin', '*')
                 self.end_headers()
                 self.wfile.write(json.dumps(data).encode())
+            
+            def _handle_status(self):
+                """Return current setup status"""
+                status_data = {
+                    'status': setup_server._status,
+                    'message': setup_server._status_message,
+                    'error': setup_server._error_details
+                }
+                self._send_json(200, status_data)
             
             def _handle_networks(self):
                 try:
@@ -273,6 +318,20 @@ class SetupHTTPServer:
         self._server_thread = Thread(target=self._server.serve_forever, daemon=True)
         self._server_thread.start()
         logger.info("HTTP server started")
+    
+    def set_status(self, status: str, message: str, error: str = None):
+        """
+        Update the status shown to users on the web interface.
+        
+        Args:
+            status: Status code (waiting, connecting, authenticating, success, error)
+            message: Human-readable status message
+            error: Optional error details
+        """
+        self._status = status
+        self._status_message = message
+        self._error_details = error
+        logger.info(f"Status updated: {status} - {message}")
     
     async def stop(self):
         """Stop the HTTP server"""
