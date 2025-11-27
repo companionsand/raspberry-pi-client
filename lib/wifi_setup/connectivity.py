@@ -6,7 +6,6 @@ Checks internet connectivity and orchestrator reachability.
 
 import asyncio
 import logging
-import os
 from typing import Optional
 
 import aiohttp
@@ -18,7 +17,12 @@ class ConnectivityChecker:
     """Checks network and service connectivity"""
     
     def __init__(self):
-        self.orchestrator_url = os.getenv('CONVERSATION_ORCHESTRATOR_URL')
+        # Import Config here to avoid circular imports
+        from lib.config import Config
+        
+        # Use hardcoded orchestrator URL from Config
+        # Allow override via environment variable for testing
+        self.orchestrator_url = Config.ORCHESTRATOR_URL
     
     async def check_internet(self, timeout: int = 5) -> bool:
         """
@@ -65,10 +69,15 @@ class ConnectivityChecker:
             True if orchestrator is reachable
         """
         if not self.orchestrator_url:
-            logger.error("CONVERSATION_ORCHESTRATOR_URL not configured")
+            logger.error("Orchestrator URL not configured")
             return False
         
-        health_url = f"{self.orchestrator_url.rstrip('/')}/health"
+        # Convert WebSocket URL to HTTP for health check
+        # wss://... -> https://..., ws://... -> http://...
+        http_url = self.orchestrator_url.replace("wss://", "https://").replace("ws://", "http://")
+        # Remove /ws suffix if present
+        http_url = http_url.replace("/ws", "")
+        health_url = f"{http_url.rstrip('/')}/health"
         
         for attempt in range(retries):
             try:
