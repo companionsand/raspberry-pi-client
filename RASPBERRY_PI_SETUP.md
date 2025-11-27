@@ -92,19 +92,19 @@ pip install -r requirements.txt
 
 ```bash
 cat <<'EOF' > ~/kin-ai-prototype/.env
-DEVICE_ID=...
-SUPABASE_URL=...
-SUPABASE_ANON_KEY=...
-EMAIL=...
-PASSWORD=...
-CONVERSATION_ORCHESTRATOR_URL=wss://conversation-orchestrator.onrender.com/ws
-ELEVENLABS_API_KEY=...
-PICOVOICE_ACCESS_KEY=...
-WAKE_WORD=porcupine
-LED_ENABLED=true
+# Required device credentials (from admin portal)
+DEVICE_ID=your-device-uuid-here
+DEVICE_PRIVATE_KEY=your-base64-encoded-private-key-here
+
+# Optional configuration
+SKIP_WIFI_SETUP=true
+OTEL_ENABLED=true
+ENV=production
 EOF
 chmod 600 ~/kin-ai-prototype/.env
 ```
+
+**Important:** Device credentials must be provisioned through the admin portal. The .env file is included in the installer package downloaded from the portal. Most configuration (API keys, wake word, LED settings) is fetched from backend after authentication.
 
 Run it:
 

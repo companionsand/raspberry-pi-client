@@ -54,15 +54,6 @@ class Config:
     # Environment
     ENV = os.getenv("ENV", "production")
     
-    # =========================================================================
-    # LEGACY SUPPORT (for backward compatibility with old .env files)
-    # =========================================================================
-    # If these are set in .env, use them (for testing/development)
-    SUPABASE_URL = os.getenv("SUPABASE_URL")
-    SUPABASE_ANON_KEY = os.getenv("SUPABASE_ANON_KEY")
-    EMAIL = os.getenv("EMAIL")
-    PASSWORD = os.getenv("PASSWORD")
-    
     @classmethod
     def validate(cls):
         """Validate required configuration"""

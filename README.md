@@ -78,16 +78,20 @@ kill -SIGINT <pid>   # Full shutdown (or Ctrl+C)
 
 ## Environment Variables
 
-Same as original `main.py` and `new_main.py`:
+Required credentials (provisioned via admin portal):
 
-- `DEVICE_ID` - Unique device identifier
-- `SUPABASE_URL` - Supabase project URL
-- `SUPABASE_ANON_KEY` - Supabase anonymous key
-- `EMAIL` - User email for authentication
-- `PASSWORD` - User password
-- `CONVERSATION_ORCHESTRATOR_URL` - WebSocket URL for orchestrator
-- `ELEVENLABS_API_KEY` - ElevenLabs API key
-- `PICOVOICE_ACCESS_KEY` - Picovoice access key
+- `DEVICE_ID` - Unique device identifier (UUID)
+- `DEVICE_PRIVATE_KEY` - Ed25519 private key for device authentication (base64-encoded)
+
+Optional configuration:
+
+- `SKIP_WIFI_SETUP` - Enable/disable WiFi setup mode (default: `true`)
+- `CONVERSATION_ORCHESTRATOR_URL` - WebSocket URL for orchestrator (default: hardcoded in Config)
+- `OTEL_ENABLED` - Enable OpenTelemetry (default: `true`)
+- `OTEL_EXPORTER_ENDPOINT` - OTEL collector endpoint (default: `http://localhost:4318`)
+- `ENV` - Deployment environment (default: `production`)
+
+Note: Most settings (API keys, wake word, LED settings) are fetched from backend after authentication.
 - `WAKE_WORD` - Wake word to detect (default: "porcupine")
 - `LED_ENABLED` - Enable LED feedback (default: "true")
 - `OTEL_ENABLED` - Enable OpenTelemetry (default: "true")

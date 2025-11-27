@@ -12,6 +12,7 @@ Features:
 - Supabase authentication on startup
 - OpenTelemetry observability (traces, spans, logs - no metrics)
 - LED visual feedback for device states
+- WiFi setup mode for devices without internet connectivity
 
 Usage:
     python main.py
@@ -45,6 +46,15 @@ from lib.wake_word import WakeWordDetector
 from lib.orchestrator import OrchestratorClient
 from lib.elevenlabs import ElevenLabsConversationClient
 from lib.local_storage import ContextManager
+
+# Import WiFi setup module (optional - graceful degradation)
+try:
+    from lib.wifi_setup import WiFiSetupManager
+    from lib.wifi_setup.connectivity import ConnectivityChecker
+    WIFI_SETUP_AVAILABLE = True
+except ImportError as e:
+    print(f"⚠️  WiFi setup module not available: {e}")
+    WIFI_SETUP_AVAILABLE = False
 
 # Import telemetry (optional - graceful degradation)
 try:
@@ -185,6 +195,46 @@ class KinClient:
         
         # Validate configuration
         Config.validate()
+        
+        # Check if WiFi setup should be skipped (default: yes, for backward compatibility)
+        skip_wifi_setup = os.getenv('SKIP_WIFI_SETUP', 'true').lower() == 'true'
+        
+        # WiFi Setup Mode - only if enabled and available
+        if not skip_wifi_setup and WIFI_SETUP_AVAILABLE:
+            print("\n📡 Checking connectivity...")
+            
+            connectivity_checker = ConnectivityChecker()
+            has_internet, orchestrator_reachable = await connectivity_checker.check_full_connectivity(
+                orchestrator_retries=3
+            )
+            
+            if not has_internet or not orchestrator_reachable:
+                if not has_internet:
+                    print("✗ No internet connection detected")
+                else:
+                    print("✗ Internet connected but orchestrator unreachable")
+                
+                print("\n🔧 Entering WiFi setup mode...")
+                print("="*60)
+                
+                # Start WiFi setup manager
+                wifi_manager = WiFiSetupManager()
+                pairing_code, success = await wifi_manager.start_setup_mode()
+                
+                if success and pairing_code:
+                    print(f"\n✓ WiFi setup completed!")
+                    print(f"  Pairing code: {pairing_code}")
+                    print("="*60)
+                    
+                    # Store pairing code for authentication
+                    os.environ['DEVICE_PAIRING_CODE'] = pairing_code
+                else:
+                    print("\n✗ WiFi setup failed")
+                    print("  Device will retry on next boot")
+                    print("="*60)
+                    return
+            else:
+                print("✓ Connectivity confirmed")
         
         # Authenticate device and fetch runtime configuration
         # This populates Config.LED_ENABLED from backend

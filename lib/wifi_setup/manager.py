@@ -1,0 +1,177 @@
+"""
+WiFi Setup Manager
+
+Orchestrates the WiFi setup process including:
+- Creating a WiFi access point
+- Running HTTP server for configuration
+- Handling WiFi connection attempts
+- Validating internet connectivity
+"""
+
+import asyncio
+import logging
+from typing import Optional, Tuple
+
+from .access_point import AccessPoint
+from .http_server import SetupHTTPServer
+from .network_connector import NetworkConnector
+from .connectivity import ConnectivityChecker
+
+logger = logging.getLogger(__name__)
+
+
+class WiFiSetupManager:
+    """Manages the complete WiFi setup flow"""
+    
+    def __init__(
+        self,
+        ap_ssid: str = "Kin_Setup",
+        ap_interface: str = "wlan0",
+        http_port: int = 80,
+        max_retries: int = 5
+    ):
+        self.ap_ssid = ap_ssid
+        self.ap_interface = ap_interface
+        self.http_port = http_port
+        self.max_retries = max_retries
+        
+        self.access_point = AccessPoint(ap_ssid, ap_interface)
+        self.http_server = SetupHTTPServer(http_port, ap_interface)
+        self.network_connector = NetworkConnector(ap_interface)
+        self.connectivity_checker = ConnectivityChecker()
+        
+        self._pairing_code: Optional[str] = None
+        self._wifi_credentials: Optional[Tuple[str, str]] = None
+    
+    async def start_setup_mode(self) -> Tuple[str, bool]:
+        """
+        Start WiFi setup mode and wait for configuration.
+        
+        Returns:
+            Tuple of (pairing_code, success)
+        """
+        logger.info("Starting WiFi setup mode...")
+        
+        retry_count = 0
+        
+        while retry_count < self.max_retries:
+            try:
+                # Clean up any previous state
+                await self._cleanup()
+                
+                # Create access point
+                logger.info(f"Creating access point: {self.ap_ssid}")
+                await self.access_point.start()
+                
+                # Start HTTP server for configuration
+                logger.info(f"Starting HTTP server on port {self.http_port}")
+                await self.http_server.start(self._handle_wifi_config)
+                
+                logger.info(f"WiFi setup active. Connect to '{self.ap_ssid}' and go to http://192.168.4.1")
+                
+                # Wait for user to submit configuration
+                success = await self._wait_for_configuration()
+                
+                if success:
+                    # Stop AP and HTTP server
+                    await self.access_point.stop()
+                    await self.http_server.stop()
+                    
+                    # Try to connect to configured WiFi
+                    if await self._connect_to_wifi():
+                        # Verify internet connectivity
+                        if await self.connectivity_checker.check_internet():
+                            logger.info("WiFi setup completed successfully!")
+                            return self._pairing_code, True
+                        else:
+                            logger.warning("Connected to WiFi but no internet access")
+                    else:
+                        logger.warning("Failed to connect to configured WiFi")
+                
+                retry_count += 1
+                if retry_count < self.max_retries:
+                    logger.info(f"Retrying WiFi setup... ({retry_count}/{self.max_retries})")
+                    await asyncio.sleep(2)
+                
+            except Exception as e:
+                logger.error(f"Error during WiFi setup: {e}", exc_info=True)
+                retry_count += 1
+                await asyncio.sleep(2)
+        
+        logger.error(f"WiFi setup failed after {self.max_retries} attempts")
+        await self._cleanup()
+        return None, False
+    
+    async def _handle_wifi_config(self, ssid: str, password: str, pairing_code: str) -> bool:
+        """
+        Callback for when user submits WiFi configuration.
+        
+        Args:
+            ssid: WiFi network name
+            password: WiFi password
+            pairing_code: Device pairing code
+            
+        Returns:
+            True if configuration was accepted
+        """
+        logger.info(f"Received WiFi configuration for SSID: {ssid}")
+        self._wifi_credentials = (ssid, password)
+        self._pairing_code = pairing_code
+        return True
+    
+    async def _wait_for_configuration(self, timeout: int = 300) -> bool:
+        """
+        Wait for user to submit configuration through web interface.
+        
+        Args:
+            timeout: Maximum time to wait in seconds (default 5 minutes)
+            
+        Returns:
+            True if configuration was received
+        """
+        start_time = asyncio.get_event_loop().time()
+        
+        while True:
+            if self._wifi_credentials and self._pairing_code:
+                return True
+            
+            elapsed = asyncio.get_event_loop().time() - start_time
+            if elapsed >= timeout:
+                logger.warning("Configuration timeout reached")
+                return False
+            
+            await asyncio.sleep(1)
+    
+    async def _connect_to_wifi(self) -> bool:
+        """
+        Connect to the configured WiFi network.
+        
+        Returns:
+            True if connection successful
+        """
+        if not self._wifi_credentials:
+            return False
+        
+        ssid, password = self._wifi_credentials
+        logger.info(f"Attempting to connect to WiFi: {ssid}")
+        
+        return await self.network_connector.connect(ssid, password)
+    
+    async def _cleanup(self):
+        """Clean up all resources and reset state"""
+        logger.info("Cleaning up WiFi setup resources...")
+        
+        try:
+            await self.http_server.stop()
+        except Exception as e:
+            logger.debug(f"Error stopping HTTP server: {e}")
+        
+        try:
+            await self.access_point.stop()
+        except Exception as e:
+            logger.debug(f"Error stopping access point: {e}")
+        
+        # Reset state
+        self._wifi_credentials = None
+        # Don't reset pairing code as we might need it for retry
+
