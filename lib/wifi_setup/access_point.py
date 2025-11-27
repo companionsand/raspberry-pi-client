@@ -32,8 +32,8 @@ class AccessPoint:
             # Unblock WiFi
             await self._run_sudo_cmd(['rfkill', 'unblock', 'wifi'])
             
-            # Delete existing connection if it exists
-            await self._run_cmd(['nmcli', 'connection', 'delete', self.connection_name], check=False)
+            # Delete existing connection if it exists (suppress errors as it may not exist)
+            await self._run_cmd(['nmcli', 'connection', 'delete', self.connection_name], check=False, suppress_output=True)
             
             # Create new hotspot connection
             logger.info("Creating hotspot connection...")
@@ -107,18 +107,19 @@ class AccessPoint:
         """Clean up any existing hotspot connections"""
         try:
             # Disconnect and remove any existing Kin hotspot
+            # Suppress errors as connection may not exist
             await self._run_sudo_cmd([
                 'nmcli', 'connection', 'down', self.connection_name
-            ], check=False)
+            ], check=False, suppress_output=True)
             
             await self._run_sudo_cmd([
                 'nmcli', 'connection', 'delete', self.connection_name
-            ], check=False)
+            ], check=False, suppress_output=True)
             
         except Exception as e:
             logger.debug(f"No existing hotspot to clean up: {e}")
     
-    async def _run_cmd(self, cmd: list, check: bool = True, capture_output: bool = False) -> Optional[subprocess.CompletedProcess]:
+    async def _run_cmd(self, cmd: list, check: bool = True, capture_output: bool = False, suppress_output: bool = False) -> Optional[subprocess.CompletedProcess]:
         """Run a command asynchronously"""
         try:
             if capture_output:
@@ -138,6 +139,17 @@ class AccessPoint:
                         result.returncode, cmd, result.stdout, result.stderr
                     )
                 return result
+            elif suppress_output:
+                # Suppress both stdout and stderr
+                proc = await asyncio.create_subprocess_exec(
+                    *cmd,
+                    stdout=asyncio.subprocess.DEVNULL,
+                    stderr=asyncio.subprocess.DEVNULL
+                )
+                returncode = await proc.wait()
+                if check and returncode != 0:
+                    raise subprocess.CalledProcessError(returncode, cmd)
+                return None
             else:
                 proc = await asyncio.create_subprocess_exec(*cmd)
                 returncode = await proc.wait()
@@ -150,7 +162,7 @@ class AccessPoint:
             logger.debug(f"Command failed (ignored): {cmd}, error: {e}")
             return None
     
-    async def _run_sudo_cmd(self, cmd: list, check: bool = True) -> Optional[subprocess.CompletedProcess]:
+    async def _run_sudo_cmd(self, cmd: list, check: bool = True, suppress_output: bool = False) -> Optional[subprocess.CompletedProcess]:
         """Run a command with sudo"""
-        return await self._run_cmd(['sudo'] + cmd, check=check)
+        return await self._run_cmd(['sudo'] + cmd, check=check, suppress_output=suppress_output)
 

@@ -27,7 +27,7 @@ class WiFiSetupManager:
         self,
         ap_ssid: str = "Kin_Setup",
         ap_interface: str = "wlan0",
-        http_port: int = 80,
+        http_port: int = 8080,
         max_retries: int = 5
     ):
         self.ap_ssid = ap_ssid
@@ -67,7 +67,7 @@ class WiFiSetupManager:
                 logger.info(f"Starting HTTP server on port {self.http_port}")
                 await self.http_server.start(self._handle_wifi_config)
                 
-                logger.info(f"WiFi setup active. Connect to '{self.ap_ssid}' and go to http://192.168.4.1")
+                logger.info(f"WiFi setup active. Connect to '{self.ap_ssid}' and go to http://192.168.4.1:{self.http_port}")
                 
                 # Wait for user to submit configuration
                 success = await self._wait_for_configuration()

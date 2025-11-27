@@ -157,7 +157,7 @@ HTML_TEMPLATE = '''<!DOCTYPE html>
 class SetupHTTPServer:
     """HTTP server for WiFi setup interface"""
     
-    def __init__(self, port: int = 80, wifi_interface: str = "wlan0"):
+    def __init__(self, port: int = 8080, wifi_interface: str = "wlan0"):
         self.port = port
         self.wifi_interface = wifi_interface
         self._server: Optional[TCPServer] = None
