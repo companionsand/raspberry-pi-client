@@ -326,18 +326,19 @@ class ElevenLabsConversationClient:
                     is_speech = np.abs(audio_data).mean() > 100
                 
                 # -------------------------------------------------------------------------
-                # Barge-in Detection: Sustained speech detection
+                # Barge-in Detection: Sustained speech detection with debouncing
                 # -------------------------------------------------------------------------
                 if is_speech:
                     self._consecutive_speech_frames += 1
                     
-                    # Trigger barge-in on sustained speech
+                    # Trigger barge-in on sustained speech (but only once per speech event)
                     if self._consecutive_speech_frames >= self._barge_in_speech_threshold:
                         if not self.barge_in_active:
-                            # Barge-in detected!
+                            # Barge-in detected! (first time threshold crossed)
                             print(f"[DEBUG] Sustained speech detected ({self._consecutive_speech_frames} frames)")
                             self.barge_in_active = True
                             await self._handle_barge_in()
+                        # else: already triggered, don't call handler again (debouncing)
                 else:
                     # Reset counter on silence
                     if self._consecutive_speech_frames > 0:
@@ -345,7 +346,7 @@ class ElevenLabsConversationClient:
                         if self._consecutive_speech_frames >= 2:
                             print(f"[DEBUG] Speech ended after {self._consecutive_speech_frames} frames (threshold: {self._barge_in_speech_threshold})")
                     self._consecutive_speech_frames = 0
-                    self.barge_in_active = False
+                    self.barge_in_active = False  # Reset: ready for next barge-in
                 
                 # -------------------------------------------------------------------------
                 # LED State Management: LISTENING ↔ THINKING transitions
