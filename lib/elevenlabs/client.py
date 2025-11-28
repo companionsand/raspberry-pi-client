@@ -84,6 +84,17 @@ class ElevenLabsConversationClient:
         self._thinking_threshold_ms = 400  # Silence duration before THINKING state
         
         # -------------------------------------------------------------------------
+        # Barge-in: Audio queue and interruption handling
+        # -------------------------------------------------------------------------
+        self.audio_queue = asyncio.Queue()  # Queue for agent audio chunks
+        self.playback_active = False  # Flag to stop current audio playback
+        self.barge_in_active = False  # Flag indicating barge-in occurred
+        
+        # Sustained speech detection for barge-in (requires 2-3 consecutive speech frames)
+        self._consecutive_speech_frames = 0
+        self._barge_in_speech_threshold = 3  # Number of consecutive frames to trigger barge-in
+        
+        # -------------------------------------------------------------------------
         # Turn Tracker - Tracks user and agent speech turns
         # -------------------------------------------------------------------------
         self.turn_tracker: Optional[TurnTracker] = None
@@ -225,13 +236,14 @@ class ElevenLabsConversationClient:
                         }
                     )
                 
-                # Run send and receive tasks concurrently
+                # Run send, receive, and playback tasks concurrently
                 send_task = asyncio.create_task(self._send_audio())
                 receive_task = asyncio.create_task(self._receive_messages(orchestrator_client))
+                playback_task = asyncio.create_task(self._play_audio())
                 
-                # Wait for either task to complete
+                # Wait for any task to complete
                 done, pending = await asyncio.wait(
-                    [send_task, receive_task],
+                    [send_task, receive_task, playback_task],
                     return_when=asyncio.FIRST_COMPLETED
                 )
                 
@@ -300,6 +312,23 @@ class ElevenLabsConversationClient:
                     is_speech = np.abs(audio_data).mean() > 100
                 
                 # -------------------------------------------------------------------------
+                # Barge-in Detection: Sustained speech detection
+                # -------------------------------------------------------------------------
+                if is_speech:
+                    self._consecutive_speech_frames += 1
+                    
+                    # Trigger barge-in on sustained speech
+                    if self._consecutive_speech_frames >= self._barge_in_speech_threshold:
+                        if not self.barge_in_active:
+                            # Barge-in detected!
+                            self.barge_in_active = True
+                            await self._handle_barge_in()
+                else:
+                    # Reset counter on silence
+                    self._consecutive_speech_frames = 0
+                    self.barge_in_active = False
+                
+                # -------------------------------------------------------------------------
                 # LED State Management: LISTENING ↔ THINKING transitions
                 # -------------------------------------------------------------------------
                 if is_speech:
@@ -319,7 +348,7 @@ class ElevenLabsConversationClient:
                         silence_ms = (time.time() - self._last_speech_time) * 1000
                         current = self.led_controller.current_state
                         
-                        # Transition to THINKING after 200ms of silence
+                        # Transition to THINKING after 400ms of silence
                         # Only if we're in CONVERSATION (listening) state, not SPEAKING
                         if silence_ms > self._thinking_threshold_ms:
                             if current == self.led_controller.STATE_CONVERSATION:
@@ -392,6 +421,90 @@ class ElevenLabsConversationClient:
             self.end_reason = "network_failure"
             self.running = False
     
+    async def _handle_barge_in(self):
+        """Handle user barge-in: stop playback and clear audio queue"""
+        logger = self.logger
+        
+        # Stop current playback
+        self.playback_active = False
+        
+        # Clear the audio queue
+        queue_size = self.audio_queue.qsize()
+        if queue_size > 0:
+            # Drain the queue
+            while not self.audio_queue.empty():
+                try:
+                    self.audio_queue.get_nowait()
+                except asyncio.QueueEmpty:
+                    break
+            
+            if logger:
+                logger.info(
+                    "barge_in_triggered",
+                    extra={
+                        "conversation_id": self.conversation_id,
+                        "cleared_chunks": queue_size,
+                        "user_id": Config.USER_ID,
+                        "device_id": Config.DEVICE_ID
+                    }
+                )
+            
+            print(f"🛑 Barge-in detected - cleared {queue_size} queued audio chunks")
+    
+    async def _play_audio(self):
+        """Play audio chunks from queue to audio stream"""
+        logger = self.logger
+        try:
+            while self.running:
+                # Get next audio chunk from queue (with timeout to check running flag)
+                try:
+                    audio_array = await asyncio.wait_for(
+                        self.audio_queue.get(), 
+                        timeout=0.1
+                    )
+                except asyncio.TimeoutError:
+                    continue
+                
+                # Play the audio chunk (unless barge-in stops us)
+                self.playback_active = True
+                
+                # Write audio in smaller chunks to allow faster interruption
+                chunk_size = Config.CHUNK_SIZE
+                for i in range(0, len(audio_array), chunk_size):
+                    # Check if we should stop playback (barge-in)
+                    if not self.playback_active:
+                        break
+                    
+                    # Check if conversation ended
+                    if not self.running:
+                        break
+                    
+                    # Write audio chunk
+                    chunk = audio_array[i:i+chunk_size]
+                    self.audio_stream.write(chunk)
+                    
+                    # Small yield to allow other tasks to run
+                    await asyncio.sleep(0)
+                
+                self.playback_active = False
+                
+        except asyncio.CancelledError:
+            self.running = False
+        except Exception as e:
+            print(f"✗ Playback error: {e}")
+            if logger:
+                logger.error(
+                    "audio_playback_error",
+                    extra={
+                        "conversation_id": self.conversation_id,
+                        "error": str(e),
+                        "user_id": Config.USER_ID,
+                        "device_id": Config.DEVICE_ID
+                    }
+                )
+            self.end_reason = "playback_error"
+            self.running = False
+    
     async def _receive_messages(self, orchestrator_client: OrchestratorClient):
         """Receive and process messages from WebSocket"""
         logger = self.logger
@@ -433,7 +546,7 @@ class ElevenLabsConversationClient:
                             self.turn_tracker.record_agent_response(response)
                 
                 elif 'audio_event' in data:
-                    # Decode and play agent audio
+                    # Decode and queue agent audio (don't play directly)
                     audio_b64 = data['audio_event'].get('audio_base_64', '')
                     if audio_b64:
                         audio_bytes = base64.b64decode(audio_b64)
@@ -448,7 +561,8 @@ class ElevenLabsConversationClient:
                             playback_time = time.time()  # Estimation mode
                             self.turn_tracker.process_agent_audio(audio_array, playback_time)
                         
-                        self.audio_stream.write(audio_array)
+                        # Queue audio for playback (barge-in safe)
+                        await self.audio_queue.put(audio_array)
                         self.last_audio_time = time.time()  # Reset silence timer
                 
                 elif data.get('type') == 'ping':
