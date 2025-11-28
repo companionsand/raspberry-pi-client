@@ -125,13 +125,14 @@ class ElevenLabsConversationClient:
         # Add API key to WebSocket URL
         ws_url = f"{self.web_socket_url}&api_key={Config.ELEVENLABS_API_KEY}"
         
-        # Determine output device - use multi-output device if speaker monitoring enabled
+        # Determine output device
+        # When speaker monitoring is enabled, ALSA default is configured to route
+        # through 'speaker_with_monitor' which outputs to both speaker AND loopback
         output_device = self.speaker_device_index
         if self.use_speaker_monitor:
-            # Use "speaker_with_monitor" ALSA device which outputs to both 
-            # the real speaker AND the loopback (for monitoring)
-            output_device = "speaker_with_monitor"
-            print(f"   Speaker Monitor: Enabled (using 'speaker_with_monitor' multi-output)")
+            # Use default device (None) - ALSA config routes it to both speaker + loopback
+            output_device = None
+            print(f"   Speaker Monitor: Enabled (ALSA default routes to speaker + loopback)")
         
         # Log device being used
         if self.mic_device_index is not None or self.speaker_device_index is not None:
