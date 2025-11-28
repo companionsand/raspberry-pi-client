@@ -91,9 +91,11 @@ class ElevenLabsConversationClient:
         self.playback_active = False  # Flag to stop current audio playback
         self.barge_in_active = False  # Flag indicating barge-in occurred
         
-        # Sustained speech detection for barge-in (requires 2-3 consecutive speech frames)
+        # Sustained speech detection for barge-in
+        # Lower threshold = more sensitive (catches short words like "Stop")
+        # Higher threshold = less sensitive (ignores brief noise)
         self._consecutive_speech_frames = 0
-        self._barge_in_speech_threshold = 3  # Number of consecutive frames to trigger barge-in
+        self._barge_in_speech_threshold = 2  # Frames (2 = ~20ms, catches even short words)
         
         # -------------------------------------------------------------------------
         # Turn Tracker - Tracks user and agent speech turns
@@ -333,10 +335,15 @@ class ElevenLabsConversationClient:
                     if self._consecutive_speech_frames >= self._barge_in_speech_threshold:
                         if not self.barge_in_active:
                             # Barge-in detected!
+                            print(f"[DEBUG] Sustained speech detected ({self._consecutive_speech_frames} frames)")
                             self.barge_in_active = True
                             await self._handle_barge_in()
                 else:
                     # Reset counter on silence
+                    if self._consecutive_speech_frames > 0:
+                        # Only log if we had some speech frames
+                        if self._consecutive_speech_frames >= 2:
+                            print(f"[DEBUG] Speech ended after {self._consecutive_speech_frames} frames (threshold: {self._barge_in_speech_threshold})")
                     self._consecutive_speech_frames = 0
                     self.barge_in_active = False
                 
@@ -437,46 +444,36 @@ class ElevenLabsConversationClient:
         """Handle user barge-in: stop playback immediately and clear audio queue"""
         logger = self.logger
         
-        # Stop current playback immediately by aborting the output stream
+        print(f"🛑 Barge-in triggered!")  # Always print to confirm it's being called
+        
+        # Stop current playback immediately
         self.playback_active = False
         
-        # Abort output stream to stop playback instantly (doesn't wait for buffer to drain)
-        if self.output_stream and self.output_stream.active:
-            try:
-                self.output_stream.abort()  # Immediate stop (vs stop() which waits)
-                self.output_stream.start()  # Restart for new audio
-            except Exception as e:
-                if logger:
-                    logger.warning(
-                        "barge_in_stream_abort_failed",
-                        extra={
-                            "error": str(e),
-                            "conversation_id": self.conversation_id
-                        }
-                    )
+        # Get queue size before clearing
+        queue_size = self.audio_queue.qsize()
         
         # Clear the audio queue
-        queue_size = self.audio_queue.qsize()
-        if queue_size > 0:
-            # Drain the queue
-            while not self.audio_queue.empty():
-                try:
-                    self.audio_queue.get_nowait()
-                except asyncio.QueueEmpty:
-                    break
-            
-            if logger:
-                logger.info(
-                    "barge_in_triggered",
-                    extra={
-                        "conversation_id": self.conversation_id,
-                        "cleared_chunks": queue_size,
-                        "user_id": Config.USER_ID,
-                        "device_id": Config.DEVICE_ID
-                    }
-                )
-            
-            print(f"🛑 Barge-in detected - stopped playback and cleared {queue_size} queued audio chunks")
+        cleared_count = 0
+        while not self.audio_queue.empty():
+            try:
+                self.audio_queue.get_nowait()
+                cleared_count += 1
+            except asyncio.QueueEmpty:
+                break
+        
+        print(f"   ✓ Stopped playback and cleared {cleared_count} queued audio chunks (queue had {queue_size})")
+        
+        if logger:
+            logger.info(
+                "barge_in_triggered",
+                extra={
+                    "conversation_id": self.conversation_id,
+                    "cleared_chunks": cleared_count,
+                    "queue_size_before": queue_size,
+                    "user_id": Config.USER_ID,
+                    "device_id": Config.DEVICE_ID
+                }
+            )
     
     async def _play_audio(self):
         """Play audio chunks from queue to output stream"""
@@ -492,23 +489,45 @@ class ElevenLabsConversationClient:
                 except asyncio.TimeoutError:
                     continue
                 
-                # Play the audio chunk (unless barge-in stops us)
+                # Play the audio chunk in small sub-chunks for fast interruption
                 self.playback_active = True
                 
-                # Write to output stream (can be aborted mid-write on barge-in)
-                try:
-                    if self.output_stream and self.output_stream.active:
-                        self.output_stream.write(audio_array)
-                except Exception as e:
-                    # Stream may have been aborted during write (barge-in) - this is expected
-                    if self.playback_active and logger:
-                        logger.debug(
-                            "playback_write_interrupted",
-                            extra={
-                                "error": str(e),
-                                "conversation_id": self.conversation_id
-                            }
-                        )
+                # Write in very small chunks (256 samples = ~16ms at 16kHz) for fast response
+                sub_chunk_size = 256
+                interrupted = False
+                
+                for i in range(0, len(audio_array), sub_chunk_size):
+                    # Check if barge-in occurred
+                    if not self.playback_active:
+                        interrupted = True
+                        break
+                    
+                    # Check if conversation ended
+                    if not self.running:
+                        interrupted = True
+                        break
+                    
+                    # Write small chunk
+                    chunk = audio_array[i:i+sub_chunk_size]
+                    try:
+                        if self.output_stream and self.output_stream.active:
+                            self.output_stream.write(chunk)
+                    except Exception as e:
+                        if logger:
+                            logger.debug(
+                                "playback_write_error",
+                                extra={
+                                    "error": str(e),
+                                    "conversation_id": self.conversation_id
+                                }
+                            )
+                        break
+                    
+                    # Yield to event loop
+                    await asyncio.sleep(0)
+                
+                if interrupted:
+                    print(f"   [DEBUG] Audio playback interrupted mid-chunk")
                 
                 self.playback_active = False
                 
