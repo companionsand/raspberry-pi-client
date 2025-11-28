@@ -125,13 +125,21 @@ class ElevenLabsConversationClient:
         # Add API key to WebSocket URL
         ws_url = f"{self.web_socket_url}&api_key={Config.ELEVENLABS_API_KEY}"
         
+        # Determine output device - use multi-output device if speaker monitoring enabled
+        output_device = self.speaker_device_index
+        if self.use_speaker_monitor:
+            # Use "speaker_with_monitor" ALSA device which outputs to both 
+            # the real speaker AND the loopback (for monitoring)
+            output_device = "speaker_with_monitor"
+            print(f"   Speaker Monitor: Enabled (using 'speaker_with_monitor' multi-output)")
+        
         # Log device being used
         if self.mic_device_index is not None or self.speaker_device_index is not None:
             devices = sd.query_devices()
             if self.mic_device_index is not None:
                 mic_dev = devices[self.mic_device_index]
                 print(f"   Microphone: {mic_dev['name']} (index {self.mic_device_index})")
-            if self.speaker_device_index is not None:
+            if not self.use_speaker_monitor and self.speaker_device_index is not None:
                 speaker_dev = devices[self.speaker_device_index]
                 print(f"   Speaker: {speaker_dev['name']} (index {self.speaker_device_index})")
         else:
@@ -143,7 +151,7 @@ class ElevenLabsConversationClient:
         try:
             # Open audio stream for conversation
             self.audio_stream = sd.Stream(
-                device=(self.mic_device_index, self.speaker_device_index),
+                device=(self.mic_device_index, output_device),
                 samplerate=Config.SAMPLE_RATE,
                 channels=Config.CHANNELS,
                 dtype='int16',
