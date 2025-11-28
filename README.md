@@ -115,6 +115,7 @@ Optional configuration:
 
 | Variable | Default | Description |
 |----------|---------|-------------|
+| `SKIP_TURN_TRACKING` | `true` | Skip turn tracking completely (no tracking, logs, or reports) |
 | `TURN_TRACKER_VAD_THRESHOLD` | `0.5` | VAD probability threshold (0.0-1.0) |
 | `TURN_TRACKER_USER_SILENCE_TIMEOUT` | `2.5` | Silence timeout for user turns (seconds) |
 | `TURN_TRACKER_USER_MIN_TURN_DURATION` | `0.15` | Minimum user turn duration (seconds) |

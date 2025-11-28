@@ -86,23 +86,27 @@ class ElevenLabsConversationClient:
         # -------------------------------------------------------------------------
         # Turn Tracker - Tracks user and agent speech turns
         # -------------------------------------------------------------------------
-        self.turn_tracker = TurnTracker(
-            sample_rate=Config.SAMPLE_RATE,
-            vad_threshold=Config.TURN_TRACKER_VAD_THRESHOLD,
-            user_silence_timeout=Config.TURN_TRACKER_USER_SILENCE_TIMEOUT,
-            user_min_turn_duration=Config.TURN_TRACKER_USER_MIN_TURN_DURATION,
-            user_min_speech_onset=Config.TURN_TRACKER_USER_MIN_SPEECH_ONSET,
-            agent_silence_timeout=Config.TURN_TRACKER_AGENT_SILENCE_TIMEOUT,
-            agent_min_turn_duration=Config.TURN_TRACKER_AGENT_MIN_TURN_DURATION,
-            agent_min_speech_onset=Config.TURN_TRACKER_AGENT_MIN_SPEECH_ONSET,
-            debounce_window=Config.TURN_TRACKER_DEBOUNCE_WINDOW,
-        )
+        self.turn_tracker: Optional[TurnTracker] = None
+        self.turn_tracking_enabled = not Config.SKIP_TURN_TRACKING
+        
+        if self.turn_tracking_enabled:
+            self.turn_tracker = TurnTracker(
+                sample_rate=Config.SAMPLE_RATE,
+                vad_threshold=Config.TURN_TRACKER_VAD_THRESHOLD,
+                user_silence_timeout=Config.TURN_TRACKER_USER_SILENCE_TIMEOUT,
+                user_min_turn_duration=Config.TURN_TRACKER_USER_MIN_TURN_DURATION,
+                user_min_speech_onset=Config.TURN_TRACKER_USER_MIN_SPEECH_ONSET,
+                agent_silence_timeout=Config.TURN_TRACKER_AGENT_SILENCE_TIMEOUT,
+                agent_min_turn_duration=Config.TURN_TRACKER_AGENT_MIN_TURN_DURATION,
+                agent_min_speech_onset=Config.TURN_TRACKER_AGENT_MIN_SPEECH_ONSET,
+                debounce_window=Config.TURN_TRACKER_DEBOUNCE_WINDOW,
+            )
         
         # -------------------------------------------------------------------------
         # Speaker Monitor - Optional loopback-based agent turn detection
         # -------------------------------------------------------------------------
         self.speaker_monitor: Optional[SpeakerMonitor] = None
-        self.use_speaker_monitor = Config.SPEAKER_MONITOR_MODE == "loopback"
+        self.use_speaker_monitor = self.turn_tracking_enabled and Config.SPEAKER_MONITOR_MODE == "loopback"
         
         if self.use_speaker_monitor:
             # SpeakerMonitor has tuned defaults for loopback
@@ -168,8 +172,9 @@ class ElevenLabsConversationClient:
                 
                 print("✓ Connected to ElevenLabs")
                 
-                # Start turn tracking
-                self.turn_tracker.start()
+                # Start turn tracking (if enabled)
+                if self.turn_tracker:
+                    self.turn_tracker.start()
                 
                 # Start speaker monitor if enabled (for loopback-based agent detection)
                 if self.speaker_monitor:
@@ -320,12 +325,13 @@ class ElevenLabsConversationClient:
                             if current == self.led_controller.STATE_CONVERSATION:
                                 self.led_controller.set_state(self.led_controller.STATE_THINKING)
                 
-                # Feed to turn tracker for user VAD
-                self.turn_tracker.process_user_audio(audio_data)
-                
-                # Check for agent silence timeout (skip if using speaker monitor)
-                if not self.use_speaker_monitor:
-                    self.turn_tracker.check_agent_silence()
+                # Feed to turn tracker for user VAD (if enabled)
+                if self.turn_tracker:
+                    self.turn_tracker.process_user_audio(audio_data)
+                    
+                    # Check for agent silence timeout (skip if using speaker monitor)
+                    if not self.use_speaker_monitor:
+                        self.turn_tracker.check_agent_silence()
                 
                 # Encode as base64 and send
                 audio_b64 = base64.b64encode(audio_data.tobytes()).decode('utf-8')
@@ -414,15 +420,17 @@ class ElevenLabsConversationClient:
                     if transcript:
                         print(f"👤 You: {transcript}")
                         self.last_audio_time = time.time()  # Reset silence timer
-                        # Record transcript for turn reconciliation
-                        self.turn_tracker.record_user_transcript(transcript)
+                        # Record transcript for turn reconciliation (if enabled)
+                        if self.turn_tracker:
+                            self.turn_tracker.record_user_transcript(transcript)
                 
                 elif 'agent_response_event' in data:
                     response = data['agent_response_event'].get('agent_response', '')
                     if response:
                         print(f"🤖 Agent: {response}")
-                        # Record agent response for turn reconciliation
-                        self.turn_tracker.record_agent_response(response)
+                        # Record agent response for turn reconciliation (if enabled)
+                        if self.turn_tracker:
+                            self.turn_tracker.record_agent_response(response)
                 
                 elif 'audio_event' in data:
                     # Decode and play agent audio
@@ -435,8 +443,8 @@ class ElevenLabsConversationClient:
                         if self.led_controller:
                             self.led_controller.update_speaking_leds(audio_array)
                         
-                        # Feed to turn tracker for agent VAD (skip if using speaker monitor)
-                        if not self.use_speaker_monitor:
+                        # Feed to turn tracker for agent VAD (if enabled, skip if using speaker monitor)
+                        if self.turn_tracker and not self.use_speaker_monitor:
                             playback_time = time.time()  # Estimation mode
                             self.turn_tracker.process_agent_audio(audio_array, playback_time)
                         
@@ -517,20 +525,22 @@ class ElevenLabsConversationClient:
             self.audio_stream.stop()
             self.audio_stream.close()
         
-        # Stop speaker monitor and transfer its turns to turn tracker
+        # Stop speaker monitor and transfer its turns to turn tracker (if enabled)
         if self.speaker_monitor:
             self.speaker_monitor.stop()
             # Copy speaker monitor turns to turn tracker's agent VAD
             # This replaces the estimation-based agent turns with ground truth
-            from lib.turn_tracker import Turn, Speaker
-            if self.turn_tracker.agent_vad:
-                self.turn_tracker.agent_vad.turns = [
-                    Turn(speaker=Speaker.AGENT, start_time=t.start_time, end_time=t.end_time)
-                    for t in self.speaker_monitor.turns
-                ]
+            if self.turn_tracker:
+                from lib.turn_tracker import Turn, Speaker
+                if self.turn_tracker.agent_vad:
+                    self.turn_tracker.agent_vad.turns = [
+                        Turn(speaker=Speaker.AGENT, start_time=t.start_time, end_time=t.end_time)
+                        for t in self.speaker_monitor.turns
+                    ]
         
-        # Finalize turn tracker and print summary
-        self.turn_tracker.finalize()
+        # Finalize turn tracker and print summary (if enabled)
+        if self.turn_tracker:
+            self.turn_tracker.finalize()
         
         # Send conversation end notification
         await orchestrator_client.send_conversation_end(

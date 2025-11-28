@@ -34,6 +34,9 @@ class Config:
     # =========================================================================
     # TURN TRACKER SETTINGS
     # =========================================================================
+    # Skip turn tracking entirely (no tracking, no logs, no reports)
+    SKIP_TURN_TRACKING = os.getenv("SKIP_TURN_TRACKING", "true").lower() == "true"
+    
     # Speaker monitor mode: "loopback" for ALSA loopback, "" to disable
     SPEAKER_MONITOR_MODE = os.getenv("SPEAKER_MONITOR_MODE", "")
     SPEAKER_MONITOR_LOOPBACK_DEVICE = os.getenv("SPEAKER_MONITOR_LOOPBACK_DEVICE", "speaker_monitor")
