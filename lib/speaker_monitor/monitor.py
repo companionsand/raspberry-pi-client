@@ -23,6 +23,7 @@ from datetime import datetime
 import numpy as np
 import onnxruntime as ort
 import sounddevice as sd
+from scipy import signal
 
 
 @dataclass
@@ -96,7 +97,8 @@ class SpeakerMonitor:
         self.running = False
         self._thread: Optional[threading.Thread] = None
         self._audio_queue: queue.Queue = queue.Queue()
-        self._loopback_device_index: Optional[int] = None
+        self._loopback_device: Optional[str] = None  # ALSA device name
+        self._device_sample_rate: int = sample_rate  # Native device sample rate
         
         # VAD state
         self._vad_session: Optional[ort.InferenceSession] = None
@@ -115,13 +117,13 @@ class SpeakerMonitor:
         self.turns: List[SpeakerTurn] = []
         
         # Try to find loopback device
-        self._loopback_device_index = self._find_loopback_device()
+        self._loopback_device = self._find_loopback_device()
         
-        if self._loopback_device_index is not None:
+        if self._loopback_device is not None:
             self._load_vad_model()
             if self._vad_session is not None:
                 self.enabled = True
-                print(f"✓ SpeakerMonitor enabled (using ALSA {loopback_device_name})")
+                print(f"✓ SpeakerMonitor enabled (using ALSA '{self._loopback_device}')")
             else:
                 print("⚠ SpeakerMonitor: VAD model not found, disabled")
         else:
@@ -129,24 +131,25 @@ class SpeakerMonitor:
             print(f"   For accurate agent timing, run:")
             print(f"   sudo ./raspberry-pi-client-wrapper/speaker-monitor/install-loopback.sh")
     
-    def _find_loopback_device(self) -> Optional[int]:
-        """Find the ALSA loopback device by name"""
+    def _find_loopback_device(self) -> Optional[str]:
+        """Find the ALSA loopback device by name, return device name string"""
         try:
             devices = sd.query_devices()
             for i, device in enumerate(devices):
                 device_name = device['name'].lower()
-                # Look for our speaker_monitor device or generic loopback
-                if self.loopback_device_name.lower() in device_name:
+                # Look for our speaker_monitor device or loopback
+                if self.loopback_device_name.lower() in device_name or 'loopback' in device_name:
                     if device['max_input_channels'] > 0:
-                        return i
-                # Also try to find "loopback" in the name
-                if 'loopback' in device_name and device['max_input_channels'] > 0:
-                    # Check if it's the capture side (subdevice 1)
-                    if 'hw:' in device['name'] and ',1' in device['name']:
-                        return i
+                        # Get the device's default sample rate
+                        default_sr = int(device.get('default_samplerate', 48000))
+                        self._device_sample_rate = default_sr
+                        if self.debug:
+                            print(f"  [SPKR] Found device: {device['name']}, native rate: {default_sr}Hz")
+                        return device['name']
         except Exception as e:
             if self.debug:
                 print(f"  [SPKR] Error querying devices: {e}")
+        
         return None
     
     def _load_vad_model(self):
@@ -204,9 +207,21 @@ class SpeakerMonitor:
         self._consecutive_silence_frames = 0
         self._speech_onset_time = None
     
+    def _resample_audio(self, audio: np.ndarray, orig_sr: int, target_sr: int) -> np.ndarray:
+        """Resample audio from orig_sr to target_sr"""
+        if orig_sr == target_sr:
+            return audio
+        # Calculate the number of samples in the resampled audio
+        num_samples = int(len(audio) * target_sr / orig_sr)
+        return signal.resample(audio, num_samples).astype(np.float32)
+    
     def _capture_loop(self):
         """Background thread that captures audio from loopback device"""
         try:
+            # Calculate block size for native sample rate
+            # We want roughly the same duration as VAD_CHUNK_SIZE at 16kHz
+            native_block_size = int(self.VAD_CHUNK_SIZE * self._device_sample_rate / self.sample_rate)
+            
             def audio_callback(indata, frames, time_info, status):
                 if not self.running:
                     return
@@ -215,17 +230,25 @@ class SpeakerMonitor:
                 audio = indata[:, 0].astype(np.float32) if indata.ndim > 1 else indata.flatten().astype(np.float32)
                 self._audio_queue.put((current_time, audio))
             
+            if self.debug:
+                print(f"  [SPKR] Opening device at {self._device_sample_rate}Hz, blocksize={native_block_size}")
+            
+            # Capture at device's native sample rate, then resample for VAD
             with sd.InputStream(
-                device=self._loopback_device_index,
-                samplerate=self.sample_rate,
+                device=self._loopback_device,
+                samplerate=self._device_sample_rate,
                 channels=1,
                 dtype='float32',
-                blocksize=self.VAD_CHUNK_SIZE,
+                blocksize=native_block_size,
                 callback=audio_callback
             ):
                 while self.running:
                     try:
                         timestamp, audio = self._audio_queue.get(timeout=0.1)
+                        
+                        # Resample to 16kHz for VAD if needed
+                        if self._device_sample_rate != self.sample_rate:
+                            audio = self._resample_audio(audio, self._device_sample_rate, self.sample_rate)
                         
                         # Add to buffer and process
                         self._audio_buffer = np.concatenate([self._audio_buffer, audio])
