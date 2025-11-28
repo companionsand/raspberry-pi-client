@@ -32,6 +32,28 @@ class Config:
     CHUNK_SIZE = 512  # ~32ms frames for low latency
     
     # =========================================================================
+    # TURN TRACKER SETTINGS
+    # =========================================================================
+    # Speaker monitor mode: "loopback" for ALSA loopback, "" to disable
+    SPEAKER_MONITOR_MODE = os.getenv("SPEAKER_MONITOR_MODE", "")
+    SPEAKER_MONITOR_LOOPBACK_DEVICE = os.getenv("SPEAKER_MONITOR_LOOPBACK_DEVICE", "speaker_monitor")
+    
+    # Turn tracker VAD settings
+    TURN_TRACKER_VAD_THRESHOLD = float(os.getenv("TURN_TRACKER_VAD_THRESHOLD", "0.5"))
+    
+    # User (mic) settings - allow short utterances like "Yep"
+    TURN_TRACKER_USER_SILENCE_TIMEOUT = float(os.getenv("TURN_TRACKER_USER_SILENCE_TIMEOUT", "2.5"))
+    TURN_TRACKER_USER_MIN_TURN_DURATION = float(os.getenv("TURN_TRACKER_USER_MIN_TURN_DURATION", "0.15"))
+    TURN_TRACKER_USER_MIN_SPEECH_ONSET = float(os.getenv("TURN_TRACKER_USER_MIN_SPEECH_ONSET", "0.08"))
+    
+    # Agent (speaker) settings
+    TURN_TRACKER_AGENT_SILENCE_TIMEOUT = float(os.getenv("TURN_TRACKER_AGENT_SILENCE_TIMEOUT", "2.5"))
+    TURN_TRACKER_AGENT_MIN_TURN_DURATION = float(os.getenv("TURN_TRACKER_AGENT_MIN_TURN_DURATION", "0.2"))
+    TURN_TRACKER_AGENT_MIN_SPEECH_ONSET = float(os.getenv("TURN_TRACKER_AGENT_MIN_SPEECH_ONSET", "0.08"))
+    
+    TURN_TRACKER_DEBOUNCE_WINDOW = float(os.getenv("TURN_TRACKER_DEBOUNCE_WINDOW", "0.5"))
+    
+    # =========================================================================
     # RUNTIME CONFIGURATION (fetched from backend after authentication)
     # =========================================================================
     # These will be populated after device authentication

@@ -35,6 +35,12 @@
 - Easy to test and maintain
 - Reusable components
 
+### 6. **Turn Tracking**
+- VAD-based speech turn detection for both user and agent
+- Reconciles turns with transcripts for complete conversation timeline
+- Response latency measurement (user_end → agent_start)
+- Optional ground-truth speaker monitoring via ALSA loopback
+
 ## Project Structure
 
 ```
@@ -57,6 +63,12 @@ raspberry-pi-client/
     ├── orchestrator/
     │   ├── __init__.py
     │   └── client.py     # Orchestrator WebSocket client
+    ├── turn_tracker/
+    │   ├── __init__.py
+    │   └── tracker.py    # VAD-based turn tracking
+    ├── speaker_monitor/
+    │   ├── __init__.py
+    │   └── monitor.py    # ALSA loopback speaker monitoring
     └── telemetry/
         ├── __init__.py
         └── telemetry.py  # OpenTelemetry setup (moved from root)
@@ -91,12 +103,53 @@ Optional configuration:
 - `OTEL_EXPORTER_ENDPOINT` - OTEL collector endpoint (default: `http://localhost:4318`)
 - `ENV` - Deployment environment (default: `production`)
 
+### Speaker Monitor Settings (for ground-truth agent timing)
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `SPEAKER_MONITOR_MODE` | `""` | Set to `loopback` to enable ALSA loopback monitoring |
+| `SPEAKER_MONITOR_LOOPBACK_DEVICE` | `speaker_monitor` | ALSA device name for monitoring |
+| `SPEAKER_MONITOR_DEBUG` | `""` | Set to `1` to enable debug logging |
+
+### Turn Tracker Settings
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `TURN_TRACKER_VAD_THRESHOLD` | `0.5` | VAD probability threshold (0.0-1.0) |
+| `TURN_TRACKER_USER_SILENCE_TIMEOUT` | `2.5` | Silence timeout for user turns (seconds) |
+| `TURN_TRACKER_USER_MIN_TURN_DURATION` | `0.15` | Minimum user turn duration (seconds) |
+| `TURN_TRACKER_USER_MIN_SPEECH_ONSET` | `0.08` | Minimum speech onset for user (seconds) |
+| `TURN_TRACKER_AGENT_SILENCE_TIMEOUT` | `2.5` | Silence timeout for agent turns (seconds) |
+| `TURN_TRACKER_AGENT_MIN_TURN_DURATION` | `0.2` | Minimum agent turn duration (seconds) |
+| `TURN_TRACKER_AGENT_MIN_SPEECH_ONSET` | `0.08` | Minimum speech onset for agent (seconds) |
+| `TURN_TRACKER_DEBOUNCE_WINDOW` | `0.5` | Debounce window (seconds) |
+
 Note: Most settings (API keys, wake word, LED settings) are fetched from backend after authentication.
 - `WAKE_WORD` - Wake word to detect (default: "porcupine")
 - `LED_ENABLED` - Enable LED feedback (default: "true")
 - `OTEL_ENABLED` - Enable OpenTelemetry (default: "true")
 - `OTEL_EXPORTER_ENDPOINT` - OTEL exporter endpoint (default: "http://localhost:4318")
 - `ENV` - Environment name (default: "production")
+
+## Speaker Monitor Setup (Optional)
+
+For ground-truth agent speech timing, you can set up ALSA loopback monitoring:
+
+```bash
+# Install ALSA loopback (run once)
+sudo ./raspberry-pi-client-wrapper/speaker-monitor/install-loopback.sh
+
+# Reboot may be required
+sudo reboot
+
+# Enable in your environment
+export SPEAKER_MONITOR_MODE=loopback
+
+# Run the client
+python main.py
+```
+
+Without speaker monitoring, the turn tracker uses estimation mode (analyzing audio before playback), which is less accurate but works without setup.
 
 ## What's Different from Previous Versions?
 
