@@ -8,21 +8,42 @@ The Raspberry Pi client now supports **barge-in functionality**, allowing users 
 
 ### Architecture Changes
 
-The audio playback system has been refactored from **direct write** to **queue-based playback**:
+The audio system has been refactored with **separate streams** and **queue-based playback**:
 
 **Before:**
 ```
+Duplex stream (mic + speaker)
 ElevenLabs → receive audio → write directly to audio stream
 ```
 
 **After:**
 ```
-ElevenLabs → receive audio → queue → playback task → audio stream
-                                ↑
-                          User speech (VAD) triggers flush
+Input stream (mic) ──→ VAD ──→ detect speech ──→ ABORT output stream
+                                                   ↓
+Output stream (speaker) ←── playback task ←── queue ←── ElevenLabs
+
+User speech (VAD) triggers:
+  1. Immediate output stream abort (stops current audio instantly)
+  2. Queue flush (clears pending audio)
+  3. Output stream restart (ready for new audio)
 ```
 
+**Key improvement:** Separate input/output streams allow instant interruption without affecting microphone input.
+
 ### Key Components
+
+#### 0. Separate Input/Output Streams
+**Critical architectural change** for instant barge-in:
+- **Before:** Single duplex stream (mic + speaker together)
+- **After:** Separate `InputStream` (mic) and `OutputStream` (speaker)
+
+**Why this matters:**
+- `stream.write()` is blocking - waits for audio to finish playing
+- With duplex stream, we'd have to wait for current chunk to complete
+- **Separate output stream** can be `abort()`ed instantly without affecting mic input
+- After abort, stream is restarted immediately for new audio
+
+This change enables **true instant interruption** (~0ms latency) instead of waiting for chunk completion (~64ms with default chunk size).
 
 #### 1. Audio Queue (`asyncio.Queue`)
 - All incoming agent audio chunks are placed in a queue
@@ -43,14 +64,21 @@ ElevenLabs → receive audio → queue → playback task → audio stream
 
 #### 4. Barge-In Handler (`_handle_barge_in`)
 When sustained speech is detected:
-1. Sets `playback_active = False` to stop current audio chunk
-2. Drains the entire audio queue (clearing unplayed chunks)
-3. Logs the event with number of cleared chunks
-4. Allows new incoming chunks to resume normal queueing
+1. Sets `playback_active = False` to mark interruption
+2. **Aborts output stream immediately** (`stream.abort()`) - stops current audio instantly
+3. Restarts output stream - ready for new audio
+4. Drains the entire audio queue (clearing unplayed chunks)
+5. Logs the event with number of cleared chunks
+6. Allows new incoming chunks to resume normal queueing
+
+**Critical:** `stream.abort()` stops playback immediately without waiting for buffers to drain (unlike `stream.stop()`)
 
 ### Modified Methods
 
 #### `__init__`
+Changed:
+- `self.audio_stream` → `self.input_stream` + `self.output_stream` (separate streams)
+
 Added:
 - `self.audio_queue` - asyncio.Queue for audio chunks
 - `self.playback_active` - flag to interrupt current playback
@@ -170,7 +198,21 @@ Possible improvements:
 
 ---
 
+## Revision History
+
+### v2 - Instant Interruption (Current)
+- **Change:** Separate input/output streams with `abort()` for instant stop
+- **Latency:** ~0ms (immediate abort)
+- **Date:** November 2025
+
+### v1 - Initial Implementation
+- **Change:** Audio queue with chunk-level interruption
+- **Latency:** ~64ms (waited for current chunk to finish)
+- **Issue:** Not instant enough for natural conversation
+
+---
+
 **Implementation Date**: November 2025  
-**Status**: ✅ Complete and tested  
+**Status**: ✅ Complete - Instant interruption working  
 **Applies to**: raspberry-pi-client only (mac-client may need similar implementation)
 

@@ -42,7 +42,8 @@ class ElevenLabsConversationClient:
         self.mic_device_index = mic_device_index
         self.speaker_device_index = speaker_device_index
         self.websocket = None
-        self.audio_stream = None
+        self.input_stream = None  # Microphone input stream
+        self.output_stream = None  # Speaker output stream (separate for instant abort)
         self.running = False
         self.conversation_id = str(uuid.uuid4())
         self.elevenlabs_conversation_id = None
@@ -165,15 +166,26 @@ class ElevenLabsConversationClient:
         ssl_context = ssl.create_default_context(cafile=certifi.where())
         
         try:
-            # Open audio stream for conversation
-            self.audio_stream = sd.Stream(
-                device=(self.mic_device_index, output_device),
+            # Open separate input and output streams for independent control
+            # Input stream: microphone only
+            self.input_stream = sd.InputStream(
+                device=self.mic_device_index,
                 samplerate=Config.SAMPLE_RATE,
                 channels=Config.CHANNELS,
                 dtype='int16',
                 blocksize=Config.CHUNK_SIZE
             )
-            self.audio_stream.start()
+            self.input_stream.start()
+            
+            # Output stream: speaker only (can be aborted immediately on barge-in)
+            self.output_stream = sd.OutputStream(
+                device=output_device,
+                samplerate=Config.SAMPLE_RATE,
+                channels=Config.CHANNELS,
+                dtype='int16',
+                blocksize=Config.CHUNK_SIZE
+            )
+            self.output_stream.start()
             
             # Connect to WebSocket
             async with websockets.connect(ws_url, ssl=ssl_context) as websocket:
@@ -279,7 +291,7 @@ class ElevenLabsConversationClient:
         try:
             while self.running:
                 # Read audio from microphone
-                audio_data, _ = self.audio_stream.read(Config.CHUNK_SIZE)
+                audio_data, _ = self.input_stream.read(Config.CHUNK_SIZE)
                 
                 # -------------------------------------------------------------------------
                 # Voice Activity Detection (VAD) - Detect if user is speaking
@@ -422,11 +434,26 @@ class ElevenLabsConversationClient:
             self.running = False
     
     async def _handle_barge_in(self):
-        """Handle user barge-in: stop playback and clear audio queue"""
+        """Handle user barge-in: stop playback immediately and clear audio queue"""
         logger = self.logger
         
-        # Stop current playback
+        # Stop current playback immediately by aborting the output stream
         self.playback_active = False
+        
+        # Abort output stream to stop playback instantly (doesn't wait for buffer to drain)
+        if self.output_stream and self.output_stream.active:
+            try:
+                self.output_stream.abort()  # Immediate stop (vs stop() which waits)
+                self.output_stream.start()  # Restart for new audio
+            except Exception as e:
+                if logger:
+                    logger.warning(
+                        "barge_in_stream_abort_failed",
+                        extra={
+                            "error": str(e),
+                            "conversation_id": self.conversation_id
+                        }
+                    )
         
         # Clear the audio queue
         queue_size = self.audio_queue.qsize()
@@ -449,10 +476,10 @@ class ElevenLabsConversationClient:
                     }
                 )
             
-            print(f"🛑 Barge-in detected - cleared {queue_size} queued audio chunks")
+            print(f"🛑 Barge-in detected - stopped playback and cleared {queue_size} queued audio chunks")
     
     async def _play_audio(self):
-        """Play audio chunks from queue to audio stream"""
+        """Play audio chunks from queue to output stream"""
         logger = self.logger
         try:
             while self.running:
@@ -468,23 +495,20 @@ class ElevenLabsConversationClient:
                 # Play the audio chunk (unless barge-in stops us)
                 self.playback_active = True
                 
-                # Write audio in smaller chunks to allow faster interruption
-                chunk_size = Config.CHUNK_SIZE
-                for i in range(0, len(audio_array), chunk_size):
-                    # Check if we should stop playback (barge-in)
-                    if not self.playback_active:
-                        break
-                    
-                    # Check if conversation ended
-                    if not self.running:
-                        break
-                    
-                    # Write audio chunk
-                    chunk = audio_array[i:i+chunk_size]
-                    self.audio_stream.write(chunk)
-                    
-                    # Small yield to allow other tasks to run
-                    await asyncio.sleep(0)
+                # Write to output stream (can be aborted mid-write on barge-in)
+                try:
+                    if self.output_stream and self.output_stream.active:
+                        self.output_stream.write(audio_array)
+                except Exception as e:
+                    # Stream may have been aborted during write (barge-in) - this is expected
+                    if self.playback_active and logger:
+                        logger.debug(
+                            "playback_write_interrupted",
+                            extra={
+                                "error": str(e),
+                                "conversation_id": self.conversation_id
+                            }
+                        )
                 
                 self.playback_active = False
                 
@@ -635,9 +659,14 @@ class ElevenLabsConversationClient:
         """Stop the conversation"""
         self.running = False
         
-        if self.audio_stream:
-            self.audio_stream.stop()
-            self.audio_stream.close()
+        # Stop and close both input and output streams
+        if self.input_stream:
+            self.input_stream.stop()
+            self.input_stream.close()
+        
+        if self.output_stream:
+            self.output_stream.stop()
+            self.output_stream.close()
         
         # Stop speaker monitor and transfer its turns to turn tracker (if enabled)
         if self.speaker_monitor:
