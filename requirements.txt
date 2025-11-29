@@ -27,6 +27,9 @@ pixel-ring>=0.1.0
 # UUID generation
 # (built-in, no package needed)
 
+# Activity detection (YAMNet)
+tflite-runtime>=2.14.0
+
 # OpenTelemetry (upgraded to 1.28.x for protobuf 5.x compatibility)
 opentelemetry-api==1.28.2
 opentelemetry-sdk==1.28.2

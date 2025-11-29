@@ -1,0 +1,2 @@
+"""Activity detection using YAMNet."""
+
