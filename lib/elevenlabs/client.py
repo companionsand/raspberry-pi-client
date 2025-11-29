@@ -442,18 +442,64 @@ class ElevenLabsConversationClient:
             self.running = False
     
     async def _handle_barge_in(self):
-        """Handle user barge-in: stop playback immediately and clear audio queue"""
+        """
+        Handle user barge-in: stop playback immediately and clear audio queue.
+        
+        This method performs an instant interruption by:
+        1. Setting playback_active flag to stop the playback loop
+        2. Aborting the output stream (stops audio immediately, doesn't wait for buffer)
+        3. Restarting the output stream (ready for new audio)
+        4. Clearing any queued audio chunks
+        """
         logger = self.logger
         
-        print(f"🛑 Barge-in triggered!")  # Always print to confirm it's being called
-        
-        # Stop current playback immediately
+        # -------------------------------------------------------------------------
+        # Step 1: Signal playback task to stop
+        # -------------------------------------------------------------------------
         self.playback_active = False
         
-        # Get queue size before clearing
-        queue_size = self.audio_queue.qsize()
+        # -------------------------------------------------------------------------
+        # Step 2: Abort output stream (instant stop, doesn't drain buffer)
+        # This is the key to instant interruption - abort() vs stop()
+        # -------------------------------------------------------------------------
+        if self.output_stream and self.output_stream.active:
+            try:
+                self.output_stream.abort()
+            except Exception as e:
+                print(f"⚠ Output stream abort error: {e}")
         
-        # Clear the audio queue
+        # -------------------------------------------------------------------------
+        # Step 3: Restart output stream (ready for new audio after interruption)
+        # -------------------------------------------------------------------------
+        try:
+            # Determine output device (same logic as in start())
+            output_device = self.speaker_device_index
+            if self.use_speaker_monitor:
+                output_device = None
+            
+            # Close old stream if exists
+            if self.output_stream:
+                try:
+                    self.output_stream.close()
+                except Exception:
+                    pass
+            
+            # Create and start fresh output stream
+            self.output_stream = sd.OutputStream(
+                device=output_device,
+                samplerate=Config.SAMPLE_RATE,
+                channels=Config.CHANNELS,
+                dtype='int16',
+                blocksize=Config.CHUNK_SIZE
+            )
+            self.output_stream.start()
+        except Exception as e:
+            print(f"⚠ Output stream restart error: {e}")
+        
+        # -------------------------------------------------------------------------
+        # Step 4: Clear the audio queue (discard any pending chunks)
+        # -------------------------------------------------------------------------
+        queue_size = self.audio_queue.qsize()
         cleared_count = 0
         while not self.audio_queue.empty():
             try:
@@ -462,11 +508,14 @@ class ElevenLabsConversationClient:
             except asyncio.QueueEmpty:
                 break
         
-        print(f"   ✓ Stopped playback and cleared {cleared_count} queued audio chunks (queue had {queue_size})")
+        # -------------------------------------------------------------------------
+        # Logging: Visible in journalctl -u agent-launcher -f
+        # -------------------------------------------------------------------------
+        print(f"🛑 Interruption detected! Clearing audio pipeline... (cleared {cleared_count} chunks)")
         
         if logger:
             logger.info(
-                "barge_in_triggered",
+                "interruption_detected_clearing_audio_pipeline",
                 extra={
                     "conversation_id": self.conversation_id,
                     "cleared_chunks": cleared_count,
