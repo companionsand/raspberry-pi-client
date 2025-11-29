@@ -111,6 +111,9 @@ class ElevenLabsConversationClient:
         self._vad_threshold_normal = 0.5
         self._vad_threshold_playback = 0.75
         
+        # Agent audio chunk counter (for logging)
+        self._chunk_count = 0
+        
         # -------------------------------------------------------------------------
         # Turn Tracker - Tracks user and agent speech turns
         # -------------------------------------------------------------------------
