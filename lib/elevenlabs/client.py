@@ -106,6 +106,12 @@ class ElevenLabsConversationClient:
         self._last_speech_prob = 0.0       # Last VAD probability (for logging)
         
         # -------------------------------------------------------------------------
+        # Debug logging: RMS and VAD during agent vs user speech
+        # -------------------------------------------------------------------------
+        self._debug_log_interval = 0.5    # Log every 500ms for detailed analysis
+        self._last_debug_log_time = 0.0    # Timestamp for debug logging
+        
+        # -------------------------------------------------------------------------
         # Turn Tracker - Tracks user and agent speech turns
         # -------------------------------------------------------------------------
         self.turn_tracker: Optional[TurnTracker] = None
@@ -341,29 +347,52 @@ class ElevenLabsConversationClient:
                     is_speech = np.abs(audio_data).mean() > 100
                 
                 # -------------------------------------------------------------------------
-                # Barge-in Detection: Sustained speech detection with debouncing
+                # Calculate mic RMS for debugging
                 # -------------------------------------------------------------------------
+                mic_rms = np.sqrt(np.mean(audio_data.astype(float) ** 2))
                 
-                if is_speech:
-                    self._consecutive_speech_frames += 1
-                    
-                    # Trigger barge-in on sustained speech (but only once per speech event)
-                    if self._consecutive_speech_frames >= self._barge_in_speech_threshold:
-                        if not self.barge_in_active:
-                            # Barge-in detected! (first time threshold crossed)
-                            print(f"🎤 USER speaking: sustained {self._consecutive_speech_frames} frames, triggering barge-in")
-                            self.barge_in_active = True
-                            await self._handle_barge_in()
-                        # else: already triggered, don't call handler again (debouncing)
-                else:
-                    # Reset counter on silence
-                    if self._consecutive_speech_frames > 0:
-                        # Log user turn end if they spoke for a meaningful duration
-                        if self._consecutive_speech_frames >= 2:
-                            duration_ms = self._consecutive_speech_frames * (Config.CHUNK_SIZE / Config.SAMPLE_RATE * 1000)
-                            print(f"🎤 USER turn ended: {self._consecutive_speech_frames} frames (~{duration_ms:.0f}ms of speech)")
-                    self._consecutive_speech_frames = 0
-                    self.barge_in_active = False  # Reset: ready for next barge-in
+                # -------------------------------------------------------------------------
+                # Determine if agent is currently speaking
+                # Agent is speaking if playback is active OR audio queue has items
+                # -------------------------------------------------------------------------
+                agent_speaking = self.playback_active or (self.audio_queue.qsize() > 0)
+                
+                # -------------------------------------------------------------------------
+                # Debug logging: RMS and VAD during agent vs user speech periods
+                # -------------------------------------------------------------------------
+                now = time.time()
+                if now - self._last_debug_log_time > self._debug_log_interval:
+                    period = "AGENT_SPEECH" if agent_speaking else "USER_SPEECH"
+                    vad_status = "SPEECH" if is_speech else "SILENCE"
+                    print(f"📊 [{period}] Mic RMS: {mic_rms:.1f}, VAD prob: {speech_prob:.3f}, VAD: {vad_status}")
+                    self._last_debug_log_time = now
+                
+                # -------------------------------------------------------------------------
+                # Barge-in Detection: TEMPORARILY DISABLED FOR TESTING
+                # -------------------------------------------------------------------------
+                # Temporarily disabled to test RMS and VAD behavior during agent playback
+                # Original barge-in code commented out below:
+                #
+                # if is_speech:
+                #     self._consecutive_speech_frames += 1
+                #     
+                #     # Trigger barge-in on sustained speech (but only once per speech event)
+                #     if self._consecutive_speech_frames >= self._barge_in_speech_threshold:
+                #         if not self.barge_in_active:
+                #             # Barge-in detected! (first time threshold crossed)
+                #             print(f"🎤 USER speaking: sustained {self._consecutive_speech_frames} frames, triggering barge-in")
+                #             self.barge_in_active = True
+                #             await self._handle_barge_in()
+                #         # else: already triggered, don't call handler again (debouncing)
+                # else:
+                #     # Reset counter on silence
+                #     if self._consecutive_speech_frames > 0:
+                #         # Log user turn end if they spoke for a meaningful duration
+                #         if self._consecutive_speech_frames >= 2:
+                #             duration_ms = self._consecutive_speech_frames * (Config.CHUNK_SIZE / Config.SAMPLE_RATE * 1000)
+                #             print(f"🎤 USER turn ended: {self._consecutive_speech_frames} frames (~{duration_ms:.0f}ms of speech)")
+                #     self._consecutive_speech_frames = 0
+                #     self.barge_in_active = False  # Reset: ready for next barge-in
                 
                 # -------------------------------------------------------------------------
                 # Periodic VAD status logging (every 2 seconds during conversation)
