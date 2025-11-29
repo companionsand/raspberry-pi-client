@@ -90,6 +90,7 @@ class ElevenLabsConversationClient:
         self.audio_queue = asyncio.Queue()  # Queue for agent audio chunks
         self.playback_active = False  # Flag to stop current audio playback
         self.barge_in_active = False  # Flag indicating barge-in occurred
+        self.barge_in_enabled = False  # Barge-in feature disabled
         
         # Sustained speech detection for barge-in
         # Lower threshold = more sensitive (catches short words like "Stop")
@@ -357,50 +358,57 @@ class ElevenLabsConversationClient:
                 mic_rms = np.sqrt(np.mean(audio_data.astype(float) ** 2))
                 
                 # -------------------------------------------------------------------------
-                # Barge-in Detection: With guard period and state protection
+                # Barge-in Detection: With guard period and state protection (DISABLED)
                 # -------------------------------------------------------------------------
-                # Guard period: Ignore VAD spikes shortly after user stops speaking
-                # This prevents residual VAD state from triggering false barge-in
-                in_guard_period = False
-                guard_time_ms = 0.0
-                if self._user_speech_end_time:
-                    guard_time_ms = (time.time() - self._user_speech_end_time) * 1000
-                    in_guard_period = guard_time_ms < self._barge_in_guard_period_ms
-                
-                # -------------------------------------------------------------------------
-                # Debug logging: RMS, VAD prob, guard state (every 500ms during agent speech)
-                # -------------------------------------------------------------------------
-                now = time.time()
-                if is_agent_active and (now - self._last_debug_log_time > self._debug_log_interval):
-                    guard_status = f"GUARD({guard_time_ms:.0f}ms)" if in_guard_period else "NO_GUARD"
-                    vad_status = "SPEECH" if is_speech else "silence"
-                    print(f"📊 [AGENT_PLAYING] RMS={mic_rms:.0f} VAD={speech_prob:.3f}({vad_status}) thresh={active_threshold} {guard_status} frames={self._consecutive_speech_frames}")
-                    self._last_debug_log_time = now
-                
-                if is_speech:
-                    self._consecutive_speech_frames += 1
+                # Barge-in is currently disabled - user speech during agent playback will not interrupt
+                if self.barge_in_enabled:
+                    # Guard period: Ignore VAD spikes shortly after user stops speaking
+                    # This prevents residual VAD state from triggering false barge-in
+                    in_guard_period = False
+                    guard_time_ms = 0.0
+                    if self._user_speech_end_time:
+                        guard_time_ms = (time.time() - self._user_speech_end_time) * 1000
+                        in_guard_period = guard_time_ms < self._barge_in_guard_period_ms
                     
-                    # Trigger barge-in on sustained speech (but only once per speech event)
-                    # Additional checks: not in guard period, agent must be active
-                    if self._consecutive_speech_frames >= self._barge_in_speech_threshold:
-                        if not self.barge_in_active:
-                            # Check guard period - skip if too close to user's last speech
-                            if in_guard_period:
-                                print(f"🛡️ GUARD BLOCKED: VAD spike at {guard_time_ms:.0f}ms after user stopped (prob={speech_prob:.2f}, RMS={mic_rms:.0f})")
-                            elif is_agent_active:
-                                # Barge-in detected during agent speech!
-                                print(f"🎤 BARGE-IN: User interrupting agent (prob={speech_prob:.2f}, RMS={mic_rms:.0f}, thresh={active_threshold})")
-                                self.barge_in_active = True
-                                await self._handle_barge_in()
-                            # else: agent not active, no need for barge-in (normal turn-taking)
-                        # else: already triggered, don't call handler again (debouncing)
+                    # -------------------------------------------------------------------------
+                    # Debug logging: RMS, VAD prob, guard state (every 500ms during agent speech)
+                    # -------------------------------------------------------------------------
+                    now = time.time()
+                    if is_agent_active and (now - self._last_debug_log_time > self._debug_log_interval):
+                        guard_status = f"GUARD({guard_time_ms:.0f}ms)" if in_guard_period else "NO_GUARD"
+                        vad_status = "SPEECH" if is_speech else "silence"
+                        print(f"📊 [AGENT_PLAYING] RMS={mic_rms:.0f} VAD={speech_prob:.3f}({vad_status}) thresh={active_threshold} {guard_status} frames={self._consecutive_speech_frames}")
+                        self._last_debug_log_time = now
+                    
+                    if is_speech:
+                        self._consecutive_speech_frames += 1
+                        
+                        # Trigger barge-in on sustained speech (but only once per speech event)
+                        # Additional checks: not in guard period, agent must be active
+                        if self._consecutive_speech_frames >= self._barge_in_speech_threshold:
+                            if not self.barge_in_active:
+                                # Check guard period - skip if too close to user's last speech
+                                if in_guard_period:
+                                    print(f"🛡️ GUARD BLOCKED: VAD spike at {guard_time_ms:.0f}ms after user stopped (prob={speech_prob:.2f}, RMS={mic_rms:.0f})")
+                                elif is_agent_active:
+                                    # Barge-in detected during agent speech!
+                                    print(f"🎤 BARGE-IN: User interrupting agent (prob={speech_prob:.2f}, RMS={mic_rms:.0f}, thresh={active_threshold})")
+                                    self.barge_in_active = True
+                                    await self._handle_barge_in()
+                                # else: agent not active, no need for barge-in (normal turn-taking)
+                            # else: already triggered, don't call handler again (debouncing)
+                    else:
+                        # User stopped speaking - record timestamp for guard period
+                        if self._consecutive_speech_frames >= 2:
+                            self._user_speech_end_time = time.time()
+                            print(f"🎤 USER turn ended: {self._consecutive_speech_frames} frames (~{self._consecutive_speech_frames * 10}ms), guard period started")
+                        self._consecutive_speech_frames = 0
+                        self.barge_in_active = False  # Reset: ready for next barge-in
                 else:
-                    # User stopped speaking - record timestamp for guard period
-                    if self._consecutive_speech_frames >= 2:
-                        self._user_speech_end_time = time.time()
-                        print(f"🎤 USER turn ended: {self._consecutive_speech_frames} frames (~{self._consecutive_speech_frames * 10}ms), guard period started")
-                    self._consecutive_speech_frames = 0
-                    self.barge_in_active = False  # Reset: ready for next barge-in
+                    # Barge-in disabled - reset counters but don't process barge-in logic
+                    if not is_speech:
+                        self._consecutive_speech_frames = 0
+                        self.barge_in_active = False
                 
                 # -------------------------------------------------------------------------
                 # LED State Management: LISTENING ↔ THINKING transitions
