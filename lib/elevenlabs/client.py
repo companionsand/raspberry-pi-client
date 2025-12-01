@@ -332,19 +332,21 @@ class ElevenLabsConversationClient:
                     self._consecutive_speech_frames += 1
                     
                     # Trigger barge-in on sustained speech (but only once per speech event)
+                    # AND only if agent is actually speaking (has queued audio or is playing)
                     if self._consecutive_speech_frames >= self._barge_in_speech_threshold:
                         if not self.barge_in_active:
-                            # Barge-in detected! (first time threshold crossed)
-                            print(f"[DEBUG] Sustained speech detected ({self._consecutive_speech_frames} frames)")
-                            self.barge_in_active = True
-                            await self._handle_barge_in()
+                            # Check if there's actually something to interrupt
+                            has_audio_to_interrupt = self.playback_active or not self.audio_queue.empty()
+                            
+                            if has_audio_to_interrupt:
+                                # Barge-in detected! (first time threshold crossed)
+                                print(f"[DEBUG] Barge-in: User speaking while agent has audio (queue: {self.audio_queue.qsize()}, playing: {self.playback_active})")
+                                self.barge_in_active = True
+                                await self._handle_barge_in()
+                            # else: user speaking but agent silent - normal turn-taking, not barge-in
                         # else: already triggered, don't call handler again (debouncing)
                 else:
                     # Reset counter on silence
-                    if self._consecutive_speech_frames > 0:
-                        # Only log if we had some speech frames
-                        if self._consecutive_speech_frames >= 2:
-                            print(f"[DEBUG] Speech ended after {self._consecutive_speech_frames} frames (threshold: {self._barge_in_speech_threshold})")
                     self._consecutive_speech_frames = 0
                     self.barge_in_active = False  # Reset: ready for next barge-in
                 

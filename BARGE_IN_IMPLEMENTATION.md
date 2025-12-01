@@ -11,12 +11,14 @@ The Raspberry Pi client now supports **barge-in functionality**, allowing users 
 The audio system has been refactored with **separate streams** and **queue-based playback**:
 
 **Before:**
+
 ```
 Duplex stream (mic + speaker)
 ElevenLabs → receive audio → write directly to audio stream
 ```
 
 **After:**
+
 ```
 Input stream (mic) ──→ VAD ──→ detect speech ──→ ABORT output stream
                                                    ↓
@@ -33,11 +35,14 @@ User speech (VAD) triggers:
 ### Key Components
 
 #### 0. Separate Input/Output Streams
+
 **Critical architectural change** for instant barge-in:
+
 - **Before:** Single duplex stream (mic + speaker together)
 - **After:** Separate `InputStream` (mic) and `OutputStream` (speaker)
 
 **Why this matters:**
+
 - `stream.write()` is blocking - waits for audio to finish playing
 - With duplex stream, we'd have to wait for current chunk to complete
 - **Separate output stream** can be `abort()`ed instantly without affecting mic input
@@ -46,24 +51,31 @@ User speech (VAD) triggers:
 This change enables **true instant interruption** (~0ms latency) instead of waiting for chunk completion (~64ms with default chunk size).
 
 #### 1. Audio Queue (`asyncio.Queue`)
+
 - All incoming agent audio chunks are placed in a queue
 - Decouples audio reception from playback
 - Allows interruption without blocking the receive pipeline
 
 #### 2. Playback Task (`_play_audio`)
+
 - Runs concurrently with send/receive tasks
 - Consumes audio chunks from queue and writes to stream
 - Plays audio in smaller sub-chunks for faster interruption response
 - Respects `playback_active` flag to stop mid-playback
 
-#### 3. Sustained Speech Detection
+#### 3. Sustained Speech Detection with Smart Triggering
+
 - Tracks consecutive VAD frames detecting speech
-- Requires **3 consecutive frames** of detected speech to trigger barge-in
+- Requires **2 consecutive frames** of detected speech to trigger barge-in
+- Each frame is ~10ms (100 chunks/second), so ~20ms of sustained speech
+- **Only triggers if agent is actually speaking** (has queued audio OR is playing)
 - Prevents false triggers from brief noise or artifacts
-- Each frame is ~10ms (100 chunks/second), so ~30ms of sustained speech
+- Avoids unnecessary "barge-ins" during normal turn-taking when agent is silent
 
 #### 4. Barge-In Handler (`_handle_barge_in`)
+
 When sustained speech is detected:
+
 1. Sets `playback_active = False` to mark interruption
 2. **Aborts output stream immediately** (`stream.abort()`) - stops current audio instantly
 3. Restarts output stream - ready for new audio
@@ -76,10 +88,13 @@ When sustained speech is detected:
 ### Modified Methods
 
 #### `__init__`
+
 Changed:
+
 - `self.audio_stream` → `self.input_stream` + `self.output_stream` (separate streams)
 
 Added:
+
 - `self.audio_queue` - asyncio.Queue for audio chunks
 - `self.playback_active` - flag to interrupt current playback
 - `self.barge_in_active` - tracks if barge-in is currently active
@@ -87,7 +102,9 @@ Added:
 - `self._barge_in_speech_threshold` - threshold (3 frames)
 
 #### `_send_audio`
+
 Added sustained speech detection:
+
 ```python
 if is_speech:
     self._consecutive_speech_frames += 1
@@ -99,14 +116,18 @@ else:
 ```
 
 #### `_receive_messages`
+
 Changed from direct write to queueing:
+
 ```python
 # Old: self.audio_stream.write(audio_array)
 # New: await self.audio_queue.put(audio_array)
 ```
 
 #### `start`
+
 Added playback task to concurrent execution:
+
 ```python
 playback_task = asyncio.create_task(self._play_audio())
 await asyncio.wait([send_task, receive_task, playback_task], ...)
@@ -115,12 +136,14 @@ await asyncio.wait([send_task, receive_task, playback_task], ...)
 ## Behavior
 
 ### Normal Flow
+
 1. Agent audio arrives from ElevenLabs
 2. Audio chunk is queued
 3. Playback task dequeues and plays chunk
 4. Process continues until conversation ends
 
 ### Barge-In Flow
+
 1. User starts speaking (sustained for ~30ms)
 2. Barge-in triggered:
    - Current audio chunk stops immediately
@@ -141,17 +164,20 @@ await asyncio.wait([send_task, receive_task, playback_task], ...)
 ### Adjustable Parameters
 
 In `__init__`:
+
 ```python
 self._barge_in_speech_threshold = 3  # Frames (default: 3 = ~30ms)
 ```
 
 To make barge-in more/less sensitive:
+
 - **Increase** threshold: More sustained speech required (fewer false triggers)
 - **Decrease** threshold: Faster barge-in response (more sensitive)
 
 ### Chunk Size for Interruption
 
 In `_play_audio`:
+
 ```python
 chunk_size = Config.CHUNK_SIZE  # Default: 1024 samples (~64ms at 16kHz)
 ```
@@ -169,6 +195,7 @@ Smaller chunks = faster interruption response, but more overhead.
 ## Logs
 
 Barge-in events are logged with:
+
 ```json
 {
   "event": "barge_in_triggered",
@@ -190,6 +217,7 @@ Monitor these logs to tune sensitivity and understand user behavior.
 ## Future Enhancements
 
 Possible improvements:
+
 1. **Adaptive threshold**: Adjust sensitivity based on environment noise
 2. **Partial playback**: Resume from interruption point instead of dropping
 3. **ElevenLabs cancellation**: Send upstream signal to stop generation
@@ -201,11 +229,13 @@ Possible improvements:
 ## Revision History
 
 ### v2 - Instant Interruption (Current)
+
 - **Change:** Separate input/output streams with `abort()` for instant stop
 - **Latency:** ~0ms (immediate abort)
 - **Date:** November 2025
 
 ### v1 - Initial Implementation
+
 - **Change:** Audio queue with chunk-level interruption
 - **Latency:** ~64ms (waited for current chunk to finish)
 - **Issue:** Not instant enough for natural conversation
@@ -215,4 +245,3 @@ Possible improvements:
 **Implementation Date**: November 2025  
 **Status**: ✅ Complete - Instant interruption working  
 **Applies to**: raspberry-pi-client only (mac-client may need similar implementation)
-
