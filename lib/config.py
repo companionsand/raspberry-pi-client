@@ -148,4 +148,3 @@ class Config:
             print(f"   Default Reactive Agent: Cached (fast wake word response)")
         else:
             print(f"   Default Reactive Agent: Not configured (will fetch on wake word)")
-

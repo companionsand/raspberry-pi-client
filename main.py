@@ -127,7 +127,6 @@ class KinClient:
             self.logger = Config.LOGGER
         
         # Setup signal handlers
-        signal.signal(signal.SIGUSR1, self._handle_terminate_signal)
         signal.signal(signal.SIGINT, self._handle_interrupt_signal)
         signal.signal(signal.SIGTERM, self._handle_interrupt_signal)
     
@@ -139,20 +138,6 @@ class KinClient:
         except Exception:
             # If file doesn't exist or can't be touched, silently ignore
             pass
-    
-    def _handle_terminate_signal(self, sig, frame):
-        """Handle user-initiated conversation termination signal (SIGUSR1)"""
-        print("\n🛑 User termination signal received (conversation only)")
-        if self.logger:
-            self.logger.info(
-                "terminate_signal_received",
-                extra={
-                    "signal": "SIGUSR1",
-                    "user_id": Config.USER_ID,
-                    "device_id": Config.DEVICE_ID
-                }
-            )
-        self.user_terminate[0] = True
     
     def _handle_interrupt_signal(self, sig, frame):
         """Handle interrupt/termination signals for full shutdown (Ctrl+C, SIGTERM)"""
@@ -341,7 +326,6 @@ class KinClient:
         print("\n" + "="*60)
         print(f"✓ Ready! Say '{Config.WAKE_WORD}' to start a conversation")
         print("  Press Ctrl+C to exit")
-        print("  Send SIGUSR1 to end conversation only")
         print("="*60 + "\n")
         
         # Main loop
@@ -742,4 +726,3 @@ def main():
 
 if __name__ == "__main__":
     main()
-

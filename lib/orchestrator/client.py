@@ -3,6 +3,7 @@
 import json
 import asyncio
 import ssl
+from typing import Optional
 import websockets
 import certifi
 from datetime import datetime, timezone
@@ -542,4 +543,3 @@ class OrchestratorClient:
                     "device_id": Config.DEVICE_ID
                 }
             )
-

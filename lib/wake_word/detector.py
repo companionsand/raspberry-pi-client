@@ -14,7 +14,13 @@ import pvporcupine
 import sounddevice as sd
 import numpy as np
 import onnxruntime as ort
-from elevenlabs import ElevenLabs
+from elevenlabs import (
+    AudioFormat,
+    CommitStrategy,
+    ElevenLabs,
+    RealtimeAudioOptions,
+)
+from elevenlabs.realtime.connection import RealtimeEvents
 from lib.config import Config
 
 # Import telemetry (optional - graceful fallback if not available)
@@ -466,11 +472,16 @@ class WakeWordDetector:
                         loop = asyncio.new_event_loop()
                         asyncio.set_event_loop(loop)
                     
+                    # If loop is already running elsewhere, use a fresh loop for blocking waits
+                    if loop.is_running():
+                        loop = asyncio.new_event_loop()
+                        asyncio.set_event_loop(loop)
+                    
                     # Run verification synchronously
                     verified = loop.run_until_complete(self._verify_with_scribe(verification_audio))
                     
                     # Send detection data async (fire and forget - don't block wake word)
-                    asyncio.create_task(self._send_detection_data_async(
+                    loop.run_until_complete(self._send_detection_data_async(
                         wake_word_detector_result=True,  # Picovoice detected
                         verification_audio=verification_audio,
                         asr_result=verified,  # Scribe result
@@ -517,7 +528,11 @@ class WakeWordDetector:
                         loop = asyncio.new_event_loop()
                         asyncio.set_event_loop(loop)
                     
-                    asyncio.create_task(self._send_detection_data_async(
+                    if loop.is_running():
+                        loop = asyncio.new_event_loop()
+                        asyncio.set_event_loop(loop)
+                    
+                    loop.run_until_complete(self._send_detection_data_async(
                         wake_word_detector_result=True,
                         verification_audio=verification_audio if 'verification_audio' in locals() else [],
                         asr_result=None,  # Error occurred
@@ -551,7 +566,11 @@ class WakeWordDetector:
                     loop = asyncio.new_event_loop()
                     asyncio.set_event_loop(loop)
                 
-                asyncio.create_task(self._send_detection_data_async(
+                if loop.is_running():
+                    loop = asyncio.new_event_loop()
+                    asyncio.set_event_loop(loop)
+                
+                loop.run_until_complete(self._send_detection_data_async(
                     wake_word_detector_result=True,
                     verification_audio=verification_audio,
                     asr_result=None,  # Scribe not enabled
@@ -664,11 +683,36 @@ class WakeWordDetector:
             async def transcribe():
                 nonlocal transcript_text
                 connection = await client.speech_to_text.realtime.connect(
-                    model_id="scribe_v2_realtime",
-                    audio_format="pcm_16000",
-                    sample_rate=16000,
-                    commit_strategy="manual"
+                    RealtimeAudioOptions(
+                        model_id="scribe_v2_realtime",
+                        audio_format=AudioFormat.PCM_16000,
+                        sample_rate=16000,
+                        commit_strategy=CommitStrategy.MANUAL,
+                        language_code="en",
+                    )
                 )
+                
+                # Use event callbacks to capture the committed transcript
+                loop = asyncio.get_event_loop()
+                transcript_future = loop.create_future()
+                
+                def handle_committed(data):
+                    nonlocal transcript_text
+                    transcript_text = data.get("text") or data.get("transcript") or ""
+                    if not transcript_future.done():
+                        transcript_future.set_result(transcript_text)
+                
+                def handle_error(data):
+                    err = data.get("error") or data.get("message") or "Unknown Scribe error"
+                    self._last_scribe_error = err
+                    if not transcript_future.done():
+                        transcript_future.set_exception(RuntimeError(err))
+                
+                connection.on(RealtimeEvents.COMMITTED_TRANSCRIPT, handle_committed)
+                connection.on(RealtimeEvents.COMMITTED_TRANSCRIPT_WITH_TIMESTAMPS, handle_committed)
+                connection.on(RealtimeEvents.ERROR, handle_error)
+                connection.on(RealtimeEvents.AUTH_ERROR, handle_error)
+                connection.on(RealtimeEvents.QUOTA_EXCEEDED, handle_error)
                 
                 try:
                     # Send audio in chunks (simulate streaming)
@@ -682,23 +726,16 @@ class WakeWordDetector:
                     
                     # Commit to get final transcript
                     await connection.commit()
-                    
-                    # Wait for committed transcript with timeout
-                    start_time = time.time()
-                    while time.time() - start_time < self._scribe_timeout_seconds:
-                        message = await asyncio.wait_for(
-                            connection.receive(),
-                            timeout=self._scribe_timeout_seconds - (time.time() - start_time)
-                        )
-                        
-                        if message.get("type") == "committed_transcript":
-                            transcript_text = message.get("text", "")
-                            break
-                    
+                    try:
+                        await asyncio.wait_for(transcript_future, timeout=self._scribe_timeout_seconds)
+                    except asyncio.TimeoutError:
+                        self._last_scribe_error = f"Scribe timeout after {self._scribe_timeout_seconds}s"
+                        print(f"   ⚠ {self._last_scribe_error}")
                     await connection.close()
-                    
+                
                 except asyncio.TimeoutError:
-                    print(f"   ⚠ Scribe timeout after {self._scribe_timeout_seconds}s")
+                    self._last_scribe_error = f"Scribe timeout after {self._scribe_timeout_seconds}s"
+                    print(f"   ⚠ {self._last_scribe_error}")
                     await connection.close()
             
             # Run async transcription with timeout
@@ -771,7 +808,6 @@ class WakeWordDetector:
                     "error": str(e)[:100],  # Truncate long errors
                 })
             
-            print(f"   ⚠ Scribe verification error: {e}")
             if self.logger:
                 self.logger.warning(
                     "scribe_verification_error",
@@ -782,6 +818,7 @@ class WakeWordDetector:
                     },
                     exc_info=True
                 )
+            print(f"   ⚠ Scribe verification error: {e}")
             return True  # Fail-open: accept wake word on API error
     
     def stop(self):
@@ -797,16 +834,8 @@ class WakeWordDetector:
         
         self.running = False
         
-        # Log Scribe verification stats
-        if self._scribe_verifications_total > 0:
-            pass_rate = (self._scribe_verifications_passed / self._scribe_verifications_total) * 100
-            print(f"\n📊 Scribe Verification Stats:")
-            print(f"   Total: {self._scribe_verifications_total}")
-            print(f"   Passed: {self._scribe_verifications_passed} ({pass_rate:.1f}%)")
-            print(f"   Failed: {self._scribe_verifications_failed}")
-            print(f"   API Errors: {self._scribe_api_errors}")
+        # Scribe verification stats logging intentionally suppressed
     
     def cleanup(self):
         """Clean up resources"""
         self.stop()
-

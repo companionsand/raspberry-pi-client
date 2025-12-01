@@ -485,10 +485,37 @@ class ElevenLabsConversationClient:
                 # Small delay to prevent overwhelming the connection
                 await asyncio.sleep(0.01)
                 
+        except websockets.exceptions.ConnectionClosedOK as e:
+            # Normal close from the server; avoid treating it as an error
+            print("\n✓ Conversation closed (send loop)")
+            if logger:
+                logger.info(
+                    "send_connection_closed_ok",
+                    extra={
+                        "conversation_id": self.conversation_id,
+                        "close_code": e.code,
+                        "close_reason": e.reason,
+                        "user_id": Config.USER_ID
+                    }
+                )
+            self.running = False
+        except websockets.exceptions.ConnectionClosedError as e:
+            print(f"✗ Send connection closed unexpectedly: {e}")
+            if logger:
+                logger.error(
+                    "audio_send_connection_closed",
+                    extra={
+                        "conversation_id": self.conversation_id,
+                        "close_code": e.code,
+                        "close_reason": e.reason,
+                        "user_id": Config.USER_ID
+                    }
+                )
+            self.end_reason = "network_failure"
+            self.running = False
         except asyncio.CancelledError:
             self.end_reason = "user_terminated"
             self.running = False
-                
         except Exception as e:
             print(f"✗ Send error: {e}")
             if logger:
@@ -809,4 +836,3 @@ class ElevenLabsConversationClient:
         
         if self.websocket:
             await self.websocket.close()
-
