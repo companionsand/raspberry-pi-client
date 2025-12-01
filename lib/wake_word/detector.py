@@ -1,29 +1,47 @@
 """Wake word detection using Porcupine with Silero VAD gating"""
 
 import os
+import io
 import time
+import asyncio
+import base64
+from collections import deque
+from difflib import SequenceMatcher
+from datetime import datetime
+from typing import Optional
+import wave
 import pvporcupine
 import sounddevice as sd
 import numpy as np
 import onnxruntime as ort
+from elevenlabs import ElevenLabs
 from lib.config import Config
+
+# Import telemetry (optional - graceful fallback if not available)
+try:
+    from lib.telemetry.telemetry import get_meter
+    TELEMETRY_AVAILABLE = True
+except ImportError:
+    TELEMETRY_AVAILABLE = False
 
 
 class WakeWordDetector:
     """Porcupine-based wake word detection with telemetry"""
     
-    def __init__(self, mic_device_index=None):
+    def __init__(self, mic_device_index=None, orchestrator_client=None):
         """
         Initialize wake word detector.
         
         Args:
             mic_device_index: Audio device index for microphone (None for default)
+            orchestrator_client: OrchestratorClient for sending detection data (optional)
         """
         self.porcupine = None
         self.audio_stream = None
         self.detected = False
         self.running = False
         self.mic_device_index = mic_device_index
+        self.orchestrator_client = orchestrator_client
         self.logger = Config.LOGGER
         
         # -------------------------------------------------------------------------
@@ -61,6 +79,161 @@ class WakeWordDetector:
         self._vad_passed_count = 0  # Frames that passed VAD (sent to Porcupine)
         self._vad_last_log_time = 0  # For periodic logging
         
+        # -------------------------------------------------------------------------
+        # Ring buffer for Scribe v2 verification (stores VAD-passed audio)
+        # -------------------------------------------------------------------------
+        # At 16kHz, 512 samples per frame = 32ms per frame
+        # 3 seconds = 3000ms / 32ms = ~93 frames
+        self._ring_buffer_duration_seconds = 3.0
+        self._frames_per_second = 16000 / 512  # ~31.25 frames/second
+        self._ring_buffer_max_frames = int(self._ring_buffer_duration_seconds * self._frames_per_second)
+        self._ring_buffer = deque(maxlen=self._ring_buffer_max_frames)  # Auto-drops oldest frames
+        
+        # Scribe v2 verification settings
+        self._scribe_verification_enabled = True
+        self._scribe_pre_trigger_seconds = 1.5  # Audio to send before Porcupine trigger
+        self._scribe_post_trigger_seconds = 0.2  # Audio to capture after trigger
+        self._scribe_timeout_seconds = 2.0  # Max time to wait for Scribe response
+        
+        # Telemetry counters (for local stats)
+        self._scribe_verifications_total = 0
+        self._scribe_verifications_passed = 0
+        self._scribe_verifications_failed = 0
+        self._scribe_api_errors = 0
+        
+        # Initialize OpenTelemetry metrics (if available)
+        self._metrics = None
+        if TELEMETRY_AVAILABLE and Config.OTEL_ENABLED:
+            try:
+                meter = get_meter("wake_word_detector")
+                self._metrics = {
+                    "scribe_verifications": meter.create_counter(
+                        name="scribe_verifications_total",
+                        description="Total Scribe v2 verification attempts",
+                        unit="1",
+                    ),
+                    "scribe_verifications_passed": meter.create_counter(
+                        name="scribe_verifications_passed_total",
+                        description="Scribe v2 verifications that passed",
+                        unit="1",
+                    ),
+                    "scribe_verifications_failed": meter.create_counter(
+                        name="scribe_verifications_failed_total",
+                        description="Scribe v2 verifications that failed",
+                        unit="1",
+                    ),
+                    "scribe_api_errors": meter.create_counter(
+                        name="scribe_api_errors_total",
+                        description="Scribe v2 API errors",
+                        unit="1",
+                    ),
+                }
+            except Exception as e:
+                print(f"⚠ Failed to initialize Scribe verification metrics: {e}")
+                self._metrics = None
+        
+        # -------------------------------------------------------------------------
+        # Negative detection throttling (once per 15 minutes)
+        # -------------------------------------------------------------------------
+        self._last_negative_detection_time = 0  # Unix timestamp
+        self._negative_detection_throttle_seconds = 15 * 60  # 15 minutes
+        
+        # Track last Scribe result for detection data sending
+        self._last_scribe_transcript = None
+        self._last_scribe_error = None
+        
+    def _convert_frames_to_wav(self, audio_frames: list) -> bytes:
+        """Convert list of int16 audio frames to WAV bytes.
+        
+        Args:
+            audio_frames: List of int16 numpy arrays
+            
+        Returns:
+            WAV file bytes
+        """
+        if not audio_frames:
+            return b""
+        
+        # Concatenate all frames
+        audio_data = np.concatenate(audio_frames)
+        
+        # Create WAV file in memory
+        wav_buffer = io.BytesIO()
+        with wave.open(wav_buffer, 'wb') as wav_file:
+            wav_file.setnchannels(1)  # Mono
+            wav_file.setsampwidth(2)  # 16-bit
+            wav_file.setframerate(16000)  # 16kHz
+            wav_file.writeframes(audio_data.tobytes())
+        
+        # Get WAV bytes
+        wav_buffer.seek(0)
+        return wav_buffer.read()
+    
+    async def _send_detection_data_async(
+        self,
+        wake_word_detector_result: bool,
+        verification_audio: list,
+        asr_result: Optional[bool] = None,
+        transcript: Optional[str] = None,
+        asr_error: Optional[str] = None
+    ):
+        """Send wake word detection data to orchestrator (async, non-blocking).
+        
+        Args:
+            wake_word_detector_result: Picovoice result
+            verification_audio: List of audio frames
+            asr_result: Scribe v2 result (true/false/null)
+            transcript: Actual transcript from Scribe
+            asr_error: Error message if Scribe failed
+        """
+        if not self.orchestrator_client:
+            return
+        
+        # Throttle negative detections (once per 15 minutes)
+        if not wake_word_detector_result:
+            current_time = time.time()
+            if current_time - self._last_negative_detection_time < self._negative_detection_throttle_seconds:
+                # Skip this negative detection (within throttle window)
+                return
+            self._last_negative_detection_time = current_time
+        
+        # Convert audio frames to WAV
+        audio_wav = self._convert_frames_to_wav(verification_audio)
+        if not audio_wav:
+            return
+        
+        # Calculate audio duration
+        audio_duration_ms = int((len(verification_audio) * 512 / 16000) * 1000) if verification_audio else None
+        
+        # Generate timestamp in YYYYMMDDHHmmss format
+        timestamp = datetime.now().strftime("%Y%m%d%H%M%S")
+        
+        # Send detection data (fire and forget - async)
+        try:
+            await self.orchestrator_client.send_wake_word_detection(
+                wake_word=Config.WAKE_WORD,
+                wake_word_detector_result=wake_word_detector_result,
+                asr_result=asr_result,
+                audio_data=audio_wav,
+                timestamp=timestamp,
+                asr_error=asr_error,
+                transcript=transcript,
+                confidence_score=None,  # Not available from Picovoice/Scribe
+                audio_duration_ms=audio_duration_ms,
+                retry_attempts=3
+            )
+        except Exception as e:
+            # Log but don't block wake word detection
+            if self.logger:
+                self.logger.warning(
+                    "send_wake_word_detection_async_failed",
+                    extra={
+                        "error": str(e),
+                        "user_id": Config.USER_ID,
+                        "device_id": Config.DEVICE_ID
+                    }
+                )
+    
     def start(self):
         """Initialize Porcupine and start listening"""
         if self.running:
@@ -244,23 +417,372 @@ class WakeWordDetector:
                 print("⚠ VAD gate DISABLED - Porcupine processing ALL audio (higher false positive risk)")
         
         # -------------------------------------------------------------------------
+        # Ring buffer: Store VAD-passed audio for Scribe verification
+        # -------------------------------------------------------------------------
+        # Store a copy of the frame (avoid reference issues)
+        self._ring_buffer.append(audio_frame.copy())
+        
+        # -------------------------------------------------------------------------
         # Porcupine: Check for wake word (only if VAD passed or VAD disabled)
         # -------------------------------------------------------------------------
         keyword_index = self.porcupine.process(audio_frame)
         
         if keyword_index >= 0:
-            print(f"\n🎯 Wake word '{Config.WAKE_WORD}' detected! (VAD passed)")
-            self.detected = True
+            print(f"\n🎯 Wake word '{Config.WAKE_WORD}' detected by Porcupine! (VAD passed)")
             
+            # -------------------------------------------------------------------------
+            # Scribe v2 Verification Layer
+            # -------------------------------------------------------------------------
+            if self._scribe_verification_enabled and Config.ELEVENLABS_API_KEY:
+                # Calculate frames needed for pre/post trigger window
+                pre_trigger_frames = int(self._scribe_pre_trigger_seconds * self._frames_per_second)
+                post_trigger_frames = int(self._scribe_post_trigger_seconds * self._frames_per_second)
+                
+                # Extract pre-trigger audio from ring buffer
+                buffer_list = list(self._ring_buffer)
+                if len(buffer_list) > post_trigger_frames:
+                    # Get pre-trigger audio (everything except the last post_trigger_frames)
+                    pre_trigger_audio = buffer_list[-(pre_trigger_frames + post_trigger_frames):-post_trigger_frames] if len(buffer_list) >= (pre_trigger_frames + post_trigger_frames) else buffer_list[:-post_trigger_frames]
+                else:
+                    pre_trigger_audio = buffer_list
+                
+                # Collect post-trigger audio (capture a few more frames)
+                post_trigger_audio = []
+                for _ in range(post_trigger_frames):
+                    # Small sleep to let audio capture happen
+                    time.sleep(0.032)  # ~32ms per frame
+                    if len(self._ring_buffer) > 0:
+                        post_trigger_audio.append(self._ring_buffer[-1].copy())
+                
+                # Combine pre and post trigger audio
+                verification_audio = pre_trigger_audio + post_trigger_audio
+                
+                # Run async Scribe verification synchronously (blocks audio callback)
+                try:
+                    # Create new event loop for this thread if needed
+                    try:
+                        loop = asyncio.get_event_loop()
+                    except RuntimeError:
+                        loop = asyncio.new_event_loop()
+                        asyncio.set_event_loop(loop)
+                    
+                    # Run verification synchronously
+                    verified = loop.run_until_complete(self._verify_with_scribe(verification_audio))
+                    
+                    # Send detection data async (fire and forget - don't block wake word)
+                    asyncio.create_task(self._send_detection_data_async(
+                        wake_word_detector_result=True,  # Picovoice detected
+                        verification_audio=verification_audio,
+                        asr_result=verified,  # Scribe result
+                        transcript=self._last_scribe_transcript,
+                        asr_error=self._last_scribe_error
+                    ))
+                    
+                    if verified:
+                        print(f"✓ Scribe verification PASSED - accepting wake word")
+                        self.detected = True
+                        
+                        if self.logger:
+                            self.logger.info(
+                                "wake_word_detected",
+                                extra={
+                                    "wake_word": Config.WAKE_WORD,
+                                    "scribe_verified": True,
+                                    "user_id": Config.USER_ID,
+                                    "device_id": Config.DEVICE_ID
+                                }
+                            )
+                    else:
+                        print(f"✗ Scribe verification FAILED - rejecting wake word (false positive)")
+                        # Do NOT set self.detected = True
+                        
+                        if self.logger:
+                            self.logger.warning(
+                                "wake_word_rejected_by_scribe",
+                                extra={
+                                    "wake_word": Config.WAKE_WORD,
+                                    "user_id": Config.USER_ID,
+                                    "device_id": Config.DEVICE_ID
+                                }
+                            )
+                        
+                except Exception as e:
+                    print(f"⚠ Scribe verification exception: {e} - accepting wake word (fail-open)")
+                    self.detected = True
+                    
+                    # Send detection data with exception error
+                    try:
+                        loop = asyncio.get_event_loop()
+                    except RuntimeError:
+                        loop = asyncio.new_event_loop()
+                        asyncio.set_event_loop(loop)
+                    
+                    asyncio.create_task(self._send_detection_data_async(
+                        wake_word_detector_result=True,
+                        verification_audio=verification_audio if 'verification_audio' in locals() else [],
+                        asr_result=None,  # Error occurred
+                        transcript=None,
+                        asr_error=str(e)
+                    ))
+                    
+                    if self.logger:
+                        self.logger.info(
+                            "wake_word_detected",
+                            extra={
+                                "wake_word": Config.WAKE_WORD,
+                                "scribe_verified": False,
+                                "scribe_error": str(e),
+                                "user_id": Config.USER_ID,
+                                "device_id": Config.DEVICE_ID
+                            }
+                        )
+            else:
+                # Scribe verification disabled or no API key - accept immediately
+                self.detected = True
+                
+                # Send detection data without Scribe verification
+                # Extract audio from ring buffer
+                buffer_list = list(self._ring_buffer)
+                verification_audio = buffer_list[-int(self._frames_per_second * 1.7):] if len(buffer_list) > 0 else []
+                
+                try:
+                    loop = asyncio.get_event_loop()
+                except RuntimeError:
+                    loop = asyncio.new_event_loop()
+                    asyncio.set_event_loop(loop)
+                
+                asyncio.create_task(self._send_detection_data_async(
+                    wake_word_detector_result=True,
+                    verification_audio=verification_audio,
+                    asr_result=None,  # Scribe not enabled
+                    transcript=None,
+                    asr_error="Scribe verification disabled"
+                ))
+                
+                if self.logger:
+                    self.logger.info(
+                        "wake_word_detected",
+                        extra={
+                            "wake_word": Config.WAKE_WORD,
+                            "scribe_verified": False,
+                            "user_id": Config.USER_ID,
+                            "device_id": Config.DEVICE_ID
+                        }
+                    )
+    
+    def _fuzzy_match_wake_word(self, transcript: str, wake_word: str, threshold: float = 0.75) -> bool:
+        """
+        Check if transcript contains the wake word using fuzzy + substring matching.
+        
+        Args:
+            transcript: The transcribed text from Scribe
+            wake_word: The expected wake word (from Config.WAKE_WORD)
+            threshold: Minimum similarity score (0.0 to 1.0)
+            
+        Returns:
+            True if wake word is found (fuzzy or substring match)
+        """
+        if not transcript:
+            return False
+        
+        transcript_lower = transcript.lower().strip()
+        wake_word_lower = wake_word.lower().strip()
+        
+        # 1. Exact substring match
+        if wake_word_lower in transcript_lower:
+            print(f"   ✓ Scribe exact match: '{transcript}' contains '{wake_word}'")
+            return True
+        
+        # 2. Fuzzy match on entire transcript
+        similarity = SequenceMatcher(None, transcript_lower, wake_word_lower).ratio()
+        if similarity >= threshold:
+            print(f"   ✓ Scribe fuzzy match: '{transcript}' ~ '{wake_word}' (similarity: {similarity:.2f})")
+            return True
+        
+        # 3. Fuzzy match on individual words in transcript
+        words = transcript_lower.split()
+        for word in words:
+            word_similarity = SequenceMatcher(None, word, wake_word_lower).ratio()
+            if word_similarity >= threshold:
+                print(f"   ✓ Scribe word match: '{word}' ~ '{wake_word}' (similarity: {word_similarity:.2f})")
+                return True
+        
+        # No match found
+        print(f"   ✗ Scribe no match: '{transcript}' ≠ '{wake_word}' (best similarity: {similarity:.2f})")
+        return False
+    
+    async def _verify_with_scribe(self, audio_frames: list) -> bool:
+        """
+        Verify wake word detection using ElevenLabs Scribe v2.
+        
+        Args:
+            audio_frames: List of audio frames (int16 numpy arrays) to transcribe
+            
+        Returns:
+            True if verification passes or API fails (fail-open), False if transcript doesn't match
+        """
+        if not Config.ELEVENLABS_API_KEY:
+            print("   ⚠ Scribe verification skipped: No ElevenLabs API key")
+            return True  # Fail-open: accept wake word if no API key
+        
+        if not audio_frames:
+            print("   ⚠ Scribe verification skipped: No audio frames")
+            return True  # Fail-open
+        
+        self._scribe_verifications_total += 1
+        
+        # Reset last result tracking
+        self._last_scribe_transcript = None
+        self._last_scribe_error = None
+        
+        # Emit telemetry metric
+        if self._metrics:
+            self._metrics["scribe_verifications"].add(1, {
+                "device_id": Config.DEVICE_ID,
+                "wake_word": Config.WAKE_WORD,
+            })
+        
+        try:
+            # Concatenate audio frames into single array
+            audio_data = np.concatenate(audio_frames)
+            
+            # Convert int16 to float32 normalized [-1, 1] for processing
+            audio_float = audio_data.astype(np.float32) / 32768.0
+            
+            # Convert to PCM16 bytes for base64 encoding
+            audio_bytes = audio_data.tobytes()
+            audio_base64 = base64.b64encode(audio_bytes).decode('utf-8')
+            
+            print(f"   🔍 Scribe verification: Sending {len(audio_data)} samples ({len(audio_data)/16000:.2f}s)")
+            
+            # Initialize ElevenLabs client
+            client = ElevenLabs(api_key=Config.ELEVENLABS_API_KEY)
+            
+            # Create async connection to Scribe v2 Realtime
+            transcript_text = None
+            
+            async def transcribe():
+                nonlocal transcript_text
+                connection = await client.speech_to_text.realtime.connect(
+                    model_id="scribe_v2_realtime",
+                    audio_format="pcm_16000",
+                    sample_rate=16000,
+                    commit_strategy="manual"
+                )
+                
+                try:
+                    # Send audio in chunks (simulate streaming)
+                    chunk_size = 4096  # ~256ms chunks
+                    for i in range(0, len(audio_base64), chunk_size):
+                        chunk = audio_base64[i:i+chunk_size]
+                        await connection.send({
+                            "audio_base_64": chunk,
+                            "sample_rate": 16000
+                        })
+                    
+                    # Commit to get final transcript
+                    await connection.commit()
+                    
+                    # Wait for committed transcript with timeout
+                    start_time = time.time()
+                    while time.time() - start_time < self._scribe_timeout_seconds:
+                        message = await asyncio.wait_for(
+                            connection.receive(),
+                            timeout=self._scribe_timeout_seconds - (time.time() - start_time)
+                        )
+                        
+                        if message.get("type") == "committed_transcript":
+                            transcript_text = message.get("text", "")
+                            break
+                    
+                    await connection.close()
+                    
+                except asyncio.TimeoutError:
+                    print(f"   ⚠ Scribe timeout after {self._scribe_timeout_seconds}s")
+                    await connection.close()
+            
+            # Run async transcription with timeout
+            await asyncio.wait_for(transcribe(), timeout=self._scribe_timeout_seconds + 1.0)
+            
+            if transcript_text:
+                # Store transcript for detection data sending
+                self._last_scribe_transcript = transcript_text
+                
+                # Check if transcript matches wake word
+                matches = self._fuzzy_match_wake_word(transcript_text, Config.WAKE_WORD)
+                
+                if matches:
+                    self._scribe_verifications_passed += 1
+                    
+                    # Emit telemetry metric
+                    if self._metrics:
+                        self._metrics["scribe_verifications_passed"].add(1, {
+                            "device_id": Config.DEVICE_ID,
+                            "wake_word": Config.WAKE_WORD,
+                        })
+                    
+                    if self.logger:
+                        self.logger.info(
+                            "scribe_verification_passed",
+                            extra={
+                                "transcript": transcript_text,
+                                "wake_word": Config.WAKE_WORD,
+                                "user_id": Config.USER_ID,
+                                "device_id": Config.DEVICE_ID
+                            }
+                        )
+                    return True
+                else:
+                    self._scribe_verifications_failed += 1
+                    
+                    # Emit telemetry metric
+                    if self._metrics:
+                        self._metrics["scribe_verifications_failed"].add(1, {
+                            "device_id": Config.DEVICE_ID,
+                            "wake_word": Config.WAKE_WORD,
+                            "transcript": transcript_text,
+                        })
+                    
+                    if self.logger:
+                        self.logger.warning(
+                            "scribe_verification_failed",
+                            extra={
+                                "transcript": transcript_text,
+                                "wake_word": Config.WAKE_WORD,
+                                "user_id": Config.USER_ID,
+                                "device_id": Config.DEVICE_ID
+                            }
+                        )
+                    return False
+            else:
+                print("   ⚠ Scribe verification: No transcript received")
+                return True  # Fail-open: accept wake word if no transcript
+                
+        except Exception as e:
+            self._scribe_api_errors += 1
+            
+            # Store error for detection data sending
+            self._last_scribe_error = str(e)
+            
+            # Emit telemetry metric
+            if self._metrics:
+                self._metrics["scribe_api_errors"].add(1, {
+                    "device_id": Config.DEVICE_ID,
+                    "error": str(e)[:100],  # Truncate long errors
+                })
+            
+            print(f"   ⚠ Scribe verification error: {e}")
             if self.logger:
-                self.logger.info(
-                    "wake_word_detected",
+                self.logger.warning(
+                    "scribe_verification_error",
                     extra={
-                        "wake_word": Config.WAKE_WORD,
+                        "error": str(e),
                         "user_id": Config.USER_ID,
                         "device_id": Config.DEVICE_ID
-                    }
+                    },
+                    exc_info=True
                 )
+            return True  # Fail-open: accept wake word on API error
     
     def stop(self):
         """Stop wake word detection"""
@@ -274,6 +796,15 @@ class WakeWordDetector:
             self.porcupine = None
         
         self.running = False
+        
+        # Log Scribe verification stats
+        if self._scribe_verifications_total > 0:
+            pass_rate = (self._scribe_verifications_passed / self._scribe_verifications_total) * 100
+            print(f"\n📊 Scribe Verification Stats:")
+            print(f"   Total: {self._scribe_verifications_total}")
+            print(f"   Passed: {self._scribe_verifications_passed} ({pass_rate:.1f}%)")
+            print(f"   Failed: {self._scribe_verifications_failed}")
+            print(f"   API Errors: {self._scribe_api_errors}")
     
     def cleanup(self):
         """Clean up resources"""

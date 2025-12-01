@@ -365,6 +365,34 @@ def create_client_metrics():
             unit="1",
         ),
         
+        # Counter: Scribe verification attempts
+        "scribe_verifications": meter.create_counter(
+            name="scribe_verifications_total",
+            description="Total number of Scribe v2 verification attempts",
+            unit="1",
+        ),
+        
+        # Counter: Scribe verification passed
+        "scribe_verifications_passed": meter.create_counter(
+            name="scribe_verifications_passed_total",
+            description="Scribe v2 verifications that passed (matched wake word)",
+            unit="1",
+        ),
+        
+        # Counter: Scribe verification failed
+        "scribe_verifications_failed": meter.create_counter(
+            name="scribe_verifications_failed_total",
+            description="Scribe v2 verifications that failed (didn't match wake word)",
+            unit="1",
+        ),
+        
+        # Counter: Scribe API errors
+        "scribe_api_errors": meter.create_counter(
+            name="scribe_api_errors_total",
+            description="Scribe v2 API errors",
+            unit="1",
+        ),
+        
         # Counter: Number of conversations started
         "conversations_started": meter.create_counter(
             name="conversations_started_total",

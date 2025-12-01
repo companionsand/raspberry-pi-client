@@ -316,7 +316,10 @@ class KinClient:
         self.mic_device_index, self.speaker_device_index, self.has_hardware_aec = get_audio_devices()
         
         # Initialize wake word detector with detected microphone
-        self.wake_detector = WakeWordDetector(mic_device_index=self.mic_device_index)
+        self.wake_detector = WakeWordDetector(
+            mic_device_index=self.mic_device_index,
+            orchestrator_client=self.orchestrator_client
+        )
         
         # Connect to conversation-orchestrator
         connected = await self.orchestrator_client.connect()
@@ -425,74 +428,109 @@ class KinClient:
         # Use the conversation trace as context for all operations
         async def _handle_with_trace():
             self.conversation_active = True
-            self.awaiting_agent_details = True
             self.user_terminate[0] = False
             
-            # Send reactive request (will inject trace context)
-            send_success = await self.orchestrator_client.send_reactive()
-            
-            if not send_success:
-                print("✗ Failed to send reactive request")
+            # Check if we have cached agent details (fast path)
+            if Config.DEFAULT_REACTIVE_AGENT_ID and Config.DEFAULT_REACTIVE_WEB_SOCKET_URL:
+                print("✓ Using cached default reactive agent (fast wake word response)")
                 if self.logger:
-                    self.logger.error(
-                        "reactive_request_send_failed",
+                    self.logger.info(
+                        "using_cached_agent_details",
+                        extra={
+                            "agent_id": Config.DEFAULT_REACTIVE_AGENT_ID,
+                            "user_id": Config.USER_ID,
+                            "device_id": Config.DEVICE_ID
+                        }
+                    )
+                
+                # Use cached agent details directly
+                self.awaiting_agent_details = False
+                
+                # Start conversation with cached agent details
+                await self._start_elevenlabs_conversation(
+                    agent_id=Config.DEFAULT_REACTIVE_AGENT_ID,
+                    web_socket_url=Config.DEFAULT_REACTIVE_WEB_SOCKET_URL,
+                    trace_context=None  # Already in trace context
+                )
+            else:
+                # No cached agent - use traditional flow (send reactive request and wait)
+                print("⚠ No cached agent details - requesting from orchestrator")
+                if self.logger:
+                    self.logger.info(
+                        "requesting_agent_details_from_orchestrator",
                         extra={
                             "user_id": Config.USER_ID,
                             "device_id": Config.DEVICE_ID
                         }
                     )
-                self.conversation_active = False
-                self.awaiting_agent_details = False
-                self.led_controller.set_state(LEDController.STATE_ERROR)
-                await asyncio.sleep(2)  # Brief pause to show error
-                self._resume_wake_word_detection()
-                self.led_controller.set_state(LEDController.STATE_IDLE)
-                return
-            
-            # Wait for agent_details message (with timeout)
-            timeout = 10.0  # seconds
-            start_time = time.time()
-            
-            while self.conversation_active and (time.time() - start_time) < timeout:
-                # Check for messages from orchestrator
-                message = await self.orchestrator_client.receive_message()
-                if message:
-                    await self._handle_orchestrator_message(message)
-                    if not self.conversation_active:
-                        break
                 
-                # Check if connection died while waiting
-                if not self.orchestrator_client.is_connection_alive():
-                    print("✗ Connection lost while waiting for agent details")
+                self.awaiting_agent_details = True
+                
+                # Send reactive request (will inject trace context)
+                send_success = await self.orchestrator_client.send_reactive()
+                
+                if not send_success:
+                    print("✗ Failed to send reactive request")
                     if self.logger:
                         self.logger.error(
-                            "connection_lost_during_agent_wait",
+                            "reactive_request_send_failed",
                             extra={
                                 "user_id": Config.USER_ID,
                                 "device_id": Config.DEVICE_ID
                             }
                         )
-                    break
+                    self.conversation_active = False
+                    self.awaiting_agent_details = False
+                    self.led_controller.set_state(LEDController.STATE_ERROR)
+                    await asyncio.sleep(2)  # Brief pause to show error
+                    self._resume_wake_word_detection()
+                    self.led_controller.set_state(LEDController.STATE_IDLE)
+                    return
                 
-                # Small sleep to prevent busy loop
-                await asyncio.sleep(0.1)
-            
-            if self.awaiting_agent_details:
-                print("✗ Timeout waiting for agent details")
-                if self.logger:
-                    self.logger.error(
-                        "agent_details_timeout",
-                        extra={
-                            "user_id": Config.USER_ID,
-                            "device_id": Config.DEVICE_ID
-                        }
-                    )
-                self.conversation_active = False
-                self.awaiting_agent_details = False
-                self.led_controller.set_state(LEDController.STATE_ERROR)
-                await asyncio.sleep(2)  # Brief pause to show error
-                self._resume_wake_word_detection()
-                self.led_controller.set_state(LEDController.STATE_IDLE)
+                # Wait for agent_details message (with timeout)
+                timeout = 10.0  # seconds
+                start_time = time.time()
+                
+                while self.conversation_active and (time.time() - start_time) < timeout:
+                    # Check for messages from orchestrator
+                    message = await self.orchestrator_client.receive_message()
+                    if message:
+                        await self._handle_orchestrator_message(message)
+                        if not self.conversation_active:
+                            break
+                    
+                    # Check if connection died while waiting
+                    if not self.orchestrator_client.is_connection_alive():
+                        print("✗ Connection lost while waiting for agent details")
+                        if self.logger:
+                            self.logger.error(
+                                "connection_lost_during_agent_wait",
+                                extra={
+                                    "user_id": Config.USER_ID,
+                                    "device_id": Config.DEVICE_ID
+                                }
+                            )
+                        break
+                    
+                    # Small sleep to prevent busy loop
+                    await asyncio.sleep(0.1)
+                
+                if self.awaiting_agent_details:
+                    print("✗ Timeout waiting for agent details")
+                    if self.logger:
+                        self.logger.error(
+                            "agent_details_timeout",
+                            extra={
+                                "user_id": Config.USER_ID,
+                                "device_id": Config.DEVICE_ID
+                            }
+                        )
+                    self.conversation_active = False
+                    self.awaiting_agent_details = False
+                    self.led_controller.set_state(LEDController.STATE_ERROR)
+                    await asyncio.sleep(2)  # Brief pause to show error
+                    self._resume_wake_word_detection()
+                    self.led_controller.set_state(LEDController.STATE_IDLE)
         
         # Execute with trace context if available
         if self.conversation_trace_context:
@@ -500,6 +538,79 @@ class KinClient:
                 await _handle_with_trace()
         else:
             await _handle_with_trace()
+    
+    async def _start_elevenlabs_conversation(self, agent_id: str, web_socket_url: str, trace_context=None):
+        """
+        Start an ElevenLabs conversation with the given agent details.
+        
+        Args:
+            agent_id: Agent ID
+            web_socket_url: ElevenLabs WebSocket URL
+            trace_context: Optional trace context token for proactive conversations
+        """
+        async def _execute_conversation():
+            # Mark conversation as active
+            self.conversation_active = True
+            self.user_terminate[0] = False
+            self.conversation_start_time = time.time()
+            
+            # Update activity - conversation starting
+            self._update_activity()
+            
+            # Stop wake word detection during conversation
+            self.wake_detector.stop()
+            
+            # Show conversation state (pulsating green - active conversation)
+            self.led_controller.set_state(LEDController.STATE_CONVERSATION)
+            
+            # Start ElevenLabs conversation
+            client = ElevenLabsConversationClient(
+                web_socket_url, 
+                agent_id,
+                mic_device_index=self.mic_device_index,
+                speaker_device_index=self.speaker_device_index,
+                user_terminate_flag=self.user_terminate,
+                led_controller=self.led_controller  # Pass LED controller for audio-reactive feedback
+            )
+            await client.start(self.orchestrator_client)
+        
+            # Update activity - conversation ended
+            self._update_activity()
+            
+            # Check if user terminated
+            if self.user_terminate[0]:
+                print("✓ User terminated conversation")
+            
+            # Resume wake word detection
+            self._resume_wake_word_detection()
+            
+            # Back to idle state (soft breathing, ready for wake word)
+            self.led_controller.set_state(LEDController.STATE_IDLE)
+            
+            if self.logger:
+                self.logger.info(
+                    "wake_word_detection_resumed",
+                    extra={
+                        "user_id": Config.USER_ID,
+                        "device_id": Config.DEVICE_ID
+                    }
+                )
+            
+            self.conversation_active = False
+            self.user_terminate[0] = False
+            self.conversation_start_time = None
+        
+        # Execute with trace context if we have one (proactive)
+        if trace_context is not None:
+            try:
+                await _execute_conversation()
+            finally:
+                # Detach the context
+                from opentelemetry import context
+                context.detach(trace_context)
+        else:
+            # For reactive conversations, we're already in the trace context from _handle_conversation
+            await _execute_conversation()
     
     async def _handle_orchestrator_message(self, message: dict):
         """Handle messages from conversation-orchestrator"""
@@ -558,70 +669,12 @@ class KinClient:
                         }
                     )
             
-            # Execute conversation handling with proper trace context
-            async def _handle_conversation_with_context():
-                # Mark conversation as active
-                self.conversation_active = True
-                self.user_terminate[0] = False
-                self.conversation_start_time = time.time()
-                
-                # Update activity - conversation starting
-                self._update_activity()
-                
-                # Stop wake word detection during conversation
-                self.wake_detector.stop()
-                
-                # Show conversation state (pulsating green - active conversation)
-                self.led_controller.set_state(LEDController.STATE_CONVERSATION)
-                
-                # Start ElevenLabs conversation
-                client = ElevenLabsConversationClient(
-                    web_socket_url, 
-                    agent_id,
-                    mic_device_index=self.mic_device_index,
-                    speaker_device_index=self.speaker_device_index,
-                    user_terminate_flag=self.user_terminate,
-                    led_controller=self.led_controller  # Pass LED controller for audio-reactive feedback
-                )
-                await client.start(self.orchestrator_client)
-            
-                # Update activity - conversation ended
-                self._update_activity()
-                
-                # Check if user terminated
-                if self.user_terminate[0]:
-                    print("✓ User terminated conversation")
-                
-                # Resume wake word detection
-                self._resume_wake_word_detection()
-                
-                # Back to idle state (soft breathing, ready for wake word)
-                self.led_controller.set_state(LEDController.STATE_IDLE)
-                
-                if self.logger:
-                    self.logger.info(
-                        "wake_word_detection_resumed",
-                        extra={
-                            "user_id": Config.USER_ID,
-                            "device_id": Config.DEVICE_ID
-                        }
-                    )
-                
-                self.conversation_active = False
-                self.user_terminate[0] = False
-                self.conversation_start_time = None
-            
-            # Execute with trace context if we have one (proactive)
-            if context_token is not None:
-                try:
-                    await _handle_conversation_with_context()
-                finally:
-                    # Detach the context
-                    from opentelemetry import context
-                    context.detach(context_token)
-            else:
-                # For reactive conversations, we're already in the trace context from _handle_conversation
-                await _handle_conversation_with_context()
+            # Start the conversation using the helper method
+            await self._start_elevenlabs_conversation(
+                agent_id=agent_id,
+                web_socket_url=web_socket_url,
+                trace_context=context_token
+            )
             
         elif message_type == "error":
             error_msg = message.get("message", "Unknown error")

@@ -38,3 +38,6 @@ opentelemetry-exporter-otlp-proto-http==1.28.2
 # for local VAD
 onnxruntime>=1.16.0
 
+# ElevenLabs Scribe v2 for wake word verification
+elevenlabs>=1.0.0
+

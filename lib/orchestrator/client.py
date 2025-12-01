@@ -369,6 +369,118 @@ class OrchestratorClient:
             self.connected = False
             return False
     
+    async def send_wake_word_detection(
+        self,
+        wake_word: str,
+        wake_word_detector_result: bool,
+        asr_result: Optional[bool],
+        audio_data: bytes,
+        timestamp: str,
+        asr_error: Optional[str] = None,
+        transcript: Optional[str] = None,
+        confidence_score: Optional[float] = None,
+        audio_duration_ms: Optional[int] = None,
+        retry_attempts: int = 3
+    ) -> bool:
+        """Send wake word detection data with audio to orchestrator (async, non-blocking).
+        
+        Args:
+            wake_word: Expected wake word
+            wake_word_detector_result: Picovoice result (true/false)
+            asr_result: Scribe v2 result (true/false/null)
+            audio_data: Raw audio bytes (WAV format)
+            timestamp: Timestamp in YYYYMMDDHHmmss format
+            asr_error: Error message if Scribe failed
+            transcript: Actual transcript from Scribe
+            confidence_score: Confidence score (optional)
+            audio_duration_ms: Audio duration in milliseconds
+            retry_attempts: Number of retry attempts
+            
+        Returns:
+            True if sent successfully, False otherwise
+        """
+        if not self.is_connection_alive():
+            if self.logger:
+                self.logger.warning(
+                    "send_wake_word_detection_failed_disconnected",
+                    extra={
+                        "user_id": Config.USER_ID,
+                        "device_id": Config.DEVICE_ID
+                    }
+                )
+            return False
+        
+        import base64
+        import time
+        
+        # Encode audio to base64
+        audio_base64 = base64.b64encode(audio_data).decode('utf-8')
+        
+        message = {
+            "type": "wake_word_detection",
+            "wake_word": wake_word,
+            "wake_word_detector_result": wake_word_detector_result,
+            "asr_result": asr_result,
+            "audio_data": audio_base64,
+            "timestamp": timestamp,
+            "asr_error": asr_error,
+            "transcript": transcript,
+            "confidence_score": confidence_score,
+            "audio_duration_ms": audio_duration_ms,
+        }
+        
+        # Retry with exponential backoff
+        for attempt in range(retry_attempts):
+            try:
+                await self.websocket.send(json.dumps(message))
+                
+                if self.logger:
+                    self.logger.info(
+                        "wake_word_detection_sent",
+                        extra={
+                            "wake_word": wake_word,
+                            "detector_result": wake_word_detector_result,
+                            "asr_result": asr_result,
+                            "audio_size_bytes": len(audio_data),
+                            "attempt": attempt + 1,
+                            "user_id": Config.USER_ID,
+                            "device_id": Config.DEVICE_ID
+                        }
+                    )
+                return True
+                
+            except Exception as e:
+                if self.logger:
+                    self.logger.warning(
+                        "send_wake_word_detection_failed",
+                        extra={
+                            "error": str(e),
+                            "attempt": attempt + 1,
+                            "user_id": Config.USER_ID,
+                            "device_id": Config.DEVICE_ID
+                        }
+                    )
+                
+                if attempt < retry_attempts - 1:
+                    # Exponential backoff: 0.5s, 1s, 2s
+                    await asyncio.sleep(0.5 * (2 ** attempt))
+                    continue
+                
+                # All retries failed
+                self.connected = False
+                if self.logger:
+                    self.logger.error(
+                        "send_wake_word_detection_exhausted_retries",
+                        extra={
+                            "attempts": retry_attempts,
+                            "user_id": Config.USER_ID,
+                            "device_id": Config.DEVICE_ID
+                        }
+                    )
+                return False
+        
+        return False
+    
     async def receive_message(self):
         """Receive and return a message from orchestrator"""
         if not self.is_connection_alive():

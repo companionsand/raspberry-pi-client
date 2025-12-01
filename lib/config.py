@@ -72,6 +72,10 @@ class Config:
     LED_ENABLED = None
     LED_BRIGHTNESS = 60  # Default, may be overridden
     
+    # Default reactive agent (cached from backend for faster wake word response)
+    DEFAULT_REACTIVE_AGENT_ID = None
+    DEFAULT_REACTIVE_WEB_SOCKET_URL = None
+    
     # OTEL defaults come from env so telemetry can start before runtime config arrives
     OTEL_ENABLED = os.getenv("OTEL_ENABLED", "true").lower() == "true"
     OTEL_EXPORTER_ENDPOINT = os.getenv("OTEL_EXPORTER_ENDPOINT", "http://localhost:4318")
@@ -107,6 +111,7 @@ class Config:
         device_config = config_data.get("device", {})
         system_config = config_data.get("system", {})
         api_keys = config_data.get("api_keys", {})
+        default_reactive_agent = config_data.get("default_reactive_agent")
         
         # Set device info
         cls.USER_ID = device_config.get("user_id")
@@ -120,6 +125,14 @@ class Config:
         cls.LED_ENABLED = system_config.get("led_enabled", "true").lower() == "true"
         cls.OTEL_ENABLED = system_config.get("otel_enabled", "true").lower() == "true"
         
+        # Set default reactive agent (for fast wake word response)
+        if default_reactive_agent:
+            cls.DEFAULT_REACTIVE_AGENT_ID = default_reactive_agent.get("agent_id")
+            cls.DEFAULT_REACTIVE_WEB_SOCKET_URL = default_reactive_agent.get("web_socket_url")
+        else:
+            cls.DEFAULT_REACTIVE_AGENT_ID = None
+            cls.DEFAULT_REACTIVE_WEB_SOCKET_URL = None
+        
         # OTEL endpoint is ALWAYS the local collector on the device
         # The local collector forwards to the central endpoint (configured by wrapper)
         cls.OTEL_EXPORTER_ENDPOINT = "http://localhost:4318"
@@ -131,4 +144,8 @@ class Config:
         print(f"   Sample Rate: {cls.SAMPLE_RATE} Hz")
         print(f"   OTEL Enabled: {cls.OTEL_ENABLED}")
         print(f"   LED Enabled: {cls.LED_ENABLED}")
+        if cls.DEFAULT_REACTIVE_AGENT_ID:
+            print(f"   Default Reactive Agent: Cached (fast wake word response)")
+        else:
+            print(f"   Default Reactive Agent: Not configured (will fetch on wake word)")
 
