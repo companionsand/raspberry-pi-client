@@ -249,7 +249,6 @@ class ElevenLabsConversationClient:
                         extra={
                             "conversation_id": self.conversation_id,
                             "has_location": context_manager.has_location_data,
-                            "has_weather": context_manager.has_weather_data,
                             "variable_count": len(dynamic_variables)
                         }
                     )

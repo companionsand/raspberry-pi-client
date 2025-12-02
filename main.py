@@ -288,13 +288,13 @@ class KinClient:
         self.context_manager.set_logger(self.logger)
         
         # Start context manager (performs initial fetch with timeout)
-        print("📍 Fetching location and weather data...")
+        print("📍 Fetching location data...")
         await self.context_manager.start()
         
-        if self.context_manager.has_location_data and self.context_manager.has_weather_data:
-            print("✓ Location and weather data loaded")
+        if self.context_manager.has_location_data:
+            print("✓ Location data loaded")
         else:
-            print("⚠️  Location/weather data unavailable - continuing with time data only")
+            print("⚠️  Location data unavailable - continuing without location")
         
         # Verify and detect audio devices
         verify_audio_setup()
