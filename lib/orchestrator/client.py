@@ -96,14 +96,9 @@ class OrchestratorClient:
             
             # Include location if available from context manager
             if self.context_manager and self.context_manager.has_location_data:
-                location_data = self.context_manager._location_data
-                if location_data:
-                    city = location_data.get('city', '')
-                    region = location_data.get('region', '')
-                    country = location_data.get('country', '')
-                    location_parts = [p for p in [city, region, country] if p]
-                    if location_parts:
-                        auth_message['current_location'] = ', '.join(location_parts)
+                location_string = self.context_manager.get_location_string()
+                if location_string:
+                    auth_message['current_location'] = location_string
             
             await self.websocket.send(json.dumps(auth_message))
             

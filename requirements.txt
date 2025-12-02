@@ -18,7 +18,7 @@ python-dotenv>=1.0.0
 cryptography>=41.0.0
 requests>=2.31.0
 
-# Async HTTP client for location and weather
+# Async HTTP client for WiFi-based geolocation
 aiohttp>=3.9.0
 
 # LED control for ReSpeaker (optional)

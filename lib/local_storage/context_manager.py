@@ -1,16 +1,16 @@
-"""Context manager singleton for location and weather data"""
+"""Context manager singleton for location data"""
 
 import asyncio
 from datetime import datetime
 from typing import Optional, Dict
 from lib.location import fetch_location
-from lib.weather import fetch_weather
+from lib.config import Config
 
 
 class ContextManager:
     """
-    Singleton manager for location and weather context data.
-    Periodically fetches and caches data for use throughout the application.
+    Singleton manager for location context data.
+    Fetches location once at startup using WiFi triangulation.
     """
     
     _instance = None
@@ -29,68 +29,56 @@ class ContextManager:
             
         self._initialized = True
         self._location_data: Optional[Dict] = None
-        self._weather_data: Optional[Dict] = None
-        self._update_task: Optional[asyncio.Task] = None
-        self._running = False
         self._logger = None
-        self._update_interval = 3600  # 1 hour in seconds
-        self._fetch_timeout = 3.0  # 3 seconds
+        self._fetch_timeout = 10.0  # 10 seconds for WiFi scan + geolocation
     
     def set_logger(self, logger):
         """Set logger for context manager"""
         self._logger = logger
     
     async def start(self):
-        """Start the context manager and begin periodic updates"""
-        if self._running:
-            return
-        
-        self._running = True
-        
-        # Perform initial fetch (blocking with timeout)
+        """Start the context manager and fetch location once"""
         if self._logger:
             self._logger.info("context_manager_starting", extra={"action": "initial_fetch"})
         
-        await self._update_data()
-        
-        # Start background update task
-        self._update_task = asyncio.create_task(self._periodic_update())
+        # Fetch location once at startup
+        await self._fetch_location()
         
         if self._logger:
             self._logger.info(
                 "context_manager_started",
                 extra={
                     "has_location": self._location_data is not None,
-                    "has_weather": self._weather_data is not None
+                    "latitude": self._location_data.get('latitude') if self._location_data else None,
+                    "longitude": self._location_data.get('longitude') if self._location_data else None,
+                    "city": self._location_data.get('city') if self._location_data else None,
                 }
             )
     
     async def stop(self):
         """Stop the context manager"""
-        self._running = False
-        
-        if self._update_task:
-            self._update_task.cancel()
-            try:
-                await self._update_task
-            except asyncio.CancelledError:
-                pass
-        
         if self._logger:
             self._logger.info("context_manager_stopped")
     
-    async def force_refresh(self):
-        """Force an immediate refresh of location and weather data"""
-        if self._logger:
-            self._logger.info("context_manager_force_refresh")
-        
-        await self._update_data()
-    
-    async def _update_data(self):
-        """Fetch and update location and weather data"""
+    async def _fetch_location(self):
+        """Fetch location data using WiFi triangulation"""
         try:
-            # Fetch location
-            location = await fetch_location(timeout=self._fetch_timeout)
+            # Check if Google API key is available
+            google_api_key = Config.GOOGLE_API_KEY
+            
+            if not google_api_key:
+                if self._logger:
+                    self._logger.info(
+                        "location_fetch_skipped",
+                        extra={"reason": "no_google_api_key"}
+                    )
+                return
+            
+            # Fetch location via WiFi triangulation
+            location = await fetch_location(
+                google_api_key=google_api_key,
+                timeout=self._fetch_timeout
+            )
             
             if location:
                 self._location_data = location
@@ -99,33 +87,14 @@ class ContextManager:
                     self._logger.info(
                         "location_fetched",
                         extra={
+                            "latitude": location.get('latitude'),
+                            "longitude": location.get('longitude'),
+                            "accuracy": location.get('accuracy'),
                             "city": location.get('city'),
-                            "country": location.get('country')
+                            "state": location.get('state'),
+                            "country": location.get('country'),
                         }
                     )
-                
-                # Fetch weather using location coordinates
-                weather = await fetch_weather(
-                    latitude=location['latitude'],
-                    longitude=location['longitude'],
-                    timezone=location['timezone'],
-                    timeout=self._fetch_timeout
-                )
-                
-                if weather:
-                    self._weather_data = weather
-                    
-                    if self._logger:
-                        self._logger.info(
-                            "weather_fetched",
-                            extra={
-                                "current_temp": weather['current']['temp'],
-                                "units": weather['units']['temp']
-                            }
-                        )
-                else:
-                    if self._logger:
-                        self._logger.warning("weather_fetch_failed")
             else:
                 if self._logger:
                     self._logger.warning("location_fetch_failed")
@@ -133,29 +102,10 @@ class ContextManager:
         except Exception as e:
             if self._logger:
                 self._logger.error(
-                    "context_update_error",
+                    "location_fetch_error",
                     extra={"error": str(e)},
                     exc_info=True
                 )
-    
-    async def _periodic_update(self):
-        """Periodically update location and weather data"""
-        while self._running:
-            try:
-                await asyncio.sleep(self._update_interval)
-                
-                if self._running:
-                    await self._update_data()
-                    
-            except asyncio.CancelledError:
-                break
-            except Exception as e:
-                if self._logger:
-                    self._logger.error(
-                        "periodic_update_error",
-                        extra={"error": str(e)},
-                        exc_info=True
-                    )
     
     def get_dynamic_variables(self) -> Dict[str, str]:
         """
@@ -163,7 +113,7 @@ class ContextManager:
         
         Returns:
             Dictionary of dynamic variables. Always includes date/time variables.
-            Location and weather variables are only included if data is available.
+            Location variables (lat/lon/city/state/country) are included if available.
         """
         variables = {}
         
@@ -179,73 +129,44 @@ class ContextManager:
         variables['current_day_of_week'] = now.strftime("%A")
         variables['current_time'] = now.strftime("%I:%M %p").lstrip('0')
         
-        # Add timezone if we have location data, otherwise use system timezone
-        if self._location_data:
-            variables['timezone'] = self._location_data.get('timezone', 'UTC')
-        else:
-            # Try to get system timezone
-            import time
-            variables['timezone'] = time.tzname[time.daylight]
+        # Add timezone in IANA format (e.g., "Asia/Kolkata")
+        try:
+            # Try to read from /etc/timezone (Linux/Raspberry Pi)
+            with open('/etc/timezone', 'r') as f:
+                variables['timezone'] = f.read().strip()
+        except (FileNotFoundError, IOError):
+            # Fallback to UTC if /etc/timezone doesn't exist
+            variables['timezone'] = 'UTC'
         
-        # Only add location/weather variables if data is available
-        if self._location_data and self._weather_data:
-            # Location
-            city = self._location_data.get('city', '')
-            region = self._location_data.get('region', '')
-            country = self._location_data.get('country', '')
-            
-            # Format location string
-            location_parts = [p for p in [city, region, country] if p]
-            variables['current_location'] = ', '.join(location_parts)
-            
-            # Current weather
-            current = self._weather_data['current']
-            variables['current_temp'] = str(round(current['temp']))
-            variables['current_precipitation'] = str(round(current['precipitation'], 1))
-            variables['current_wind_speed'] = str(round(current['wind_speed']))
-            
-            # Units
-            units = self._weather_data['units']
-            variables['temp_unit'] = units['temp']
-            variables['precipitation_unit'] = units['precipitation']
-            variables['wind_speed_unit'] = units['wind_speed']
-            
-            # 12-hour forecast
-            hourly = self._weather_data['hourly']
-            variables['twelve_hour_forecast_temp'] = ','.join(
-                str(round(t)) for t in hourly['temp']
-            )
-            variables['twelve_hour_forecast_precipitation'] = ','.join(
-                str(round(p, 1)) for p in hourly['precipitation']
-            )
-            variables['twelve_hour_forecast_wind_speed'] = ','.join(
-                str(round(w)) for w in hourly['wind_speed']
-            )
-            
-            # 7-day forecast
-            daily = self._weather_data['daily']
-            variables['seven_day_forecast_max_temp'] = ','.join(
-                str(round(t)) for t in daily['max_temp']
-            )
-            variables['seven_day_forecast_min_temp'] = ','.join(
-                str(round(t)) for t in daily['min_temp']
-            )
-            variables['seven_day_forecast_precipitation'] = ','.join(
-                str(round(p, 1)) for p in daily['precipitation']
-            )
-            variables['seven_day_forecast_wind_speed'] = ','.join(
-                str(round(w)) for w in daily['wind_speed']
-            )
+        # Add location variables if available
+        if self._location_data:
+            variables['latitude'] = str(self._location_data.get('latitude', ''))
+            variables['longitude'] = str(self._location_data.get('longitude', ''))
+            variables['city'] = self._location_data.get('city', '')
+            variables['state'] = self._location_data.get('state', '')
+            variables['country'] = self._location_data.get('country', '')
         
         return variables
+    
+    def get_location_string(self) -> str:
+        """
+        Get location as a formatted string for websocket (city, state, country).
+        
+        Returns:
+            Location string like "Noida, Uttar Pradesh, India" or empty string
+        """
+        if not self._location_data:
+            return ""
+        
+        city = self._location_data.get('city', '')
+        state = self._location_data.get('state', '')
+        country = self._location_data.get('country', '')
+        
+        # Build location string from available parts
+        parts = [p for p in [city, state, country] if p]
+        return ', '.join(parts)
     
     @property
     def has_location_data(self) -> bool:
         """Check if location data is available"""
         return self._location_data is not None
-    
-    @property
-    def has_weather_data(self) -> bool:
-        """Check if weather data is available"""
-        return self._weather_data is not None
-
