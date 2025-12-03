@@ -41,7 +41,7 @@ logging.basicConfig(
 # Import local modules
 from lib.config import Config
 from lib.auth import authenticate
-from lib.audio import get_audio_devices, verify_audio_setup, LEDController
+from lib.audio import get_audio_devices, LEDController
 from lib.wake_word import WakeWordDetector
 from lib.orchestrator import OrchestratorClient
 from lib.elevenlabs import ElevenLabsConversationClient
@@ -296,8 +296,7 @@ class KinClient:
         else:
             print("⚠️  Location data unavailable - continuing without location")
         
-        # Verify and detect audio devices
-        verify_audio_setup()
+        # Detect audio devices
         self.mic_device_index, self.speaker_device_index, self.has_hardware_aec = get_audio_devices()
         
         # Initialize wake word detector with detected microphone
