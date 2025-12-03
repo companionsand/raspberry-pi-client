@@ -23,7 +23,7 @@ def get_resource(device_id: str) -> Resource:
         SERVICE_NAME: "raspberry-pi-client",
         SERVICE_VERSION: "1.0.0",
         DEPLOYMENT_ENVIRONMENT: os.getenv("ENV", "production"),
-        "service.namespace": "kin-voice-ai",
+        "service.namespace": "kin-ai",
         "device.id": device_id,
         "device.type": "raspberry-pi",
     })
@@ -212,7 +212,7 @@ def get_logger(name: str, device_id: str = None):
                 extra = kwargs.get('extra', {})
                 extra['device_id'] = device_id
                 extra['service.name'] = "raspberry-pi-client"
-                extra['service.namespace'] = "kin-voice-ai"
+                extra['service.namespace'] = "kin-ai"
                 extra['telemetry.sdk.language'] = "python"
                 kwargs['extra'] = extra
                 return msg, kwargs
