@@ -413,8 +413,10 @@ class ElevenLabsConversationClient:
                 # LED State Management: LISTENING ↔ THINKING transitions
                 # -------------------------------------------------------------------------
                 if is_speech:
-                    # User is speaking - update timers
-                    self.last_audio_time = time.time()
+                    # User is speaking - update speech time for LED transitions
+                    # NOTE: We intentionally do NOT update last_audio_time here
+                    # last_audio_time is for silence timeout (no conversation activity)
+                    # and should only be reset on actual transcripts/responses
                     self._last_speech_time = time.time()
                     
                     # Ensure LED is in LISTENING state (STATE_CONVERSATION)
@@ -645,9 +647,33 @@ class ElevenLabsConversationClient:
     async def _receive_messages(self, orchestrator_client: OrchestratorClient):
         """Receive and process messages from WebSocket"""
         logger = self.logger
+        
+        # Receive timeout: If no messages for 15 seconds, consider connection dead
+        # ElevenLabs sends pings every ~5 seconds, so 15s means 3 missed pings
+        receive_timeout = 15.0
+        
         try:
             while self.running:
-                message = await self.websocket.recv()
+                try:
+                    message = await asyncio.wait_for(
+                        self.websocket.recv(),
+                        timeout=receive_timeout
+                    )
+                except asyncio.TimeoutError:
+                    print(f"\n⏱️ WebSocket receive timeout ({receive_timeout}s) - connection may be dead")
+                    if logger:
+                        logger.warning(
+                            "websocket_receive_timeout",
+                            extra={
+                                "conversation_id": self.conversation_id,
+                                "timeout_seconds": receive_timeout,
+                                "user_id": Config.USER_ID,
+                                "device_id": Config.DEVICE_ID
+                            }
+                        )
+                    self.end_reason = "network_failure"
+                    self.running = False
+                    break
                 
                 # Parse JSON message
                 data = json.loads(message)
@@ -740,6 +766,39 @@ class ElevenLabsConversationClient:
                         )
                     self.end_reason = "error"
                     self.running = False
+                
+                # Handle conversation termination from ElevenLabs
+                elif data.get('type') == 'conversation_end' or 'conversation_end_event' in data:
+                    end_event = data.get('conversation_end_event', data)
+                    termination_reason = end_event.get('termination_reason', end_event.get('reason', 'unknown'))
+                    print(f"\n✓ ElevenLabs ended conversation: {termination_reason}")
+                    if logger:
+                        logger.info(
+                            "elevenlabs_conversation_terminated",
+                            extra={
+                                "conversation_id": self.conversation_id,
+                                "termination_reason": termination_reason,
+                                "user_id": Config.USER_ID,
+                                "device_id": Config.DEVICE_ID,
+                                "raw_event": data
+                            }
+                        )
+                    self.end_reason = f"elevenlabs_{termination_reason}" if termination_reason != "unknown" else "elevenlabs_terminated"
+                    self.running = False
+                
+                else:
+                    # Log unknown message types for debugging (but not too verbose)
+                    msg_type = data.get('type', 'unknown')
+                    keys = list(data.keys())
+                    if msg_type not in ('pong',) and logger:
+                        logger.debug(
+                            "elevenlabs_unknown_message",
+                            extra={
+                                "conversation_id": self.conversation_id,
+                                "message_type": msg_type,
+                                "message_keys": keys
+                            }
+                        )
                 
                 # Check for user termination
                 if self.user_terminate_flag and self.user_terminate_flag[0]:
