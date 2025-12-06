@@ -83,39 +83,21 @@ class ElevenLabsConversationClient:
         self._thinking_threshold_ms = 400  # Silence duration before THINKING state
         
         # -------------------------------------------------------------------------
-        # Barge-in: Audio queue and interruption handling
+        # Audio queue and interruption handling
         # -------------------------------------------------------------------------
+        # Interruptions are detected server-side by ElevenLabs and sent as 'interruption' messages.
+        # The client just needs to stop playback and clear the queue when interrupted.
         self.audio_queue = asyncio.Queue()  # Queue for agent audio chunks
         self.playback_active = False  # Flag to stop current audio playback
-        self.barge_in_active = False  # Flag indicating barge-in occurred
-        self.barge_in_enabled = False  # Barge-in feature disabled
         
-        # Sustained speech detection for barge-in
-        # Lower threshold = more sensitive (catches short words like "Stop")
-        # Higher threshold = less sensitive (ignores brief noise)
-        self._consecutive_speech_frames = 0
-        self._barge_in_speech_threshold = 2  # Frames (2 = ~20ms, catches even short words)
-        
-        # -------------------------------------------------------------------------
-        # Barge-in protection: Prevent false triggers from VAD state persistence
-        # -------------------------------------------------------------------------
-        # Guard period: Ignore VAD spikes within Xms after user stops speaking
-        # This prevents residual VAD state from triggering false barge-in
-        self._user_speech_end_time = None  # Timestamp when user stopped speaking
-        self._barge_in_guard_period_ms = 300  # Ignore VAD for 300ms after user stops
-        
-        # Elevated threshold during playback: Require higher confidence when agent speaking
+        # Dynamic VAD threshold: stricter during agent playback to filter echo
         # Normal threshold: 0.5 (sensitive, catches user speech quickly)
-        # Playback threshold: 0.75 (stricter, filters residual echo/state)
+        # Playback threshold: 0.75 (stricter, filters residual echo from speaker)
         self._vad_threshold_normal = 0.5
         self._vad_threshold_playback = 0.75
         
         # Agent audio chunk counter (for logging and VAD reset detection)
         self._chunk_count = 0
-        
-        # Debug logging: periodic RMS/VAD logging
-        self._last_debug_log_time = 0.0
-        self._debug_log_interval = 0.5  # Log every 500ms during playback
         
         # Periodic status logging: Log conversation health every 10 seconds
         self._last_status_log_time = 0.0
@@ -166,7 +148,7 @@ class ElevenLabsConversationClient:
             )
             self.input_stream.start()
             
-            # Output stream: speaker only (can be aborted immediately on barge-in)
+            # Output stream: speaker only (separate from input for clean interruption handling)
             self.output_stream = sd.OutputStream(
                 device=output_device,
                 samplerate=Config.SAMPLE_RATE,
@@ -310,63 +292,8 @@ class ElevenLabsConversationClient:
                     # Fallback: simple energy detection
                     is_speech = np.abs(audio_data).mean() > 100
                 
-                # -------------------------------------------------------------------------
-                # Calculate mic RMS for debugging
-                # -------------------------------------------------------------------------
+                # Calculate mic RMS for status logging
                 mic_rms = np.sqrt(np.mean(audio_data.astype(float) ** 2))
-                
-                # -------------------------------------------------------------------------
-                # Barge-in Detection: With guard period and state protection (DISABLED)
-                # -------------------------------------------------------------------------
-                # Barge-in is currently disabled - user speech during agent playback will not interrupt
-                if self.barge_in_enabled:
-                    # Guard period: Ignore VAD spikes shortly after user stops speaking
-                    # This prevents residual VAD state from triggering false barge-in
-                    in_guard_period = False
-                    guard_time_ms = 0.0
-                    if self._user_speech_end_time:
-                        guard_time_ms = (time.time() - self._user_speech_end_time) * 1000
-                        in_guard_period = guard_time_ms < self._barge_in_guard_period_ms
-                    
-                    # -------------------------------------------------------------------------
-                    # Debug logging: RMS, VAD prob, guard state (every 500ms during agent speech)
-                    # -------------------------------------------------------------------------
-                    now = time.time()
-                    if is_agent_active and (now - self._last_debug_log_time > self._debug_log_interval):
-                        guard_status = f"GUARD({guard_time_ms:.0f}ms)" if in_guard_period else "NO_GUARD"
-                        vad_status = "SPEECH" if is_speech else "silence"
-                        print(f"📊 [AGENT_PLAYING] RMS={mic_rms:.0f} VAD={speech_prob:.3f}({vad_status}) thresh={active_threshold} {guard_status} frames={self._consecutive_speech_frames}")
-                        self._last_debug_log_time = now
-                    
-                    if is_speech:
-                        self._consecutive_speech_frames += 1
-                        
-                        # Trigger barge-in on sustained speech (but only once per speech event)
-                        # Additional checks: not in guard period, agent must be active
-                        if self._consecutive_speech_frames >= self._barge_in_speech_threshold:
-                            if not self.barge_in_active:
-                                # Check guard period - skip if too close to user's last speech
-                                if in_guard_period:
-                                    print(f"🛡️ GUARD BLOCKED: VAD spike at {guard_time_ms:.0f}ms after user stopped (prob={speech_prob:.2f}, RMS={mic_rms:.0f})")
-                                elif is_agent_active:
-                                    # Barge-in detected during agent speech!
-                                    print(f"🎤 BARGE-IN: User interrupting agent (prob={speech_prob:.2f}, RMS={mic_rms:.0f}, thresh={active_threshold})")
-                                    self.barge_in_active = True
-                                    await self._handle_barge_in()
-                                # else: agent not active, no need for barge-in (normal turn-taking)
-                            # else: already triggered, don't call handler again (debouncing)
-                    else:
-                        # User stopped speaking - record timestamp for guard period
-                        if self._consecutive_speech_frames >= 2:
-                            self._user_speech_end_time = time.time()
-                            print(f"🎤 USER turn ended: {self._consecutive_speech_frames} frames (~{self._consecutive_speech_frames * 10}ms), guard period started")
-                        self._consecutive_speech_frames = 0
-                        self.barge_in_active = False  # Reset: ready for next barge-in
-                else:
-                    # Barge-in disabled - reset counters but don't process barge-in logic
-                    if not is_speech:
-                        self._consecutive_speech_frames = 0
-                        self.barge_in_active = False
                 
                 # -------------------------------------------------------------------------
                 # LED State Management: LISTENING ↔ THINKING transitions
@@ -547,41 +474,6 @@ class ElevenLabsConversationClient:
                 )
             self.end_reason = "network_failure"
             self.running = False
-    
-    async def _handle_barge_in(self):
-        """Handle user barge-in: stop playback immediately and clear audio queue"""
-        logger = self.logger
-        
-        print(f"🛑 Barge-in triggered!")  # Always print to confirm it's being called
-        
-        # Stop current playback immediately
-        self.playback_active = False
-        
-        # Get queue size before clearing
-        queue_size = self.audio_queue.qsize()
-        
-        # Clear the audio queue
-        cleared_count = 0
-        while not self.audio_queue.empty():
-            try:
-                self.audio_queue.get_nowait()
-                cleared_count += 1
-            except asyncio.QueueEmpty:
-                break
-        
-        print(f"   ✓ Stopped playback and cleared {cleared_count} queued audio chunks (queue had {queue_size})")
-        
-        if logger:
-            logger.info(
-                "barge_in_triggered",
-                extra={
-                    "conversation_id": self.conversation_id,
-                    "cleared_chunks": cleared_count,
-                    "queue_size_before": queue_size,
-                    "user_id": Config.USER_ID,
-                    "device_id": Config.DEVICE_ID
-                }
-            )
     
     async def _play_audio(self):
         """Play audio chunks from queue to output stream"""
@@ -821,13 +713,10 @@ class ElevenLabsConversationClient:
                         self._chunk_count += 1
                         
                         # First chunk of NEW agent turn: Reset VAD state to clear residual from user turn
-                        # This prevents false barge-in triggers from VAD state persistence
-                        # BUG FIX: Check _chunk_count == 1 after increment (means this is first chunk of turn)
+                        # This helps prevent false positives in VAD during agent speech
                         if self._chunk_count == 1:
                             self._vad_state = np.zeros((2, 1, 128), dtype=np.float32)
-                            self._consecutive_speech_frames = 0
-                            self.barge_in_active = False
-                            print(f"📥 AGENT TURN START: first chunk ({len(audio_array)} samples) [VAD state RESET, guard period active]")
+                            print(f"📥 AGENT TURN START: first chunk ({len(audio_array)} samples) [VAD state RESET]")
                         elif self._chunk_count % 10 == 0:
                             print(f"📥 AGENT audio: chunk #{self._chunk_count} ({len(audio_array)} samples), queue={self.audio_queue.qsize()}")
                         
@@ -835,7 +724,7 @@ class ElevenLabsConversationClient:
                         if self.led_controller:
                             self.led_controller.update_speaking_leds(audio_array)
                         
-                        # Queue audio for playback (barge-in safe)
+                        # Queue audio for playback
                         await self.audio_queue.put(audio_array)
                         self.last_audio_time = time.time()  # Reset silence timer
                 

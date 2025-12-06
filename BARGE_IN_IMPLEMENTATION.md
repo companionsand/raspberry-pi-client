@@ -1,136 +1,87 @@
-# Barge-In Implementation
+# Interruption Handling (Barge-In)
 
 ## Overview
 
-The Raspberry Pi client now supports **barge-in functionality**, allowing users to interrupt the AI agent mid-response by speaking. When the user starts speaking, any queued audio is immediately flushed and the current audio playback is stopped.
+The Raspberry Pi client supports **user interruption (barge-in)**, allowing users to interrupt the AI agent mid-response by speaking. Interruption detection is handled **server-side by ElevenLabs**, which sends an `interruption` message when it detects user speech during agent playback.
+
+## How It Works
+
+### Architecture
+
+```
+ElevenLabs Server (handles interruption detection)
+         │
+         │  detects user speech during agent audio
+         ▼
+sends 'interruption' message via WebSocket
+         │
+         ▼
+┌─────────────────────────────────────────────────────┐
+│                  Raspberry Pi Client                 │
+│                                                      │
+│  Input stream (mic) ──► WebSocket ──► ElevenLabs    │
+│                                                      │
+│  Audio Queue ◄── ElevenLabs audio chunks            │
+│       │                                              │
+│       ▼                                              │
+│  Playback Task ──► Output stream (speaker)          │
+│       │                                              │
+│  On 'interruption' message:                         │
+│    1. Set playback_active = False                   │
+│    2. Clear audio queue                             │
+│    3. Reset LED to listening state                  │
+└─────────────────────────────────────────────────────┘
+```
+
+### Key Points
+
+1. **Server-side detection**: ElevenLabs receives the user's audio stream and detects when they speak during agent playback
+2. **WebSocket message**: When interruption is detected, ElevenLabs sends a message with `type: 'interruption'`
+3. **Client response**: The client immediately stops playback and clears queued audio
 
 ## Implementation Details
 
-### Architecture Changes
-
-The audio system has been refactored with **separate streams** and **queue-based playback**:
-
-**Before:**
-
-```
-Duplex stream (mic + speaker)
-ElevenLabs → receive audio → write directly to audio stream
-```
-
-**After:**
-
-```
-Input stream (mic) ──→ VAD ──→ detect speech ──→ ABORT output stream
-                                                   ↓
-Output stream (speaker) ←── playback task ←── queue ←── ElevenLabs
-
-User speech (VAD) triggers:
-  1. Immediate output stream abort (stops current audio instantly)
-  2. Queue flush (clears pending audio)
-  3. Output stream restart (ready for new audio)
-```
-
-**Key improvement:** Separate input/output streams allow instant interruption without affecting microphone input.
-
 ### Key Components
 
-#### 0. Separate Input/Output Streams
+#### 1. Separate Input/Output Streams
 
-**Critical architectural change** for instant barge-in:
+- **Input stream** (`InputStream`): Microphone only - sends audio to ElevenLabs
+- **Output stream** (`OutputStream`): Speaker only - plays agent audio
 
-- **Before:** Single duplex stream (mic + speaker together)
-- **After:** Separate `InputStream` (mic) and `OutputStream` (speaker)
+Separate streams allow clean interruption without affecting the microphone input.
 
-**Why this matters:**
-
-- `stream.write()` is blocking - waits for audio to finish playing
-- With duplex stream, we'd have to wait for current chunk to complete
-- **Separate output stream** can be `abort()`ed instantly without affecting mic input
-- After abort, stream is restarted immediately for new audio
-
-This change enables **true instant interruption** (~0ms latency) instead of waiting for chunk completion (~64ms with default chunk size).
-
-#### 1. Audio Queue (`asyncio.Queue`)
+#### 2. Audio Queue (`asyncio.Queue`)
 
 - All incoming agent audio chunks are placed in a queue
 - Decouples audio reception from playback
-- Allows interruption without blocking the receive pipeline
+- Can be cleared instantly on interruption
 
-#### 2. Playback Task (`_play_audio`)
+#### 3. Playback Task (`_play_audio`)
 
 - Runs concurrently with send/receive tasks
 - Consumes audio chunks from queue and writes to stream
-- Plays audio in smaller sub-chunks for faster interruption response
+- Plays audio in small sub-chunks (256 samples = ~16ms) for fast interruption response
 - Respects `playback_active` flag to stop mid-playback
 
-#### 3. Sustained Speech Detection with Smart Triggering
+#### 4. Interruption Handler (in `_receive_messages`)
 
-- Tracks consecutive VAD frames detecting speech
-- Requires **2 consecutive frames** of detected speech to trigger barge-in
-- Each frame is ~10ms (100 chunks/second), so ~20ms of sustained speech
-- **Only triggers if agent is actually speaking** (has queued audio OR is playing)
-- Prevents false triggers from brief noise or artifacts
-- Avoids unnecessary "barge-ins" during normal turn-taking when agent is silent
-
-#### 4. Barge-In Handler (`_handle_barge_in`)
-
-When sustained speech is detected:
-
-1. Sets `playback_active = False` to mark interruption
-2. **Aborts output stream immediately** (`stream.abort()`) - stops current audio instantly
-3. Restarts output stream - ready for new audio
-4. Drains the entire audio queue (clearing unplayed chunks)
-5. Logs the event with number of cleared chunks
-6. Allows new incoming chunks to resume normal queueing
-
-**Critical:** `stream.abort()` stops playback immediately without waiting for buffers to drain (unlike `stream.stop()`)
-
-### Modified Methods
-
-#### `__init__`
-
-Changed:
-
-- `self.audio_stream` → `self.input_stream` + `self.output_stream` (separate streams)
-
-Added:
-
-- `self.audio_queue` - asyncio.Queue for audio chunks
-- `self.playback_active` - flag to interrupt current playback
-- `self.barge_in_active` - tracks if barge-in is currently active
-- `self._consecutive_speech_frames` - counter for sustained speech detection
-- `self._barge_in_speech_threshold` - threshold (3 frames)
-
-#### `_send_audio`
-
-Added sustained speech detection:
+When an `interruption` message is received:
 
 ```python
-if is_speech:
-    self._consecutive_speech_frames += 1
-    if self._consecutive_speech_frames >= self._barge_in_speech_threshold:
-        await self._handle_barge_in()
-else:
-    self._consecutive_speech_frames = 0
-    self.barge_in_active = False
-```
-
-#### `_receive_messages`
-
-Changed from direct write to queueing:
-
-```python
-# Old: self.audio_stream.write(audio_array)
-# New: await self.audio_queue.put(audio_array)
-```
-
-#### `start`
-
-Added playback task to concurrent execution:
-
-```python
-playback_task = asyncio.create_task(self._play_audio())
-await asyncio.wait([send_task, receive_task, playback_task], ...)
+elif data.get('type') == 'interruption' or 'interruption' in data:
+    # Stop playback immediately
+    self.playback_active = False
+    
+    # Clear the audio queue
+    while not self.audio_queue.empty():
+        self.audio_queue.get_nowait()
+    
+    # Reset chunk count for next agent turn
+    self._chunk_count = 0
+    
+    # Reset LED to conversation/listening state
+    if self.led_controller:
+        self.led_controller.set_state(self.led_controller.STATE_CONVERSATION)
 ```
 
 ## Behavior
@@ -142,106 +93,57 @@ await asyncio.wait([send_task, receive_task, playback_task], ...)
 3. Playback task dequeues and plays chunk
 4. Process continues until conversation ends
 
-### Barge-In Flow
+### Interruption Flow
 
-1. User starts speaking (sustained for ~30ms)
-2. Barge-in triggered:
-   - Current audio chunk stops immediately
-   - All queued chunks are cleared
-3. User continues speaking
-4. When user stops, new agent audio chunks resume normal queueing
-5. LED transitions (CONVERSATION → THINKING → CONVERSATION) provide visual feedback
+1. User starts speaking during agent playback
+2. ElevenLabs detects user speech (server-side VAD)
+3. ElevenLabs sends `interruption` message
+4. Client receives message and:
+   - Stops current audio playback
+   - Clears all queued audio chunks
+   - Updates LED to listening state
+5. ElevenLabs processes user's new input
+6. Agent generates new response (or continues based on context)
 
 ### Edge Cases Handled
 
-- **Empty queue barge-in**: No-op, queue drain succeeds silently
-- **Multiple rapid barge-ins**: `barge_in_active` flag prevents redundant processing
-- **Late-arriving chunks**: Continue to queue normally after flush
+- **Empty queue**: Queue drain succeeds silently
+- **Late-arriving chunks**: Continue to queue normally after interruption
 - **Conversation end**: All tasks cancelled cleanly via `running` flag
-
-## Configuration
-
-### Adjustable Parameters
-
-In `__init__`:
-
-```python
-self._barge_in_speech_threshold = 3  # Frames (default: 3 = ~30ms)
-```
-
-To make barge-in more/less sensitive:
-
-- **Increase** threshold: More sustained speech required (fewer false triggers)
-- **Decrease** threshold: Faster barge-in response (more sensitive)
-
-### Chunk Size for Interruption
-
-In `_play_audio`:
-
-```python
-chunk_size = Config.CHUNK_SIZE  # Default: 1024 samples (~64ms at 16kHz)
-```
-
-Smaller chunks = faster interruption response, but more overhead.
-
-## Testing Recommendations
-
-1. **Basic barge-in**: Start agent response, interrupt by speaking
-2. **Rapid barge-in**: Interrupt, speak, stop, interrupt again quickly
-3. **False trigger resistance**: Cough, brief noise - should not trigger
-4. **Queue depth**: Let agent speak long response, interrupt late
-5. **Multiple interruptions**: Interrupt multiple times in one conversation
 
 ## Logs
 
-Barge-in events are logged with:
+Interruption events are logged:
 
 ```json
 {
-  "event": "barge_in_triggered",
+  "event": "elevenlabs_interruption_received",
   "conversation_id": "...",
-  "cleared_chunks": 42,
+  "queue_size_before": 5,
   "user_id": "...",
   "device_id": "..."
 }
 ```
 
-Monitor these logs to tune sensitivity and understand user behavior.
+## Performance
 
-## Performance Impact
-
-- **Latency**: Minimal (~1-2ms per chunk due to queue overhead)
+- **Latency**: Determined by ElevenLabs server-side detection (~100-300ms typical)
+- **Playback stop**: Instant once message received (within current 16ms sub-chunk)
 - **Memory**: Queue size bounded by ElevenLabs chunk rate (~10-20 chunks max)
-- **CPU**: Negligible (queue operations are O(1))
 
-## Future Enhancements
+## Historical Note
 
-Possible improvements:
+Previously, this client had **local VAD-based barge-in detection** that ran on-device. This was disabled in favor of ElevenLabs server-side detection because:
 
-1. **Adaptive threshold**: Adjust sensitivity based on environment noise
-2. **Partial playback**: Resume from interruption point instead of dropping
-3. **ElevenLabs cancellation**: Send upstream signal to stop generation
-4. **Analytics**: Track barge-in frequency and timing for UX optimization
-5. **Cross-fade**: Smooth volume reduction instead of hard stop
+1. ElevenLabs already does VAD server-side and sends interruption messages
+2. Server-side detection is more reliable (no echo cancellation issues)
+3. Simpler client code with less state to manage
+4. Consistent behavior across different hardware configurations
 
----
-
-## Revision History
-
-### v2 - Instant Interruption (Current)
-
-- **Change:** Separate input/output streams with `abort()` for instant stop
-- **Latency:** ~0ms (immediate abort)
-- **Date:** November 2025
-
-### v1 - Initial Implementation
-
-- **Change:** Audio queue with chunk-level interruption
-- **Latency:** ~64ms (waited for current chunk to finish)
-- **Issue:** Not instant enough for natural conversation
+The local VAD is still used for **LED state management** (showing when user is speaking), but not for interruption detection.
 
 ---
 
-**Implementation Date**: November 2025  
-**Status**: ✅ Complete - Instant interruption working  
-**Applies to**: raspberry-pi-client only (mac-client may need similar implementation)
+**Last Updated**: December 2025  
+**Status**: ✅ Working - Server-side interruption detection  
+**Applies to**: raspberry-pi-client
