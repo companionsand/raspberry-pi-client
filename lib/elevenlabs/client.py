@@ -229,14 +229,15 @@ class ElevenLabsConversationClient:
                         }
                     )
                 
-                # Run send, receive, and playback tasks concurrently
+                # Run send, receive, playback, and watchdog tasks concurrently
                 send_task = asyncio.create_task(self._send_audio())
                 receive_task = asyncio.create_task(self._receive_messages(orchestrator_client))
                 playback_task = asyncio.create_task(self._play_audio())
+                watchdog_task = asyncio.create_task(self._watchdog())
                 
                 # Wait for any task to complete
                 done, pending = await asyncio.wait(
-                    [send_task, receive_task, playback_task],
+                    [send_task, receive_task, playback_task, watchdog_task],
                     return_when=asyncio.FIRST_COMPLETED
                 )
                 
@@ -608,6 +609,9 @@ class ElevenLabsConversationClient:
                 sub_chunk_size = 256
                 interrupted = False
                 
+                # Get event loop for running blocking write in executor
+                loop = asyncio.get_running_loop()
+                
                 for i in range(0, len(audio_array), sub_chunk_size):
                     # Check if barge-in occurred
                     if not self.playback_active:
@@ -619,11 +623,27 @@ class ElevenLabsConversationClient:
                         interrupted = True
                         break
                     
-                    # Write small chunk
+                    # Write small chunk - run in executor to avoid blocking event loop
                     chunk = audio_array[i:i+sub_chunk_size]
                     try:
                         if self.output_stream and self.output_stream.active:
-                            self.output_stream.write(chunk)
+                            # Run blocking write in thread pool with timeout
+                            await asyncio.wait_for(
+                                loop.run_in_executor(None, self.output_stream.write, chunk),
+                                timeout=2.0  # 2 second timeout for audio write
+                            )
+                    except asyncio.TimeoutError:
+                        print(f"⚠️ Audio write timeout - audio device may be stuck")
+                        if logger:
+                            logger.warning(
+                                "audio_write_timeout",
+                                extra={
+                                    "conversation_id": self.conversation_id,
+                                    "user_id": Config.USER_ID,
+                                    "device_id": Config.DEVICE_ID
+                                }
+                            )
+                        # Don't break - try to continue, the device might recover
                     except Exception as e:
                         if logger:
                             logger.debug(
@@ -635,7 +655,7 @@ class ElevenLabsConversationClient:
                             )
                         break
                     
-                    # Yield to event loop
+                    # Yield to event loop (already yielded in run_in_executor, but be explicit)
                     await asyncio.sleep(0)
                 
                 if interrupted:
@@ -659,6 +679,78 @@ class ElevenLabsConversationClient:
                 )
             self.end_reason = "playback_error"
             self.running = False
+    
+    async def _watchdog(self):
+        """Watchdog task that monitors conversation health and terminates if stuck.
+        
+        Checks for:
+        1. Audio queue growing without being processed (playback stuck)
+        2. No activity for extended period (all tasks stuck)
+        """
+        logger = self.logger
+        check_interval = 5.0  # Check every 5 seconds
+        max_queue_stall_time = 30.0  # Max time audio can sit in queue
+        last_queue_check_time = time.time()
+        last_queue_size = 0
+        queue_stall_start = None
+        
+        try:
+            while self.running:
+                await asyncio.sleep(check_interval)
+                
+                if not self.running:
+                    break
+                
+                current_queue_size = self.audio_queue.qsize()
+                now = time.time()
+                
+                # Check for queue stall (queue has items that aren't being processed)
+                if current_queue_size > 0:
+                    if current_queue_size >= last_queue_size and last_queue_size > 0:
+                        # Queue is not shrinking - might be stalled
+                        if queue_stall_start is None:
+                            queue_stall_start = now
+                        
+                        stall_duration = now - queue_stall_start
+                        if stall_duration > max_queue_stall_time:
+                            print(f"\n🚨 WATCHDOG: Audio queue stalled for {stall_duration:.1f}s (queue={current_queue_size}) - terminating")
+                            if logger:
+                                logger.error(
+                                    "watchdog_queue_stall",
+                                    extra={
+                                        "conversation_id": self.conversation_id,
+                                        "queue_size": current_queue_size,
+                                        "stall_duration": stall_duration,
+                                        "user_id": Config.USER_ID,
+                                        "device_id": Config.DEVICE_ID
+                                    }
+                                )
+                            self.end_reason = "watchdog_queue_stall"
+                            self.running = False
+                            break
+                    else:
+                        # Queue is shrinking - reset stall timer
+                        queue_stall_start = None
+                else:
+                    # Queue is empty - reset stall timer
+                    queue_stall_start = None
+                
+                last_queue_size = current_queue_size
+                last_queue_check_time = now
+                
+        except asyncio.CancelledError:
+            pass
+        except Exception as e:
+            if logger:
+                logger.error(
+                    "watchdog_error",
+                    extra={
+                        "conversation_id": self.conversation_id,
+                        "error": str(e),
+                        "user_id": Config.USER_ID,
+                        "device_id": Config.DEVICE_ID
+                    }
+                )
     
     async def _receive_messages(self, orchestrator_client: OrchestratorClient):
         """Receive and process messages from WebSocket"""
@@ -747,6 +839,57 @@ class ElevenLabsConversationClient:
                         await self.audio_queue.put(audio_array)
                         self.last_audio_time = time.time()  # Reset silence timer
                 
+                elif data.get('type') == 'interruption' or 'interruption' in data:
+                    # ElevenLabs detected user interruption - stop playback immediately
+                    interruption_event = data.get('interruption', data)
+                    print(f"🛑 ElevenLabs interruption detected - clearing audio queue")
+                    if logger:
+                        logger.info(
+                            "elevenlabs_interruption_received",
+                            extra={
+                                "conversation_id": self.conversation_id,
+                                "queue_size_before": self.audio_queue.qsize(),
+                                "user_id": Config.USER_ID,
+                                "device_id": Config.DEVICE_ID,
+                                "raw_event": data
+                            }
+                        )
+                    
+                    # Stop playback immediately
+                    self.playback_active = False
+                    
+                    # Clear the audio queue
+                    cleared_count = 0
+                    while not self.audio_queue.empty():
+                        try:
+                            self.audio_queue.get_nowait()
+                            cleared_count += 1
+                        except asyncio.QueueEmpty:
+                            break
+                    
+                    # Reset chunk count for next agent turn
+                    self._chunk_count = 0
+                    
+                    # Reset LED to conversation/listening state
+                    if self.led_controller:
+                        self.led_controller.set_state(self.led_controller.STATE_CONVERSATION)
+                    
+                    print(f"   ✓ Cleared {cleared_count} queued audio chunks, ready for user input")
+                    self.last_audio_time = time.time()  # Reset silence timer
+                
+                elif data.get('type') == 'agent_response_correction_event' or 'agent_response_correction_event' in data:
+                    # Agent response was corrected (often happens with interruptions)
+                    print(f"📝 Agent response corrected")
+                    if logger:
+                        logger.info(
+                            "agent_response_correction",
+                            extra={
+                                "conversation_id": self.conversation_id,
+                                "user_id": Config.USER_ID,
+                                "raw_event": data
+                            }
+                        )
+                
                 elif data.get('type') == 'ping':
                     # Respond to ping to keep connection alive
                     ping_event = data.get('ping_event', {})
@@ -792,18 +935,22 @@ class ElevenLabsConversationClient:
                     self.running = False
                 
                 else:
-                    # Log unknown message types for debugging (but not too verbose)
+                    # Log unknown message types for debugging
                     msg_type = data.get('type', 'unknown')
                     keys = list(data.keys())
-                    if msg_type not in ('pong',) and logger:
-                        logger.debug(
-                            "elevenlabs_unknown_message",
-                            extra={
-                                "conversation_id": self.conversation_id,
-                                "message_type": msg_type,
-                                "message_keys": keys
-                            }
-                        )
+                    # Print unknown messages so we can see what we're missing
+                    if msg_type not in ('pong',):
+                        print(f"📨 [UNKNOWN MSG] type={msg_type}, keys={keys}")
+                        if logger:
+                            logger.info(
+                                "elevenlabs_unknown_message",
+                                extra={
+                                    "conversation_id": self.conversation_id,
+                                    "message_type": msg_type,
+                                    "message_keys": keys,
+                                    "raw_data": str(data)[:500]  # First 500 chars for debugging
+                                }
+                            )
                 
                 # Check for user termination
                 if self.user_terminate_flag and self.user_terminate_flag[0]:
