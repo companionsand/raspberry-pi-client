@@ -2,7 +2,7 @@
 
 ## Overview
 
-`main.py` is the Raspberry Pi client that combines ALSA-only audio, full telemetry, LED feedback, and modular architecture. Previous versions are available as `old_main.py` (PipeWire-based with telemetry) and `new_main.py` (ALSA-only with LEDs, no telemetry).
+`main.py` is the Raspberry Pi client that combines ALSA-only audio, full telemetry, LED feedback, and modular architecture.
 
 ## Key Features
 
@@ -21,7 +21,7 @@
 - Graceful degradation if telemetry unavailable
 
 ### 3. **LED Visual Feedback**
-- Complete LED controller from `new_main.py`
+- Complete LED controller for ReSpeaker
 - States: BOOT, IDLE, WAKE_WORD_DETECTED, CONVERSATION, ERROR, OFF
 - Animated patterns designed for elderly users
 
@@ -34,12 +34,6 @@
 - Clean separation of concerns
 - Easy to test and maintain
 - Reusable components
-
-### 6. **Turn Tracking**
-- VAD-based speech turn detection for both user and agent
-- Reconciles turns with transcripts for complete conversation timeline
-- Response latency measurement (user_end → agent_start)
-- Optional ground-truth speaker monitoring via ALSA loopback
 
 ## Project Structure
 
@@ -63,15 +57,9 @@ raspberry-pi-client/
     ├── orchestrator/
     │   ├── __init__.py
     │   └── client.py     # Orchestrator WebSocket client
-    ├── turn_tracker/
-    │   ├── __init__.py
-    │   └── tracker.py    # VAD-based turn tracking
-    ├── speaker_monitor/
-    │   ├── __init__.py
-    │   └── monitor.py    # ALSA loopback speaker monitoring
     └── telemetry/
         ├── __init__.py
-        └── telemetry.py  # OpenTelemetry setup (moved from root)
+        └── telemetry.py  # OpenTelemetry setup
 ```
 
 ## Usage
@@ -103,85 +91,11 @@ Optional configuration:
 - `OTEL_EXPORTER_ENDPOINT` - OTEL collector endpoint (default: `http://localhost:4318`)
 - `ENV` - Deployment environment (default: `production`)
 
-### Speaker Monitor Settings (for ground-truth agent timing)
-
-| Variable | Default | Description |
-|----------|---------|-------------|
-| `SPEAKER_MONITOR_MODE` | `""` | Set to `loopback` to enable ALSA loopback monitoring |
-| `SPEAKER_MONITOR_LOOPBACK_DEVICE` | `speaker_monitor` | ALSA device name for monitoring |
-| `SPEAKER_MONITOR_DEBUG` | `""` | Set to `1` to enable debug logging |
-
-### Turn Tracker Settings
-
-| Variable | Default | Description |
-|----------|---------|-------------|
-| `SKIP_TURN_TRACKING` | `true` | Skip turn tracking completely (no tracking, logs, or reports) |
-| `TURN_TRACKER_VAD_THRESHOLD` | `0.5` | VAD probability threshold (0.0-1.0) |
-| `TURN_TRACKER_USER_SILENCE_TIMEOUT` | `2.5` | Silence timeout for user turns (seconds) |
-| `TURN_TRACKER_USER_MIN_TURN_DURATION` | `0.15` | Minimum user turn duration (seconds) |
-| `TURN_TRACKER_USER_MIN_SPEECH_ONSET` | `0.08` | Minimum speech onset for user (seconds) |
-| `TURN_TRACKER_AGENT_SILENCE_TIMEOUT` | `2.5` | Silence timeout for agent turns (seconds) |
-| `TURN_TRACKER_AGENT_MIN_TURN_DURATION` | `0.2` | Minimum agent turn duration (seconds) |
-| `TURN_TRACKER_AGENT_MIN_SPEECH_ONSET` | `0.08` | Minimum speech onset for agent (seconds) |
-| `TURN_TRACKER_DEBOUNCE_WINDOW` | `0.5` | Debounce window (seconds) |
-
 Note: Most settings (API keys, wake word, LED settings) are fetched from backend after authentication.
-- `WAKE_WORD` - Wake word to detect (default: "porcupine")
-- `LED_ENABLED` - Enable LED feedback (default: "true")
-- `OTEL_ENABLED` - Enable OpenTelemetry (default: "true")
-- `OTEL_EXPORTER_ENDPOINT` - OTEL exporter endpoint (default: "http://localhost:4318")
-- `ENV` - Environment name (default: "production")
-
-## Speaker Monitor Setup (Optional)
-
-For ground-truth agent speech timing, you can set up ALSA loopback monitoring:
-
-```bash
-# Install ALSA loopback (run once)
-sudo ./raspberry-pi-client-wrapper/speaker-monitor/install-loopback.sh
-
-# Reboot may be required
-sudo reboot
-
-# Enable in your environment
-export SPEAKER_MONITOR_MODE=loopback
-
-# Run the client
-python main.py
-```
-
-Without speaker monitoring, the turn tracker uses estimation mode (analyzing audio before playback), which is less accurate but works without setup.
-
-## What's Different from Previous Versions?
-
-### ✅ Kept from old_main.py (PipeWire version):
-- Full telemetry with traces, spans, and structured logging
-- Log level set to INFO
-- Trace context propagation
-- Conversation-level traces
-- Signal differentiation (SIGUSR1 vs SIGINT/SIGTERM)
-- Graceful cleanup
-
-### ✅ Kept from new_main.py:
-- ALSA-only architecture
-- ReSpeaker hardware AEC support
-- LED visual feedback
-- LED animations
-
-### ❌ Removed:
-- Metrics (as requested, will be added later)
-- Heartbeat messages (as requested)
-- PipeWire/PulseAudio support
-
-### ✨ New:
-- Modular architecture with clean separation
-- Automatic fallback to best available audio devices
-- Better error handling and logging
-- Easier to test and maintain
 
 ## Telemetry Details
 
-The telemetry system is heavily copied from `old_main.py` to ensure it works correctly:
+The telemetry system provides comprehensive observability:
 
 1. **Logging setup**: Log level is explicitly set to INFO before any imports
 2. **Trace context**: Properly injected into WebSocket messages for distributed tracing
@@ -192,7 +106,7 @@ The telemetry system is heavily copied from `old_main.py` to ensure it works cor
 
 ## Testing
 
-To test the refactored code:
+To test the client:
 
 1. **Audio detection**: Verify ReSpeaker is detected or fallback works
 2. **Wake word**: Test wake word detection with detected microphone
@@ -201,17 +115,6 @@ To test the refactored code:
 5. **LEDs**: Verify LED states if ReSpeaker is available
 6. **Telemetry**: Check OTEL traces in your observability backend
 
-## Migration from Previous Versions
-
-If you were using `old_main.py` (PipeWire-based) or `new_main.py` (ALSA without telemetry):
-
-```bash
-# Now just use:
-python main.py
-```
-
-All environment variables remain the same! The new version combines the best of both.
-
 ## Future Enhancements
 
 - Add metrics (planned for later)
@@ -219,4 +122,3 @@ All environment variables remain the same! The new version combines the best of 
 - Add integration tests
 - Consider adding configuration file support
 - Add more LED patterns
-

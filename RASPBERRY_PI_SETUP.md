@@ -161,6 +161,27 @@ sudo journalctl -u kin-client -f
 | No speaker audio | Ensure speaker is on ReSpeaker jack, run `aplay test.wav`, check `amixer -c 2 set Speaker 80%`. |
 | LEDs off | `pip install pixel-ring`, or set `LED_ENABLED=false`. |
 | Ctrl+C not working | Latest `main.py` handles SIGINT; ensure you redeployed it. |
+| LED "Permission denied" error | Setup udev rules for USB HID access - see below. |
+
+### LED Permission Fix
+
+If you see "Permission denied" when initializing LEDs, you need udev rules for USB HID access:
+
+```bash
+# Create udev rules for ReSpeaker LED control
+sudo tee /etc/udev/rules.d/99-respeaker.rules > /dev/null <<'EOF'
+# ReSpeaker 4-Mic Array (USB VID:PID 2886:0018)
+SUBSYSTEM=="usb", ATTR{idVendor}=="2886", ATTR{idProduct}=="0018", MODE="0666", GROUP="plugdev"
+SUBSYSTEM=="hidraw", ATTRS{idVendor}=="2886", ATTRS{idProduct}=="0018", MODE="0666", GROUP="plugdev"
+EOF
+
+# Reload rules and add user to plugdev group
+sudo udevadm control --reload-rules
+sudo udevadm trigger
+sudo usermod -a -G plugdev $USER
+
+# Reboot or re-plug the ReSpeaker USB to apply
+```
 
 ---
 
