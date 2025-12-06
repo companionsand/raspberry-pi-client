@@ -48,7 +48,7 @@ class ElevenLabsConversationClient:
         self.conversation_id = str(uuid.uuid4())
         self.elevenlabs_conversation_id = None
         self.end_reason = "normal"
-        self.silence_timeout = 30.0  # seconds
+        self.silence_timeout = 60.0  # seconds
         self.last_audio_time = None
         self.user_terminate_flag = user_terminate_flag  # Reference to shared flag
         self.led_controller = led_controller  # LED controller for visual feedback
@@ -118,6 +118,14 @@ class ElevenLabsConversationClient:
         # Debug logging: periodic RMS/VAD logging
         self._last_debug_log_time = 0.0
         self._debug_log_interval = 0.5  # Log every 500ms during playback
+        
+        # Periodic status logging: Log conversation health every 10 seconds
+        self._last_status_log_time = 0.0
+        self._status_log_interval = 10.0  # Log status every 10 seconds
+        
+        # Max conversation duration failsafe (5 minutes)
+        self._max_conversation_duration = 300.0  # 5 minutes
+        self._conversation_start_time = None
         
         # -------------------------------------------------------------------------
         # Turn Tracker - Tracks user and agent speech turns
@@ -216,6 +224,7 @@ class ElevenLabsConversationClient:
                 self.websocket = websocket
                 self.running = True
                 self.last_audio_time = time.time()
+                self._conversation_start_time = time.time()  # For max duration failsafe
                 
                 print("✓ Connected to ElevenLabs")
                 
@@ -412,6 +421,9 @@ class ElevenLabsConversationClient:
                 # -------------------------------------------------------------------------
                 # LED State Management: LISTENING ↔ THINKING transitions
                 # -------------------------------------------------------------------------
+                # Calculate actual conversation inactivity (time since last transcript/agent audio)
+                actual_silence_secs = (time.time() - self.last_audio_time) if self.last_audio_time else 0
+                
                 if is_speech:
                     # User is speaking - update speech time for LED transitions
                     # NOTE: We intentionally do NOT update last_audio_time here
@@ -420,7 +432,9 @@ class ElevenLabsConversationClient:
                     self._last_speech_time = time.time()
                     
                     # Ensure LED is in LISTENING state (STATE_CONVERSATION)
-                    if self.led_controller:
+                    # BUT only if there's been recent conversation activity (within 5s)
+                    # This prevents VAD false positives from keeping LED in LISTENING forever
+                    if self.led_controller and actual_silence_secs < 5.0:
                         current = self.led_controller.current_state
                         # Only switch if we're in THINKING (not SPEAKING - agent might be talking)
                         if current == self.led_controller.STATE_THINKING:
@@ -437,6 +451,13 @@ class ElevenLabsConversationClient:
                             if current == self.led_controller.STATE_CONVERSATION:
                                 self.led_controller.set_state(self.led_controller.STATE_THINKING)
                 
+                # Fallback: Force THINKING state if no actual conversation activity for 5+ seconds
+                # This handles VAD false positives that keep detecting "speech"
+                if self.led_controller and actual_silence_secs >= 5.0:
+                    current = self.led_controller.current_state
+                    if current == self.led_controller.STATE_CONVERSATION:
+                        self.led_controller.set_state(self.led_controller.STATE_THINKING)
+                
                 # Feed to turn tracker for user VAD (if enabled)
                 if self.turn_tracker:
                     self.turn_tracker.process_user_audio(audio_data)
@@ -445,11 +466,29 @@ class ElevenLabsConversationClient:
                     if not self.use_speaker_monitor:
                         self.turn_tracker.check_agent_silence()
                 
-                # Encode as base64 and send
+                # Encode as base64 and send (with timeout to prevent blocking on dead connection)
                 audio_b64 = base64.b64encode(audio_data.tobytes()).decode('utf-8')
                 message = {"user_audio_chunk": audio_b64}
                 
-                await self.websocket.send(json.dumps(message))
+                try:
+                    await asyncio.wait_for(
+                        self.websocket.send(json.dumps(message)),
+                        timeout=5.0  # 5 second timeout for send
+                    )
+                except asyncio.TimeoutError:
+                    print(f"\n⏱️ WebSocket send timeout - connection may be dead")
+                    if logger:
+                        logger.warning(
+                            "websocket_send_timeout",
+                            extra={
+                                "conversation_id": self.conversation_id,
+                                "user_id": Config.USER_ID,
+                                "device_id": Config.DEVICE_ID
+                            }
+                        )
+                    self.end_reason = "network_failure"
+                    self.running = False
+                    break
                 
                 # Check for silence timeout
                 if self.last_audio_time and (time.time() - self.last_audio_time) > self.silence_timeout:
@@ -482,6 +521,42 @@ class ElevenLabsConversationClient:
                     self.end_reason = "user_terminated"
                     self.running = False
                     break
+                
+                # Check for max conversation duration failsafe
+                if self._conversation_start_time:
+                    conversation_duration = time.time() - self._conversation_start_time
+                    if conversation_duration > self._max_conversation_duration:
+                        print(f"\n⏱️ Max conversation duration ({self._max_conversation_duration}s) reached - ending")
+                        if logger:
+                            logger.warning(
+                                "conversation_max_duration_reached",
+                                extra={
+                                    "conversation_id": self.conversation_id,
+                                    "duration_seconds": conversation_duration,
+                                    "max_duration": self._max_conversation_duration,
+                                    "user_id": Config.USER_ID,
+                                    "device_id": Config.DEVICE_ID
+                                }
+                            )
+                        self.end_reason = "max_duration"
+                        self.running = False
+                        break
+                
+                # Periodic status logging for debugging stuck conversations
+                now = time.time()
+                if now - self._last_status_log_time > self._status_log_interval:
+                    self._last_status_log_time = now
+                    silence_duration = now - self.last_audio_time if self.last_audio_time else 0
+                    conversation_duration = now - self._conversation_start_time if self._conversation_start_time else 0
+                    led_state = self.led_controller.current_state if self.led_controller else "unknown"
+                    vad_info = f"VAD={speech_prob:.2f}" if self.vad_enabled else "VAD=off"
+                    print(f"📊 [STATUS] duration={conversation_duration:.1f}s, silence={silence_duration:.1f}s, LED={led_state}, {vad_info}, RMS={mic_rms:.0f}, queue={self.audio_queue.qsize()}")
+                    
+                    # If in prolonged silence (>30s) with no transcripts, reset VAD state
+                    # to clear any accumulated false positive state
+                    if silence_duration > 30.0:
+                        self._vad_state = np.zeros((2, 1, 128), dtype=np.float32)
+                        print(f"   ↳ VAD state reset due to prolonged silence ({silence_duration:.0f}s)")
                 
                 # Small delay to prevent overwhelming the connection
                 await asyncio.sleep(0.01)
