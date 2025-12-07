@@ -730,7 +730,7 @@ class WakeWordDetector:
                 self._last_scribe_transcript = transcript_text
                 
                 # Check if transcript matches wake word
-                matches = self._fuzzy_match_wake_word(transcript_text, Config.WAKE_WORD)
+                matches = self._fuzzy_match_wake_word(transcript_text, Config.WAKE_WORD, Config.WAKE_WORD_ASR_SIMILARITY_THRESHOLD)
                 
                 if matches:
                     self._scribe_verifications_passed += 1
