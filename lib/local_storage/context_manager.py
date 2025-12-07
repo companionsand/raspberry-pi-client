@@ -60,6 +60,12 @@ class ContextManager:
         if self._logger:
             self._logger.info("context_manager_stopped")
     
+    async def force_refresh(self):
+        """Force refresh location data (e.g., after reconnection)"""
+        if self._logger:
+            self._logger.info("context_manager_force_refresh", extra={"action": "manual_refresh"})
+        await self._fetch_location()
+    
     async def _fetch_location(self):
         """Fetch location data using WiFi triangulation"""
         try:
