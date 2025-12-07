@@ -46,8 +46,7 @@ class ElevenLabsConversationClient:
         self.conversation_id = str(uuid.uuid4())
         self.elevenlabs_conversation_id = None
         self.end_reason = "normal"
-        self.silence_timeout = 60.0  # seconds
-        self.last_audio_time = None
+        self.last_audio_time = None  # Used for LED state management
         self.user_terminate_flag = user_terminate_flag  # Reference to shared flag
         self.led_controller = led_controller  # LED controller for visual feedback
         self.logger = Config.LOGGER
@@ -356,22 +355,6 @@ class ElevenLabsConversationClient:
                             }
                         )
                     self.end_reason = "network_failure"
-                    self.running = False
-                    break
-                
-                # Check for silence timeout
-                if self.last_audio_time and (time.time() - self.last_audio_time) > self.silence_timeout:
-                    print("\n⏱️  Silence timeout - ending conversation")
-                    if logger:
-                        logger.info(
-                            "conversation_silence_timeout",
-                            extra={
-                                "conversation_id": self.conversation_id,
-                                "user_id": Config.USER_ID,
-                                "device_id": Config.DEVICE_ID
-                            }
-                        )
-                    self.end_reason = "silence"
                     self.running = False
                     break
                 
