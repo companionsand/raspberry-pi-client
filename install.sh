@@ -20,11 +20,11 @@ pip3 install pyaudio sounddevice websockets certifi python-dotenv
 pip3 install cryptography requests aiohttp pixel-ring elevenlabs
 pip3 install opentelemetry-api==1.28.2 opentelemetry-sdk==1.28.2 opentelemetry-exporter-otlp-proto-http==1.28.2
 
-# Install openwakeword with --no-deps
-# (avoids tflite-runtime conflict, all real dependencies already installed)
+# Install openwakeword with --no-deps from PyPI (not piwheels)
+# (piwheels version is missing resource files, PyPI has full package)
 echo ""
-echo "Installing openwakeword..."
-pip3 install --no-deps openwakeword
+echo "Installing openwakeword from PyPI..."
+pip3 install --no-deps --index-url https://pypi.org/simple/ openwakeword
 
 # Verify installation
 echo ""
@@ -45,9 +45,9 @@ else:
     exit(1)
 " || {
     echo ""
-    echo "Package files missing, trying full reinstall..."
+    echo "Package files missing, trying full reinstall from PyPI..."
     pip3 uninstall -y openwakeword
-    pip3 install --force-reinstall --no-cache-dir --no-deps openwakeword
+    pip3 install --force-reinstall --no-cache-dir --no-deps --index-url https://pypi.org/simple/ openwakeword
 }
 
 echo ""
