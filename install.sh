@@ -20,9 +20,7 @@ pip3 install pyaudio sounddevice websockets certifi python-dotenv
 pip3 install cryptography requests aiohttp pixel-ring elevenlabs
 pip3 install opentelemetry-api==1.28.2 opentelemetry-sdk==1.28.2 opentelemetry-exporter-otlp-proto-http==1.28.2
 
-# Install openw
-
-akeword with --no-deps
+# Install openwakeword with --no-deps
 # (avoids tflite-runtime conflict, all real dependencies already installed)
 echo ""
 echo "Installing openwakeword..."
