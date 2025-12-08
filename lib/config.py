@@ -40,7 +40,6 @@ class Config:
     
     # API Keys (fetched from backend)
     ELEVENLABS_API_KEY = None
-    PICOVOICE_ACCESS_KEY = None
     GOOGLE_API_KEY = None
     
     # System settings (fetched from backend)
@@ -94,7 +93,6 @@ class Config:
         cls.USER_ID = device_config.get("user_id")
         
         # Set API keys
-        cls.PICOVOICE_ACCESS_KEY = api_keys.get("picovoice_access_key") or device_config.get("picovoice_access_key")
         cls.ELEVENLABS_API_KEY = system_config.get("elevenlabs_api_key")
         cls.GOOGLE_API_KEY = system_config.get("google_api_key")
         
