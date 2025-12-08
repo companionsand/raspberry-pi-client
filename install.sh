@@ -22,50 +22,37 @@ fi
 echo "✓ Python version: $PYTHON_VERSION"
 echo ""
 
-# Try standard installation first
-echo "Attempting standard installation..."
-if pip3 install -r requirements.txt 2>/dev/null; then
-    echo ""
-    echo "✅ Installation successful!"
+# For Python 3.13+, we need to use --no-deps for openwakeword due to tflite-runtime unavailability
+echo "Installing dependencies..."
+echo ""
+
+# Install core dependencies first
+echo "1/4 Installing core dependencies..."
+pip3 install 'numpy>=1.24.0' 'scipy>=1.11.0' 'onnxruntime>=1.16.0'
+
+# Install openwakeword dependencies (excluding tflite-runtime which doesn't exist for Python 3.13)
+echo "2/4 Installing openwakeword dependencies..."
+pip3 install 'tqdm<5.0,>=4.0' 'scikit-learn<2,>=1'
+
+# Try to install tflite-runtime (optional, for older Python versions)
+echo "   Attempting to install tflite-runtime (optional)..."
+if pip3 install 'tflite-runtime>=2.8.0,<3' 2>/dev/null; then
+    echo "   ✓ tflite-runtime installed"
 else
-    echo ""
-    echo "⚠️  Standard installation failed (dependency conflict)"
-    echo "   Using alternative installation method..."
-    echo ""
-    
-    # Fallback: Use locked requirements
-    if [ -f "requirements-lock.txt" ]; then
-        echo "Installing from requirements-lock.txt..."
-        pip3 install -r requirements-lock.txt
-    else
-        # Manual installation as last resort
-        echo "Installing dependencies manually..."
-        
-        # Install core dependencies first
-        pip3 install 'numpy>=1.24.0' 'scipy>=1.11.0'
-        
-        # Install ONNX runtime (primary runtime for all Python versions)
-        pip3 install 'onnxruntime>=1.16.0'
-        
-        # Try to install tflite-runtime (optional, for older Python versions)
-        echo "Attempting to install tflite-runtime (optional)..."
-        if pip3 install 'tflite-runtime>=2.8.0,<3' 2>/dev/null; then
-            echo "✓ tflite-runtime installed"
-        else
-            echo "⚠️  tflite-runtime not available (will use onnxruntime)"
-        fi
-        
-        # Install openwakeword
-        pip3 install 'openwakeword>=0.5.0'
-        
-        # Install remaining dependencies
-        pip3 install pyaudio sounddevice websockets certifi python-dotenv cryptography requests aiohttp pixel-ring elevenlabs
-        pip3 install opentelemetry-api opentelemetry-sdk opentelemetry-exporter-otlp-proto-http
-    fi
-    
-    echo ""
-    echo "✅ Installation complete (using fallback method)"
+    echo "   ⚠️  tflite-runtime not available (will use onnxruntime)"
 fi
+
+# Install openwakeword WITHOUT checking dependencies (avoids tflite-runtime conflict)
+echo "3/4 Installing openwakeword..."
+pip3 install --no-deps 'openwakeword>=0.5.0'
+
+# Install remaining application dependencies
+echo "4/4 Installing remaining dependencies..."
+pip3 install pyaudio sounddevice websockets certifi python-dotenv cryptography requests aiohttp pixel-ring elevenlabs
+pip3 install opentelemetry-api==1.28.2 opentelemetry-sdk==1.28.2 opentelemetry-exporter-otlp-proto-http==1.28.2
+
+echo ""
+echo "✅ Installation complete!"
 
 echo ""
 echo "========================================="
