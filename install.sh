@@ -22,13 +22,13 @@ pip3 install opentelemetry-api==1.28.2 opentelemetry-sdk==1.28.2 opentelemetry-e
 
 # Install openwakeword with --no-deps from PyPI ONLY (not piwheels)
 # (piwheels version is missing resource files like melspectrogram.onnx)
-# Download directly from PyPI to bypass piwheels
+# Download directly from PyPI using curl to bypass piwheels
 echo ""
-echo "Downloading openwakeword from PyPI..."
-pip3 download --no-deps --index-url https://pypi.org/simple/ --dest /tmp openwakeword
+echo "Downloading openwakeword directly from PyPI..."
+curl -L -o /tmp/openwakeword.whl https://files.pythonhosted.org/packages/py3/o/openwakeword/openwakeword-0.6.0-py3-none-any.whl
 echo "Installing openwakeword from downloaded file..."
-pip3 install --no-deps /tmp/openwakeword-*.whl
-rm /tmp/openwakeword-*.whl
+pip3 install --no-deps /tmp/openwakeword.whl
+rm /tmp/openwakeword.whl
 
 # Verify installation
 echo ""
@@ -51,9 +51,9 @@ else:
     echo ""
     echo "Package files missing, trying full reinstall from PyPI (bypassing piwheels)..."
     pip3 uninstall -y openwakeword
-    pip3 download --no-deps --index-url https://pypi.org/simple/ --dest /tmp openwakeword
-    pip3 install --no-deps --force-reinstall /tmp/openwakeword-*.whl
-    rm /tmp/openwakeword-*.whl
+    curl -L -o /tmp/openwakeword.whl https://files.pythonhosted.org/packages/py3/o/openwakeword/openwakeword-0.6.0-py3-none-any.whl
+    pip3 install --no-deps --force-reinstall /tmp/openwakeword.whl
+    rm /tmp/openwakeword.whl
 }
 
 echo ""
