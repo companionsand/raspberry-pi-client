@@ -1,6 +1,6 @@
 # Wake word detection (using ONNX models)
 onnxruntime>=1.16.0
-openwakeword>=0.5.0
+openwakeword==0.5.1  # Pin to 0.5.1 (0.6.0 missing resource files)
 
 # Audio processing
 pyaudio>=0.2.11

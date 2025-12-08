@@ -20,15 +20,11 @@ pip3 install pyaudio sounddevice websockets certifi python-dotenv
 pip3 install cryptography requests aiohttp pixel-ring elevenlabs
 pip3 install opentelemetry-api==1.28.2 opentelemetry-sdk==1.28.2 opentelemetry-exporter-otlp-proto-http==1.28.2
 
-# Install openwakeword with --no-deps from PyPI ONLY (not piwheels)
-# (piwheels version is missing resource files like melspectrogram.onnx)
-# Download directly from PyPI using curl to bypass piwheels
+# Install openwakeword 0.5.1 with --no-deps
+# (version 0.6.0 is broken - missing resource files)
 echo ""
-echo "Downloading openwakeword directly from PyPI..."
-curl -L -o /tmp/openwakeword.whl https://files.pythonhosted.org/packages/py3/o/openwakeword/openwakeword-0.6.0-py3-none-any.whl
-echo "Installing openwakeword from downloaded file..."
-pip3 install --no-deps /tmp/openwakeword.whl
-rm /tmp/openwakeword.whl
+echo "Installing openwakeword 0.5.1..."
+pip3 install --no-deps openwakeword==0.5.1
 
 # Verify installation
 echo ""
@@ -49,11 +45,9 @@ else:
     exit(1)
 " || {
     echo ""
-    echo "Package files missing, trying full reinstall from PyPI (bypassing piwheels)..."
+    echo "Package files missing, reinstalling with --force-reinstall..."
     pip3 uninstall -y openwakeword
-    curl -L -o /tmp/openwakeword.whl https://files.pythonhosted.org/packages/py3/o/openwakeword/openwakeword-0.6.0-py3-none-any.whl
-    pip3 install --no-deps --force-reinstall /tmp/openwakeword.whl
-    rm /tmp/openwakeword.whl
+    pip3 install --no-deps --force-reinstall --no-cache-dir openwakeword==0.5.1
 }
 
 echo ""
