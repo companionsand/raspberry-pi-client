@@ -41,8 +41,19 @@ else
         # Manual installation as last resort
         echo "Installing dependencies manually..."
         
-        # Install runtime frameworks first
-        pip3 install 'tflite-runtime>=2.8.0,<3' 'onnxruntime>=1.16.0' 'numpy>=1.24.0' 'scipy>=1.11.0'
+        # Install core dependencies first
+        pip3 install 'numpy>=1.24.0' 'scipy>=1.11.0'
+        
+        # Install ONNX runtime (primary runtime for all Python versions)
+        pip3 install 'onnxruntime>=1.16.0'
+        
+        # Try to install tflite-runtime (optional, for older Python versions)
+        echo "Attempting to install tflite-runtime (optional)..."
+        if pip3 install 'tflite-runtime>=2.8.0,<3' 2>/dev/null; then
+            echo "✓ tflite-runtime installed"
+        else
+            echo "⚠️  tflite-runtime not available (will use onnxruntime)"
+        fi
         
         # Install openwakeword
         pip3 install 'openwakeword>=0.5.0'
@@ -74,8 +85,15 @@ except ImportError as e:
 try:
     import onnxruntime
     print("✓ ONNX Runtime")
+except ImportError as e:
+    print(f"✗ ONNX Runtime: {e}")
+    exit(1)
+
+try:
+    import tflite_runtime
+    print("✓ TFLite Runtime (optional)")
 except ImportError:
-    print("⚠ ONNX Runtime (optional)")
+    print("⚠ TFLite Runtime not available (using ONNX)")
 
 try:
     import sounddevice

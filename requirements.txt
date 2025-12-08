@@ -1,7 +1,6 @@
 # Wake word detection
-# Note: openwakeword has tflite-runtime as a dependency on Linux, but this can cause
-# dependency resolution conflicts. Installing core dependencies explicitly first.
-tflite-runtime>=2.8.0,<3; platform_system == "Linux"
+# Note: openwakeword uses tflite-runtime on Linux if available, otherwise falls back to onnxruntime
+# tflite-runtime doesn't support Python 3.13+ yet, so we install onnxruntime as the primary runtime
 onnxruntime>=1.16.0
 openwakeword>=0.5.0
 
