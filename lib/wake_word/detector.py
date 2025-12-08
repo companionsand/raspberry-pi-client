@@ -260,27 +260,21 @@ class WakeWordDetector:
         try:
             # Locate openWakeWord model file
             project_root = os.path.dirname(os.path.dirname(os.path.dirname(__file__)))
-            model_path = os.path.join(project_root, 'models', 'hey_mycroft.tflite')
+            model_path = os.path.join(project_root, 'models', 'hey_mycroft.onnx')
             
             if not os.path.exists(model_path):
                 raise FileNotFoundError(f"openWakeWord model not found at {model_path}")
             
             # Initialize openWakeWord model
             print(f"   Loading model: {model_path}")
-            # Note: inference_framework auto-detects available runtime
-            # Uses onnxruntime on Python 3.13+ (tflite-runtime unavailable)
-            # Uses tflite-runtime on older Python if available (better performance)
+            # Note: Using ONNX model format for universal Python compatibility
+            # ONNX Runtime works on all Python versions including 3.13+
             self.oww_model = OpenWakeWordModel(
-                wakeword_models=[model_path]
+                wakeword_models=[model_path],
+                inference_framework='onnx'
             )
             print(f"   Model loaded: {list(self.oww_model.models.keys())}")
-            
-            # Log which runtime is being used
-            try:
-                import tflite_runtime
-                print(f"   Using: TFLite Runtime (optimal)")
-            except ImportError:
-                print(f"   Using: ONNX Runtime (fallback for Python 3.13+)")
+            print(f"   Using: ONNX Runtime")
             
             # Query devices for logging and error messages
             devices = sd.query_devices()
