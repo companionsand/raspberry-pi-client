@@ -58,6 +58,10 @@ class WakeWordDetector:
         # Detection threshold (can be tuned - start with 0.5 as recommended)
         self.detection_threshold = 0.5
         
+        # Cooldown period to prevent multiple detections from single utterance
+        self.detection_cooldown = 2.0  # seconds
+        self.last_detection_time = 0.0
+        
         # -------------------------------------------------------------------------
         # Silero VAD Gate - Reduces false positives by only processing speech
         # -------------------------------------------------------------------------
@@ -457,7 +461,14 @@ class WakeWordDetector:
                 # The model returns a dict with model names as keys and scores as values
                 for model_name, score in prediction.items():
                     if score >= self.detection_threshold:
+                        # Check cooldown to prevent multiple detections from single utterance
+                        current_time = time.time()
+                        if current_time - self.last_detection_time < self.detection_cooldown:
+                            # Skip this detection - still in cooldown period
+                            continue
+                        
                         print(f"\n🎯 Wake word '{Config.WAKE_WORD}' detected by openWakeWord! (score: {score:.3f}, VAD passed)")
+                        self.last_detection_time = current_time
                         
                         # -------------------------------------------------------------------------
                         # Scribe v2 Verification Layer
