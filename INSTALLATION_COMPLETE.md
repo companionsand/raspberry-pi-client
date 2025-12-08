@@ -1,4 +1,4 @@
-# Installation Instructions - FINAL VERSION
+# Installation Instructions - FINAL VERSION ✅
 
 ## Quick Install (Works on All Python Versions)
 
@@ -8,6 +8,14 @@ cd raspberry-pi-client
 ```
 
 That's it! The script handles everything automatically.
+
+**Then run:**
+
+```bash
+python3 main.py
+```
+
+Say: **"Hey Mycroft"** 🎤
 
 ## What the Script Does
 

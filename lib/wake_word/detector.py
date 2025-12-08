@@ -267,11 +267,20 @@ class WakeWordDetector:
             
             # Initialize openWakeWord model
             print(f"   Loading model: {model_path}")
+            # Note: inference_framework auto-detects available runtime
+            # Uses onnxruntime on Python 3.13+ (tflite-runtime unavailable)
+            # Uses tflite-runtime on older Python if available (better performance)
             self.oww_model = OpenWakeWordModel(
-                wakeword_models=[model_path],
-                inference_framework='tflite'
+                wakeword_models=[model_path]
             )
             print(f"   Model loaded: {list(self.oww_model.models.keys())}")
+            
+            # Log which runtime is being used
+            try:
+                import tflite_runtime
+                print(f"   Using: TFLite Runtime (optimal)")
+            except ImportError:
+                print(f"   Using: ONNX Runtime (fallback for Python 3.13+)")
             
             # Query devices for logging and error messages
             devices = sd.query_devices()
