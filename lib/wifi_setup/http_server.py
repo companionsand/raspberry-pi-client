@@ -346,27 +346,40 @@ class SetupHTTPServer:
         class SetupHandler(BaseHTTPRequestHandler):
             def log_message(self, format, *args):
                 """Override to use our logger"""
-                logger.debug(f"{self.address_string()} - {format%args}")
+                logger.debug(f"[HTTP] {self.address_string()} - {format%args}")
             
             def do_GET(self):
+                client_ip = self.address_string()
+                logger.info(f"[HTTP] GET {self.path} from {client_ip}")
+                
                 if self.path == '/' or self.path == '/setup.html':
+                    logger.debug(f"[HTTP] Serving setup page to {client_ip}")
                     self.send_response(200)
                     self.send_header('Content-type', 'text/html')
                     self.end_headers()
                     self.wfile.write(HTML_TEMPLATE.encode())
                 elif self.path == '/ap-info':
+                    logger.debug(f"[HTTP] Serving AP info to {client_ip}")
                     self._handle_ap_info()
                 elif self.path == '/networks':
+                    logger.debug(f"[HTTP] Network scan requested by {client_ip}")
                     self._handle_networks()
                 elif self.path == '/status':
+                    logger.debug(f"[HTTP] Status check from {client_ip}")
                     self._handle_status()
                 else:
+                    logger.warning(f"[HTTP] 404 Not Found: {self.path} from {client_ip}")
                     self.send_error(404)
             
             def do_POST(self):
+                client_ip = self.address_string()
+                logger.info(f"[HTTP] POST {self.path} from {client_ip}")
+                
                 if self.path == '/configure':
+                    logger.info(f"[HTTP] Configuration submission from {client_ip}")
                     self._handle_configure()
                 else:
+                    logger.warning(f"[HTTP] 404 Not Found: {self.path} from {client_ip}")
                     self.send_error(404)
             
             def _send_json(self, status_code, data):
@@ -378,6 +391,7 @@ class SetupHTTPServer:
             
             def _handle_ap_info(self):
                 """Return AP connection info"""
+                logger.debug(f"[HTTP] Sending AP info: SSID={setup_server.ap_ssid}")
                 ap_data = {
                     'ssid': setup_server.ap_ssid,
                     'password': setup_server.ap_password
@@ -386,6 +400,7 @@ class SetupHTTPServer:
             
             def _handle_status(self):
                 """Return current setup status"""
+                logger.debug(f"[HTTP] Status check: {setup_server._status} - {setup_server._status_message}")
                 status_data = {
                     'status': setup_server._status,
                     'message': setup_server._status_message,
@@ -395,11 +410,15 @@ class SetupHTTPServer:
             
             def _handle_networks(self):
                 try:
+                    logger.info("[HTTP] Starting WiFi network scan...")
+                    
                     # Rescan networks
+                    logger.debug("[HTTP] Running nmcli wifi rescan...")
                     subprocess.run(['sudo', 'nmcli', 'device', 'wifi', 'rescan'], timeout=5, capture_output=True)
                     asyncio.run(asyncio.sleep(2))
                     
                     # Get network list
+                    logger.debug("[HTTP] Fetching WiFi network list...")
                     result = subprocess.run(
                         ['nmcli', '-t', '-f', 'SSID,SECURITY', 'device', 'wifi', 'list'],
                         capture_output=True, text=True, timeout=10
@@ -418,15 +437,20 @@ class SetupHTTPServer:
                                 seen.add(ssid)
                                 networks.append({'ssid': ssid, 'encrypted': encrypted})
                     
+                    logger.info(f"[HTTP] Found {len(networks)} WiFi networks")
+                    logger.debug(f"[HTTP] Networks: {[n['ssid'] for n in networks[:5]]}...")
                     self._send_json(200, {'networks': networks})
                     
                 except Exception as e:
-                    logger.error(f"Error scanning networks: {e}")
+                    logger.error(f"[HTTP] Error scanning networks: {e}")
                     self._send_json(500, {'networks': [], 'error': str(e)})
             
             def _handle_configure(self):
                 try:
+                    logger.info("[HTTP] Processing configuration submission...")
+                    
                     content_length = int(self.headers['Content-Length'])
+                    logger.debug(f"[HTTP] Receiving {content_length} bytes of configuration data")
                     post_data = self.rfile.read(content_length)
                     data = json.loads(post_data.decode('utf-8'))
                     
@@ -434,32 +458,58 @@ class SetupHTTPServer:
                     password = data.get('password', '').strip()
                     pairing_code = data.get('pairing_code', '').strip()
                     
+                    logger.info(f"[HTTP] Configuration received:")
+                    logger.info(f"[HTTP]   SSID: {ssid}")
+                    logger.info(f"[HTTP]   Password: {'*' * len(password) if password else '(empty)'}")
+                    logger.info(f"[HTTP]   Pairing Code: {pairing_code}")
+                    
                     # Validate
                     if not ssid:
+                        logger.warning("[HTTP] Validation failed: SSID is required")
                         self._send_json(400, {'success': False, 'error': 'SSID is required'})
                         return
                     
                     if not pairing_code or len(pairing_code) != 4 or not pairing_code.isdigit():
+                        logger.warning(f"[HTTP] Validation failed: Invalid pairing code '{pairing_code}'")
                         self._send_json(400, {'success': False, 'error': 'Valid 4-digit pairing code is required'})
                         return
                     
                     # Call the callback
                     if setup_server._config_callback:
+                        logger.info("[HTTP] Calling configuration callback...")
                         asyncio.run(setup_server._config_callback(ssid, password, pairing_code))
+                        logger.info("[HTTP] Configuration accepted, sending success response")
                         self._send_json(200, {'success': True})
                     else:
+                        logger.error("[HTTP] Configuration callback not set!")
                         self._send_json(500, {'success': False, 'error': 'Server not properly configured'})
                     
+                except json.JSONDecodeError as e:
+                    logger.error(f"[HTTP] JSON decode error: {e}")
+                    self._send_json(400, {'success': False, 'error': 'Invalid JSON data'})
                 except Exception as e:
-                    logger.error(f"Error handling configuration: {e}")
+                    logger.error(f"[HTTP] Error handling configuration: {e}", exc_info=True)
                     self._send_json(500, {'success': False, 'error': str(e)})
         
         # Start server in thread
-        logger.info(f"Starting HTTP server on port {self.port}...")
-        self._server = TCPServer(('', self.port), SetupHandler)
-        self._server_thread = Thread(target=self._server.serve_forever, daemon=True)
-        self._server_thread.start()
-        logger.info("HTTP server started")
+        logger.info(f"[HTTP] Starting HTTP server on 0.0.0.0:{self.port}")
+        logger.info(f"[HTTP] AP SSID: {self.ap_ssid}, Password: {self.ap_password}")
+        logger.info(f"[HTTP] WiFi Interface: {self.wifi_interface}")
+        
+        try:
+            self._server = TCPServer(('', self.port), SetupHandler)
+            self._server_thread = Thread(target=self._server.serve_forever, daemon=True)
+            self._server_thread.start()
+            logger.info(f"[HTTP] ✓ HTTP server listening on port {self.port}")
+            logger.info(f"[HTTP] Access the setup page at: http://192.168.4.1:{self.port}")
+        except OSError as e:
+            if e.errno == 98:  # Address already in use
+                logger.error(f"[HTTP] ✗ Port {self.port} is already in use!")
+                logger.error(f"[HTTP] Try: sudo lsof -ti :{self.port} | xargs kill")
+                raise
+            else:
+                logger.error(f"[HTTP] ✗ Failed to start HTTP server: {e}")
+                raise
     
     def set_status(self, status: str, message: str, error: str = None):
         """
@@ -473,15 +523,24 @@ class SetupHTTPServer:
         self._status = status
         self._status_message = message
         self._error_details = error
-        logger.info(f"Status updated: {status} - {message}")
+        
+        if error:
+            logger.warning(f"[HTTP] Status update: {status} - {message} (Error: {error})")
+        else:
+            logger.info(f"[HTTP] Status update: {status} - {message}")
     
     async def stop(self):
         """Stop the HTTP server"""
         if self._server:
-            logger.info("Stopping HTTP server...")
-            self._server.shutdown()
-            self._server.server_close()
-            self._server = None
-            self._server_thread = None
-            logger.info("HTTP server stopped")
+            logger.info("[HTTP] Stopping HTTP server...")
+            try:
+                self._server.shutdown()
+                self._server.server_close()
+                self._server = None
+                self._server_thread = None
+                logger.info("[HTTP] ✓ HTTP server stopped successfully")
+            except Exception as e:
+                logger.error(f"[HTTP] Error stopping server: {e}")
+        else:
+            logger.debug("[HTTP] Server already stopped")
 

@@ -29,14 +29,16 @@ class NetworkConnector:
         Returns:
             True if connection successful
         """
-        logger.info(f"Connecting to WiFi network: {ssid}")
+        logger.info(f"[NetConnect] Connecting to WiFi network: {ssid}")
         
         try:
             # Rescan to ensure network is visible
+            logger.debug("[NetConnect] Rescanning WiFi networks...")
             await self._run_sudo_cmd(['nmcli', 'device', 'wifi', 'rescan'], check=False)
             await asyncio.sleep(3)
             
             # Verify network exists
+            logger.debug(f"[NetConnect] Verifying {ssid} is visible...")
             result = await self._run_cmd([
                 'nmcli', '-t', '-f', 'SSID', 'device', 'wifi', 'list'
             ], capture_output=True)
@@ -44,47 +46,58 @@ class NetworkConnector:
             available_networks = [line.strip() for line in result.stdout.split('\n') if line.strip()]
             
             if ssid not in available_networks:
-                logger.error(f"Network '{ssid}' not found. Available: {available_networks[:5]}")
+                logger.error(f"[NetConnect] ✗ Network '{ssid}' not found!")
+                logger.error(f"[NetConnect] Available networks: {available_networks[:5]}")
                 return False
+            
+            logger.info(f"[NetConnect] ✓ Network '{ssid}' found in scan")
             
             # Disconnect from current network if any
             current_connection = await self._get_current_connection()
             if current_connection:
-                logger.info(f"Disconnecting from current network: {current_connection}")
+                logger.info(f"[NetConnect] Disconnecting from current network: {current_connection}")
                 await self._run_sudo_cmd(['nmcli', 'connection', 'down', current_connection], check=False)
                 await asyncio.sleep(2)
+            else:
+                logger.debug("[NetConnect] No current connection to disconnect")
             
             # Connect to new network
             cmd = ['nmcli', 'device', 'wifi', 'connect', ssid, 'ifname', self.interface]
             if password:
                 cmd.extend(['password', password])
+                logger.debug(f"[NetConnect] Connecting with password ({len(password)} chars)")
+            else:
+                logger.debug("[NetConnect] Connecting to open network (no password)")
             
-            logger.info("Attempting connection...")
+            logger.info(f"[NetConnect] Executing: nmcli device wifi connect {ssid} ...")
             result = await self._run_sudo_cmd(cmd, capture_output=True, timeout=timeout)
             
             if result and result.returncode == 0:
-                logger.info("Connection command succeeded")
+                logger.info("[NetConnect] ✓ Connection command succeeded")
+                logger.debug(f"[NetConnect] Output: {result.stdout.strip()}")
                 
                 # Wait for connection to stabilize
+                logger.debug("[NetConnect] Waiting for connection to stabilize (5s)...")
                 await asyncio.sleep(5)
                 
                 # Verify connection
+                logger.debug(f"[NetConnect] Verifying connection to {ssid}...")
                 if await self._verify_connection(ssid):
-                    logger.info(f"Successfully connected to {ssid}")
+                    logger.info(f"[NetConnect] ✓ Successfully connected to {ssid}")
                     return True
                 else:
-                    logger.warning("Connection command succeeded but device not connected")
+                    logger.warning("[NetConnect] ✗ Connection command succeeded but device not connected")
                     return False
             else:
                 error_msg = result.stderr if result else "Unknown error"
-                logger.error(f"Connection failed: {error_msg}")
+                logger.error(f"[NetConnect] ✗ Connection failed: {error_msg}")
                 return False
                 
         except asyncio.TimeoutError:
-            logger.error(f"Connection attempt timed out after {timeout}s")
+            logger.error(f"[NetConnect] ✗ Connection attempt timed out after {timeout}s")
             return False
         except Exception as e:
-            logger.error(f"Error connecting to WiFi: {e}", exc_info=True)
+            logger.error(f"[NetConnect] ✗ Error connecting to WiFi: {e}", exc_info=True)
             return False
     
     async def _get_current_connection(self) -> str:
