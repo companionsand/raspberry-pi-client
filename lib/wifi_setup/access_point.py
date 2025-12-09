@@ -65,6 +65,26 @@ class AccessPoint:
                 ])
                 
                 # Wait a moment for it to stabilize
+                await asyncio.sleep(2)
+                
+                # Set our preferred IP address (hotspot command uses 10.42.0.1 by default)
+                logger.info("Setting hotspot IP to 192.168.4.1...")
+                await self._run_sudo_cmd([
+                    'nmcli', 'connection', 'modify', self.connection_name,
+                    'ipv4.addresses', '192.168.4.1/24'
+                ])
+                
+                # Restart the connection to apply the IP change
+                await self._run_sudo_cmd([
+                    'nmcli', 'connection', 'down', self.connection_name
+                ], check=False)
+                
+                await asyncio.sleep(1)
+                
+                await self._run_sudo_cmd([
+                    'nmcli', 'connection', 'up', self.connection_name
+                ])
+                
                 await asyncio.sleep(3)
                 
                 # Verify it's active
