@@ -6,10 +6,10 @@
 
 ## 1. Hardware Checklist
 
-- Raspberry Pi 5 (2GB min, 4GB recommended) + 5V/3A USB‑C PSU  
-- ReSpeaker 4 Mic Array v2.0 (USB) + powered speaker on the ReSpeaker 3.5 mm jack  
-- 32 GB micro‑SD (Raspberry Pi OS Lite 64‑bit)  
-- Ethernet or strong Wi‑Fi, heatsink/fan recommended  
+- Raspberry Pi 5 (2GB min, 4GB recommended) + 5V/3A USB‑C PSU
+- ReSpeaker 4 Mic Array v2.0 (USB) + powered speaker on the ReSpeaker 3.5 mm jack
+- 32 GB micro‑SD (Raspberry Pi OS Lite 64‑bit)
+- Ethernet or strong Wi‑Fi, heatsink/fan recommended
 
 ---
 
@@ -151,17 +151,34 @@ sudo journalctl -u kin-client -f
 
 ---
 
-## 6. Troubleshooting Cheat Sheet
+## 6. WiFi Setup Mode (Optional - for devices without initial network access)
 
-| Symptom | Fix |
-| ------- | --- |
-| `arecord` silent / -91 dB | Re-check `/etc/asound.conf`, run `arecord -D plughw:2,0 ...`, ensure ReSpeaker is card 2. |
-| `python -c "import sounddevice"` hangs | PipeWire still running → re-run the disable commands above. |
-| Wake word ignored | Run `arecord -d 3 test.wav`; if silent, check mic gain (`amixer -c 2`). |
-| No speaker audio | Ensure speaker is on ReSpeaker jack, run `aplay test.wav`, check `amixer -c 2 set Speaker 80%`. |
-| LEDs off | `pip install pixel-ring`, or set `LED_ENABLED=false`. |
-| Ctrl+C not working | Latest `main.py` handles SIGINT; ensure you redeployed it. |
-| LED "Permission denied" error | Setup udev rules for USB HID access - see below. |
+If your Raspberry Pi doesn't have network connectivity, you can use WiFi setup mode:
+
+1. Set `SKIP_WIFI_SETUP=false` in your `.env` file (or omit it, as false is the default)
+2. When the device boots, it will create a WiFi access point:
+   - **Network Name:** `Kin_Setup`
+   - **Password:** `kinsetup123`
+3. Connect your laptop/phone to the `Kin_Setup` network
+4. Open a web browser and go to: `http://192.168.4.1:8080`
+5. Select your home WiFi network, enter the password, and provide a 4-digit pairing code
+6. The device will connect to your WiFi and complete authentication
+
+**Note:** The web interface will display the connection info at the top in case you get disconnected.
+
+---
+
+## 7. Troubleshooting Cheat Sheet
+
+| Symptom                                | Fix                                                                                             |
+| -------------------------------------- | ----------------------------------------------------------------------------------------------- |
+| `arecord` silent / -91 dB              | Re-check `/etc/asound.conf`, run `arecord -D plughw:2,0 ...`, ensure ReSpeaker is card 2.       |
+| `python -c "import sounddevice"` hangs | PipeWire still running → re-run the disable commands above.                                     |
+| Wake word ignored                      | Run `arecord -d 3 test.wav`; if silent, check mic gain (`amixer -c 2`).                         |
+| No speaker audio                       | Ensure speaker is on ReSpeaker jack, run `aplay test.wav`, check `amixer -c 2 set Speaker 80%`. |
+| LEDs off                               | `pip install pixel-ring`, or set `LED_ENABLED=false`.                                           |
+| Ctrl+C not working                     | Latest `main.py` handles SIGINT; ensure you redeployed it.                                      |
+| LED "Permission denied" error          | Setup udev rules for USB HID access - see below.                                                |
 
 ### LED Permission Fix
 
@@ -185,7 +202,7 @@ sudo usermod -a -G plugdev $USER
 
 ---
 
-## 7. Quick Reference
+## 8. Quick Reference
 
 ```bash
 # Audio devices
@@ -206,5 +223,4 @@ sudo journalctl -u kin-client -f
 sudo systemctl restart kin-client
 ```
 
-That’s it—once `python main.py` shows “Ready! Say ‘porcupine’…”, you’re good to test wake word + conversation.***
-
+That’s it—once `python main.py` shows “Ready! Say ‘porcupine’…”, you’re good to test wake word + conversation.\*\*\*

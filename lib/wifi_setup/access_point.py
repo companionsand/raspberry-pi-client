@@ -15,9 +15,10 @@ logger = logging.getLogger(__name__)
 class AccessPoint:
     """Manages WiFi access point creation and teardown"""
     
-    def __init__(self, ssid: str, interface: str = "wlan0"):
+    def __init__(self, ssid: str, interface: str = "wlan0", password: str = "kinsetup123"):
         self.ssid = ssid
         self.interface = interface
+        self.password = password
         self.connection_name = "Kin_Hotspot"
         self._is_running = False
     
@@ -46,12 +47,14 @@ class AccessPoint:
                 'ssid', self.ssid
             ])
             
-            # Configure hotspot settings
+            # Configure hotspot settings with WPA2 security
             logger.info("Configuring hotspot...")
             await self._run_sudo_cmd([
                 'nmcli', 'connection', 'modify', self.connection_name,
                 '802-11-wireless.mode', 'ap',
                 '802-11-wireless.band', 'bg',
+                '802-11-wireless-security.key-mgmt', 'wpa-psk',
+                '802-11-wireless-security.psk', self.password,
                 'ipv4.method', 'shared',
                 'ipv4.address', '192.168.4.1/24'
             ])
