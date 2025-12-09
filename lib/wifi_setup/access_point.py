@@ -33,6 +33,25 @@ class AccessPoint:
             # Unblock WiFi
             await self._run_sudo_cmd(['rfkill', 'unblock', 'wifi'])
             
+            # Ensure the interface is fully down and clean
+            logger.debug(f"Ensuring {self.interface} is clean...")
+            await self._run_sudo_cmd([
+                'ip', 'addr', 'flush', 'dev', self.interface
+            ], check=False, suppress_output=True)
+            
+            # Bring interface down then back up
+            await self._run_sudo_cmd([
+                'ip', 'link', 'set', self.interface, 'down'
+            ], check=False, suppress_output=True)
+            
+            await asyncio.sleep(1)
+            
+            await self._run_sudo_cmd([
+                'ip', 'link', 'set', self.interface, 'up'
+            ], check=False, suppress_output=True)
+            
+            await asyncio.sleep(1)
+            
             # First, try the simple nmcli hotspot command (NetworkManager 1.16+)
             # This is the recommended way and handles all settings automatically
             logger.info("Creating hotspot using nmcli device wifi hotspot...")
@@ -143,8 +162,10 @@ class AccessPoint:
             logger.error(f"Error stopping access point: {e}")
     
     async def _cleanup_existing(self):
-        """Clean up any existing hotspot connections"""
+        """Clean up any existing hotspot connections and processes"""
         try:
+            logger.debug("Cleaning up existing hotspot connections...")
+            
             # Disconnect and remove any existing Kin hotspot
             # Suppress errors as connection may not exist
             await self._run_sudo_cmd([
@@ -154,6 +175,22 @@ class AccessPoint:
             await self._run_sudo_cmd([
                 'nmcli', 'connection', 'delete', self.connection_name
             ], check=False, suppress_output=True)
+            
+            # Wait a moment for NetworkManager to clean up dnsmasq processes
+            await asyncio.sleep(2)
+            
+            # Kill any lingering dnsmasq processes bound to our IP
+            try:
+                logger.debug("Checking for lingering dnsmasq processes...")
+                # Find and kill dnsmasq processes for our interface
+                await self._run_sudo_cmd([
+                    'pkill', '-f', f'dnsmasq.*{self.interface}'
+                ], check=False, suppress_output=True)
+                
+                # Give processes time to die
+                await asyncio.sleep(1)
+            except Exception as e:
+                logger.debug(f"No dnsmasq processes to clean up: {e}")
             
         except Exception as e:
             logger.debug(f"No existing hotspot to clean up: {e}")
