@@ -61,6 +61,18 @@ echo "-------------------------"
 $SUDO journalctl -u NetworkManager -n 20 --no-pager
 echo ""
 
+echo "9. Check for Port/Address Conflicts"
+echo "-------------------------"
+echo "Processes using port 53 (DNS):"
+$SUDO lsof -i :53 2>/dev/null || echo "  (none)"
+echo ""
+echo "Processes using 192.168.4.1:"
+$SUDO lsof -i @192.168.4.1 2>/dev/null || echo "  (none)"
+echo ""
+echo "dnsmasq processes:"
+ps aux | grep -v grep | grep dnsmasq || echo "  (none running)"
+echo ""
+
 echo "================================"
 echo "Manual Test"
 echo "================================"
