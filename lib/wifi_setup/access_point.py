@@ -33,11 +33,42 @@ class AccessPoint:
             # Unblock WiFi
             await self._run_sudo_cmd(['rfkill', 'unblock', 'wifi'])
             
-            # Delete existing connection if it exists (suppress errors as it may not exist)
-            await self._run_cmd(['nmcli', 'connection', 'delete', self.connection_name], check=False, suppress_output=True)
+            # First, try the simple nmcli hotspot command (NetworkManager 1.16+)
+            # This is the recommended way and handles all settings automatically
+            logger.info("Creating hotspot using nmcli device wifi hotspot...")
+            try:
+                await self._run_sudo_cmd([
+                    'nmcli', 'device', 'wifi', 'hotspot',
+                    'ifname', self.interface,
+                    'con-name', self.connection_name,
+                    'ssid', self.ssid,
+                    'password', self.password
+                ])
+                
+                # Wait a moment for it to stabilize
+                await asyncio.sleep(3)
+                
+                # Verify it's active
+                result = await self._run_cmd([
+                    'nmcli', 'connection', 'show', '--active'
+                ], capture_output=True)
+                
+            if self.connection_name in result.stdout:
+                logger.info("Access point started successfully via hotspot command")
+                # Log connection details for debugging
+                await self._log_connection_details()
+                self._is_running = True
+                return
+                else:
+                    logger.warning("Hotspot command succeeded but connection not active, trying manual method...")
+                    await self._cleanup_existing()
+                    
+            except Exception as e:
+                logger.warning(f"Hotspot command failed ({e}), trying manual method...")
+                await self._cleanup_existing()
             
-            # Create new hotspot connection
-            logger.info("Creating hotspot connection...")
+            # Fallback: Manual connection creation (for older NetworkManager versions)
+            logger.info("Creating hotspot connection manually...")
             await self._run_sudo_cmd([
                 'nmcli', 'connection', 'add',
                 'type', 'wifi',
@@ -48,12 +79,15 @@ class AccessPoint:
             ])
             
             # Configure hotspot settings with WPA2 security
-            logger.info("Configuring hotspot...")
+            logger.info("Configuring hotspot with WPA2-PSK security...")
             await self._run_sudo_cmd([
                 'nmcli', 'connection', 'modify', self.connection_name,
                 '802-11-wireless.mode', 'ap',
                 '802-11-wireless.band', 'bg',
                 '802-11-wireless-security.key-mgmt', 'wpa-psk',
+                '802-11-wireless-security.proto', 'rsn',
+                '802-11-wireless-security.pairwise', 'ccmp',
+                '802-11-wireless-security.group', 'ccmp',
                 '802-11-wireless-security.psk', self.password,
                 'ipv4.method', 'shared',
                 'ipv4.address', '192.168.4.1/24'
@@ -72,7 +106,9 @@ class AccessPoint:
             ], capture_output=True)
             
             if self.connection_name in result.stdout:
-                logger.info("Access point started successfully")
+                logger.info("Access point started successfully via manual method")
+                # Log connection details for debugging
+                await self._log_connection_details()
                 self._is_running = True
             else:
                 raise Exception("Hotspot not active after starting")
@@ -121,6 +157,21 @@ class AccessPoint:
             
         except Exception as e:
             logger.debug(f"No existing hotspot to clean up: {e}")
+    
+    async def _log_connection_details(self):
+        """Log connection details for debugging"""
+        try:
+            result = await self._run_cmd([
+                'nmcli', 'connection', 'show', self.connection_name
+            ], capture_output=True)
+            
+            # Extract security settings
+            for line in result.stdout.split('\n'):
+                if '802-11-wireless' in line or 'ipv4' in line:
+                    logger.debug(f"  {line.strip()}")
+                    
+        except Exception as e:
+            logger.debug(f"Could not log connection details: {e}")
     
     async def _run_cmd(self, cmd: list, check: bool = True, capture_output: bool = False, suppress_output: bool = False) -> Optional[subprocess.CompletedProcess]:
         """Run a command asynchronously"""

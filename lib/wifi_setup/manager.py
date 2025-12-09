@@ -129,7 +129,13 @@ class WiFiSetupManager:
         Returns:
             True if configuration was accepted
         """
-        logger.info(f"Received WiFi configuration for SSID: {ssid}, pairing code: {pairing_code}")
+        logger.info("=" * 60)
+        logger.info("[WiFi Setup] ✓ Configuration received from web interface")
+        logger.info(f"[WiFi Setup]   Target SSID: {ssid}")
+        logger.info(f"[WiFi Setup]   Password length: {len(password)} chars")
+        logger.info(f"[WiFi Setup]   Pairing code: {pairing_code}")
+        logger.info("=" * 60)
+        
         self._wifi_credentials = (ssid, password)
         self._pairing_code = pairing_code
         return True
@@ -145,14 +151,27 @@ class WiFiSetupManager:
             True if configuration was received
         """
         start_time = asyncio.get_event_loop().time()
+        last_log_time = start_time
+        log_interval = 30  # Log every 30 seconds
+        
+        logger.info(f"[WiFi Setup] Waiting for configuration (timeout: {timeout}s)")
         
         while True:
             if self._wifi_credentials and self._pairing_code:
+                elapsed = asyncio.get_event_loop().time() - start_time
+                logger.info(f"[WiFi Setup] Configuration received after {elapsed:.0f}s")
                 return True
             
             elapsed = asyncio.get_event_loop().time() - start_time
+            
+            # Log progress periodically
+            if elapsed - (last_log_time - start_time) >= log_interval:
+                remaining = timeout - elapsed
+                logger.info(f"[WiFi Setup] Still waiting... ({remaining:.0f}s remaining)")
+                last_log_time = asyncio.get_event_loop().time()
+            
             if elapsed >= timeout:
-                logger.warning("Configuration timeout reached")
+                logger.warning(f"[WiFi Setup] Configuration timeout reached after {timeout}s")
                 return False
             
             await asyncio.sleep(1)
@@ -165,12 +184,23 @@ class WiFiSetupManager:
             True if connection successful
         """
         if not self._wifi_credentials:
+            logger.error("[WiFi Setup] No WiFi credentials available!")
             return False
         
         ssid, password = self._wifi_credentials
-        logger.info(f"Attempting to connect to WiFi: {ssid}")
+        logger.info("=" * 60)
+        logger.info(f"[WiFi Setup] Attempting to connect to WiFi network: {ssid}")
+        logger.info(f"[WiFi Setup] This will stop the access point...")
+        logger.info("=" * 60)
         
-        return await self.network_connector.connect(ssid, password)
+        result = await self.network_connector.connect(ssid, password)
+        
+        if result:
+            logger.info(f"[WiFi Setup] ✓ Successfully connected to {ssid}")
+        else:
+            logger.error(f"[WiFi Setup] ✗ Failed to connect to {ssid}")
+        
+        return result
     
     async def _cleanup_old_state(self):
         """Clean up old pairing codes and processes from previous runs"""

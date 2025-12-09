@@ -111,13 +111,102 @@ WiFi setup active. Connect to 'Kin_Setup' (password: kinsetup123) and go to http
 - Check that the client logs show "Access point started successfully"
 - Try running: `sudo nmcli connection show --active` on the Pi
 - Make sure your laptop's WiFi is enabled and scanning
+- Check if NetworkManager is running: `systemctl status NetworkManager`
 
 ### "Connection fails even with the password"
 
-- Make sure you're using exactly: `kinsetup123` (all lowercase, no spaces)
-- Check the client logs for any errors
-- Try restarting the client
-- Verify NetworkManager is installed on the Pi: `sudo apt install network-manager`
+This is the most common issue. Here's how to diagnose:
+
+**Step 1: Check the logs on the Pi**
+Look for these specific log lines:
+
+```
+Creating hotspot using nmcli device wifi hotspot...
+Access point started successfully via hotspot command
+```
+
+OR
+
+```
+Hotspot command failed, trying manual method...
+Configuring hotspot with WPA2-PSK security...
+Access point started successfully via manual method
+```
+
+**Step 2: Verify the connection on the Pi**
+SSH into your Pi and run:
+
+```bash
+# Check if connection is active
+sudo nmcli connection show --active
+
+# Check connection details (look for security settings)
+sudo nmcli connection show Kin_Hotspot | grep -i security
+
+# Check WiFi interface status
+sudo nmcli device status
+```
+
+You should see output like:
+
+```
+802-11-wireless-security.key-mgmt:      wpa-psk
+802-11-wireless-security.proto:         rsn
+802-11-wireless-security.pairwise:      ccmp
+802-11-wireless-security.group:         ccmp
+802-11-wireless-security.psk:           kinsetup123
+```
+
+**Step 3: Check NetworkManager version**
+
+```bash
+nmcli --version
+```
+
+The hotspot command requires NetworkManager 1.16+. If you have an older version, it will fall back to manual configuration.
+
+**Step 4: Manual debugging**
+Try creating the hotspot manually to see the exact error:
+
+```bash
+# Stop any existing hotspot
+sudo nmcli connection down Kin_Hotspot
+sudo nmcli connection delete Kin_Hotspot
+
+# Create new hotspot
+sudo nmcli device wifi hotspot ifname wlan0 con-name Kin_Hotspot ssid Kin_Setup password kinsetup123
+
+# Check if it's active
+sudo nmcli connection show --active
+```
+
+**Step 5: Common issues and fixes**
+
+- **"Error: No suitable device found"**: Your wlan0 interface might be busy or named differently
+  - Check: `nmcli device status`
+  - Try: `sudo nmcli device disconnect wlan0` first
+- **"Error: Connection activation failed"**: NetworkManager might have issues
+  - Try: `sudo systemctl restart NetworkManager`
+  - Check logs: `sudo journalctl -u NetworkManager -n 50`
+- **Password rejected on client**: The password might not be set correctly
+  - Verify: `sudo nmcli connection show Kin_Hotspot | grep psk`
+  - Should show: `802-11-wireless-security.psk: kinsetup123`
+
+**Step 6: Try a different password**
+If `kinsetup123` doesn't work, try a more WPA2-friendly password:
+
+```bash
+# Use a stronger password with special characters
+sudo nmcli connection modify Kin_Hotspot 802-11-wireless-security.psk "KinSetup@2024"
+sudo nmcli connection up Kin_Hotspot
+```
+
+**Step 7: iOS-specific issues**
+iOS has strict WiFi security policies:
+
+- It labels WPA2-PSK as "Weak Security" (this is normal, WPA3 is preferred)
+- It may refuse to connect if the password is too simple
+- Try using Settings → WiFi → Kin_Setup → "Join Anyway" if you see a warning
 
 ### "I can connect but can't access 192.168.4.1:8080"
 
