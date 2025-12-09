@@ -181,8 +181,8 @@ class KinClient:
         # Validate configuration
         Config.validate()
         
-        # Check if WiFi setup should be skipped (default: yes, for backward compatibility)
-        skip_wifi_setup = os.getenv('SKIP_WIFI_SETUP', 'true').lower() == 'true'
+        # Check if WiFi setup should be skipped (default: no)
+        skip_wifi_setup = os.getenv('SKIP_WIFI_SETUP', 'false').lower() == 'true'
         pairing_code = None  # Will be set by WiFi setup if needed
         
         # WiFi Setup Mode - only if enabled and available
