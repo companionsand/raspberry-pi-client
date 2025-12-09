@@ -88,45 +88,50 @@ class NetworkConnector:
                 else:
                     logger.warning("[NetConnect] ✗ Connection command succeeded but device not connected")
                     
-                    # Delete the failed connection
-                    logger.debug(f"[NetConnect] Cleaning up unverified connection for {ssid}...")
+                    # Delete failed connection profile
+                    logger.info(f"[NetConnect] Deleting unverified connection profile for {ssid}...")
                     await self._run_sudo_cmd([
                         'nmcli', 'connection', 'delete', ssid
-                    ], check=False, suppress_output=True)
+                    ], check=False, suppress_output=False)
+                    logger.info(f"[NetConnect] Connection profile deleted")
                     
                     return False
             else:
                 error_msg = result.stderr if result else "Unknown error"
                 logger.error(f"[NetConnect] ✗ Connection failed: {error_msg}")
                 
-                # Delete the failed connection to avoid corrupt profiles
-                logger.debug(f"[NetConnect] Cleaning up failed connection for {ssid}...")
+                # Delete ALL failed connections for this SSID to avoid corrupt profiles
+                logger.info(f"[NetConnect] Deleting failed connection profile for {ssid}...")
                 await self._run_sudo_cmd([
                     'nmcli', 'connection', 'delete', ssid
-                ], check=False, suppress_output=True)
+                ], check=False, suppress_output=False)
+                logger.info(f"[NetConnect] Connection profile deleted")
                 
                 return False
                 
         except asyncio.TimeoutError:
             logger.error(f"[NetConnect] ✗ Connection attempt timed out after {timeout}s")
             
-            # Delete the failed connection
-            logger.debug(f"[NetConnect] Cleaning up timed out connection for {ssid}...")
+            # Delete the failed connection profile
+            logger.info(f"[NetConnect] Deleting timed out connection profile for {ssid}...")
             await self._run_sudo_cmd([
                 'nmcli', 'connection', 'delete', ssid
-            ], check=False, suppress_output=True)
+            ], check=False, suppress_output=False)
+            logger.info(f"[NetConnect] Connection profile deleted")
             
             return False
         except Exception as e:
             logger.error(f"[NetConnect] ✗ Error connecting to WiFi: {e}", exc_info=True)
             
-            # Try to clean up
+            # Delete failed connection profile
+            logger.info(f"[NetConnect] Deleting connection profile after error for {ssid}...")
             try:
                 await self._run_sudo_cmd([
                     'nmcli', 'connection', 'delete', ssid
-                ], check=False, suppress_output=True)
-            except:
-                pass
+                ], check=False, suppress_output=False)
+                logger.info(f"[NetConnect] Connection profile deleted")
+            except Exception as cleanup_error:
+                logger.warning(f"[NetConnect] Failed to delete connection profile: {cleanup_error}")
             
             return False
     
@@ -214,7 +219,7 @@ class NetworkConnector:
                 raise
             return None
     
-    async def _run_sudo_cmd(self, cmd: list, check: bool = True, capture_output: bool = False, timeout: int = 30):
+    async def _run_sudo_cmd(self, cmd: list, check: bool = True, capture_output: bool = False, timeout: int = 30, suppress_output: bool = False):
         """Run a command with sudo"""
-        return await self._run_cmd(['sudo'] + cmd, check=check, capture_output=capture_output, timeout=timeout)
+        return await self._run_cmd(['sudo'] + cmd, check=check, capture_output=capture_output or suppress_output, timeout=timeout)
 
