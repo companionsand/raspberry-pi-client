@@ -242,9 +242,28 @@ class KinClient:
                                 print("    - Incorrect pairing code")
                                 print("    - Pairing code expired or already used")
                                 print("    - Device not registered in admin portal")
-                                print(f"\n  Restarting setup mode - please reconnect to Kin_Setup")
+                                print("    - Backend service temporarily unavailable")
+                                print(f"\n  Cleaning up and restarting setup mode...")
                                 
-                                # Will loop back and restart AP with fresh state
+                                # CRITICAL: Must delete WiFi connection, otherwise device gets stuck
+                                # If WiFi stays connected, main loop won't re-enter setup mode
+                                # But device isn't authenticated, so can't start normal operation
+                                # Result: Deadlock!
+                                if wifi_manager._wifi_credentials:
+                                    failed_ssid = wifi_manager._wifi_credentials[0]
+                                    print(f"  Deleting WiFi connection: {failed_ssid}")
+                                    try:
+                                        import subprocess
+                                        subprocess.run(['sudo', 'nmcli', 'connection', 'delete', failed_ssid], 
+                                                     capture_output=True, timeout=5)
+                                    except Exception as e:
+                                        print(f"  Warning: Could not delete connection: {e}")
+                                
+                                # Clear credentials from manager so setup starts fresh
+                                wifi_manager._wifi_credentials = None
+                                wifi_manager._pairing_code = None
+                                
+                                print(f"  Please reconnect to Kin_Setup and try again")
                                 await asyncio.sleep(3)
                             else:
                                 print(f"  Max attempts ({max_setup_attempts}) reached")

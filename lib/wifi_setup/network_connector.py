@@ -87,17 +87,47 @@ class NetworkConnector:
                     return True
                 else:
                     logger.warning("[NetConnect] ✗ Connection command succeeded but device not connected")
+                    
+                    # Delete the failed connection
+                    logger.debug(f"[NetConnect] Cleaning up unverified connection for {ssid}...")
+                    await self._run_sudo_cmd([
+                        'nmcli', 'connection', 'delete', ssid
+                    ], check=False, suppress_output=True)
+                    
                     return False
             else:
                 error_msg = result.stderr if result else "Unknown error"
                 logger.error(f"[NetConnect] ✗ Connection failed: {error_msg}")
+                
+                # Delete the failed connection to avoid corrupt profiles
+                logger.debug(f"[NetConnect] Cleaning up failed connection for {ssid}...")
+                await self._run_sudo_cmd([
+                    'nmcli', 'connection', 'delete', ssid
+                ], check=False, suppress_output=True)
+                
                 return False
                 
         except asyncio.TimeoutError:
             logger.error(f"[NetConnect] ✗ Connection attempt timed out after {timeout}s")
+            
+            # Delete the failed connection
+            logger.debug(f"[NetConnect] Cleaning up timed out connection for {ssid}...")
+            await self._run_sudo_cmd([
+                'nmcli', 'connection', 'delete', ssid
+            ], check=False, suppress_output=True)
+            
             return False
         except Exception as e:
             logger.error(f"[NetConnect] ✗ Error connecting to WiFi: {e}", exc_info=True)
+            
+            # Try to clean up
+            try:
+                await self._run_sudo_cmd([
+                    'nmcli', 'connection', 'delete', ssid
+                ], check=False, suppress_output=True)
+            except:
+                pass
+            
             return False
     
     async def _get_current_connection(self) -> str:
