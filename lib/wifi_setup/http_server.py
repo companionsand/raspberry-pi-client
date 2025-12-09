@@ -194,6 +194,11 @@ HTML_TEMPLATE = '''<!DOCTYPE html>
         <div class="logo">Kin</div>
         <h1>Device Setup</h1>
         <p class="subtitle">Configure your WiFi network to get started</p>
+        <div class="message info" style="font-size: 14px;">
+            <strong>Connection Info:</strong><br>
+            Network: <span id="ap-ssid">Kin_Setup</span><br>
+            Password: <span id="ap-password">kinsetup123</span>
+        </div>
         <div id="message"></div>
         <form id="setupForm">
             <div class="form-group">
@@ -222,6 +227,15 @@ HTML_TEMPLATE = '''<!DOCTYPE html>
         function showMessage(text, type) {
             messageDiv.innerHTML = '<div class="message ' + type + '">' + text + '</div>';
         }
+        
+        // Load AP info
+        fetch('/ap-info')
+            .then(r => r.json())
+            .then(data => {
+                document.getElementById('ap-ssid').textContent = data.ssid;
+                document.getElementById('ap-password').textContent = data.password;
+            })
+            .catch(e => console.error('Failed to load AP info:', e));
         
         fetch('/networks')
             .then(r => r.json())
@@ -304,9 +318,11 @@ HTML_TEMPLATE = '''<!DOCTYPE html>
 class SetupHTTPServer:
     """HTTP server for WiFi setup interface"""
     
-    def __init__(self, port: int = 8080, wifi_interface: str = "wlan0"):
+    def __init__(self, port: int = 8080, wifi_interface: str = "wlan0", ap_ssid: str = "Kin_Setup", ap_password: str = "kinsetup123"):
         self.port = port
         self.wifi_interface = wifi_interface
+        self.ap_ssid = ap_ssid
+        self.ap_password = ap_password
         self._server: Optional[TCPServer] = None
         self._server_thread: Optional[Thread] = None
         self._config_callback: Optional[Callable] = None
@@ -338,6 +354,8 @@ class SetupHTTPServer:
                     self.send_header('Content-type', 'text/html')
                     self.end_headers()
                     self.wfile.write(HTML_TEMPLATE.encode())
+                elif self.path == '/ap-info':
+                    self._handle_ap_info()
                 elif self.path == '/networks':
                     self._handle_networks()
                 elif self.path == '/status':
@@ -357,6 +375,14 @@ class SetupHTTPServer:
                 self.send_header('Access-Control-Allow-Origin', '*')
                 self.end_headers()
                 self.wfile.write(json.dumps(data).encode())
+            
+            def _handle_ap_info(self):
+                """Return AP connection info"""
+                ap_data = {
+                    'ssid': setup_server.ap_ssid,
+                    'password': setup_server.ap_password
+                }
+                self._send_json(200, ap_data)
             
             def _handle_status(self):
                 """Return current setup status"""

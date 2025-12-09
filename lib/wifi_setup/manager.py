@@ -26,17 +26,19 @@ class WiFiSetupManager:
     def __init__(
         self,
         ap_ssid: str = "Kin_Setup",
+        ap_password: str = "kinsetup123",
         ap_interface: str = "wlan0",
         http_port: int = 8080,
         max_retries: int = 5
     ):
         self.ap_ssid = ap_ssid
+        self.ap_password = ap_password
         self.ap_interface = ap_interface
         self.http_port = http_port
         self.max_retries = max_retries
         
-        self.access_point = AccessPoint(ap_ssid, ap_interface)
-        self.http_server = SetupHTTPServer(http_port, ap_interface)
+        self.access_point = AccessPoint(ap_ssid, ap_interface, ap_password)
+        self.http_server = SetupHTTPServer(http_port, ap_interface, ap_ssid, ap_password)
         self.network_connector = NetworkConnector(ap_interface)
         self.connectivity_checker = ConnectivityChecker()
         
@@ -70,7 +72,7 @@ class WiFiSetupManager:
                 logger.info(f"Starting HTTP server on port {self.http_port}")
                 await self.http_server.start(self._handle_wifi_config)
                 
-                logger.info(f"WiFi setup active. Connect to '{self.ap_ssid}' and go to http://192.168.4.1:{self.http_port}")
+                logger.info(f"WiFi setup active. Connect to '{self.ap_ssid}' (password: {self.ap_password}) and go to http://192.168.4.1:{self.http_port}")
                 
                 # Wait for user to submit configuration
                 success = await self._wait_for_configuration()

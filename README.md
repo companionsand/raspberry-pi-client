@@ -7,12 +7,14 @@
 ## Key Features
 
 ### 1. **ALSA-Only Audio Architecture**
+
 - Prioritizes ReSpeaker 4 Mic Array with hardware echo cancellation
 - Automatically falls back to best available mic/speaker if ReSpeaker not found
 - Warns user when hardware AEC is unavailable
 - No PipeWire/PulseAudio dependencies
 
 ### 2. **Full Telemetry (No Metrics)**
+
 - OpenTelemetry traces and spans
 - Conversation-level trace contexts
 - Trace context propagation across WebSocket messages
@@ -21,16 +23,19 @@
 - Graceful degradation if telemetry unavailable
 
 ### 3. **LED Visual Feedback**
+
 - Complete LED controller for ReSpeaker
 - States: BOOT, IDLE, WAKE_WORD_DETECTED, CONVERSATION, ERROR, OFF
 - Animated patterns designed for elderly users
 
 ### 4. **Signal Handling**
+
 - `SIGUSR1`: Terminates current conversation only (graceful)
 - `SIGINT/SIGTERM`: Full shutdown (graceful if not in conversation)
 - Proper cleanup in all cases
 
 ### 5. **Modular Architecture**
+
 - Clean separation of concerns
 - Easy to test and maintain
 - Reusable components
@@ -86,6 +91,8 @@ Required credentials (provisioned via admin portal):
 Optional configuration:
 
 - `SKIP_WIFI_SETUP` - Enable/disable WiFi setup mode (default: `true`)
+  - When enabled, device creates "Kin_Setup" WiFi network (password: `kinsetup123`)
+  - Connect to it and visit http://192.168.4.1:8080 to configure
 - `CONVERSATION_ORCHESTRATOR_URL` - WebSocket URL for orchestrator (default: hardcoded in Config)
 - `OTEL_ENABLED` - Enable OpenTelemetry (default: `true`)
 - `OTEL_EXPORTER_ENDPOINT` - OTEL collector endpoint (default: `http://localhost:4318`)
