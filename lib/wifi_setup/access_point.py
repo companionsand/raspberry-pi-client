@@ -53,12 +53,12 @@ class AccessPoint:
                     'nmcli', 'connection', 'show', '--active'
                 ], capture_output=True)
                 
-            if self.connection_name in result.stdout:
-                logger.info("Access point started successfully via hotspot command")
-                # Log connection details for debugging
-                await self._log_connection_details()
-                self._is_running = True
-                return
+                if self.connection_name in result.stdout:
+                    logger.info("Access point started successfully via hotspot command")
+                    # Log connection details for debugging
+                    await self._log_connection_details()
+                    self._is_running = True
+                    return
                 else:
                     logger.warning("Hotspot command succeeded but connection not active, trying manual method...")
                     await self._cleanup_existing()
