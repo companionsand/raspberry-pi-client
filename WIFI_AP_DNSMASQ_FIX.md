@@ -1,5 +1,19 @@
 # WiFi AP dnsmasq "Address Already in Use" Fix
 
+## ✅ Automatic Fix Available!
+
+**This issue is now automatically resolved by `launch.sh` on every boot and restart.**
+
+If you're using the `raspberry-pi-client-wrapper` with the systemd service, you don't need to do anything - the fix runs automatically.
+
+See `../raspberry-pi-client-wrapper/WIFI_AP_AUTO_FIX.md` for details.
+
+---
+
+This document is kept for reference and manual troubleshooting.
+
+---
+
 ## Problem
 
 The WiFi access point configuration is correct (WPA2 security is properly set up), but the hotspot fails to activate with this error:
@@ -14,10 +28,22 @@ Activation: failed for connection 'Kin_Hotspot'
 
 When NetworkManager creates a WiFi hotspot, it automatically starts `dnsmasq` to provide DHCP and DNS services to connected clients. The error occurs when:
 
-1. A previous hotspot attempt didn't clean up properly
-2. The 192.168.4.1 IP address is still assigned to the interface
-3. dnsmasq processes are still running from the previous attempt
-4. Port 53 (DNS) is still bound to that address
+1. **System-wide dnsmasq service is already running** - Most common cause! A system dnsmasq service (PID 888 in your case) is already running and conflicts with NetworkManager's dnsmasq
+2. A previous hotspot attempt didn't clean up properly
+3. The 192.168.4.1 IP address is still assigned to the interface
+4. dnsmasq processes are still running from the previous attempt
+5. Port 53 (DNS) is still bound to that address
+
+### How to Check
+
+Run the diagnostic script to see if you have this issue:
+
+```bash
+bash debug_wifi_ap.sh > debug.txt
+cat debug.txt | grep "dnsmasq processes:"
+```
+
+If you see a dnsmasq process that's NOT related to NetworkManager (doesn't have `--interface=wlan0` or similar), you have a conflict.
 
 ## Solution
 
@@ -28,7 +54,26 @@ The code has been updated to perform thorough cleanup before starting the hotspo
 3. **Reset interface** - Bring the interface down and back up
 4. **Wait between operations** - Give NetworkManager time to fully clean up
 
-## Manual Fix (If Still Failing)
+## Automated Fix (Recommended)
+
+We've created a script that detects and fixes the conflict automatically:
+
+```bash
+# On your Raspberry Pi, in the raspberry-pi-client directory:
+sudo bash fix_dnsmasq_conflict.sh
+```
+
+This script will:
+
+1. Detect if a system dnsmasq service is running
+2. Either disable it (if not needed) OR configure it to exclude wlan0
+3. Clean up all NetworkManager dnsmasq processes
+4. Reset the wlan0 interface
+5. Restart NetworkManager
+6. Test hotspot creation
+7. Report results
+
+## Manual Fix (If Automated Fix Fails)
 
 If the automated fix doesn't work, run these commands manually on the Pi:
 
@@ -124,6 +169,32 @@ The updated code now automatically:
 - Resets the interface state
 
 This should prevent the issue from happening in the future.
+
+## System dnsmasq Conflict (Most Common Issue)
+
+### What is it?
+
+You have a system-wide dnsmasq service that was installed (possibly by another package or for local DNS caching). This conflicts with NetworkManager's dnsmasq for the hotspot.
+
+### How to identify:
+
+```bash
+ps aux | grep dnsmasq
+# Look for a process that does NOT have "NetworkManager" in its path
+```
+
+### Solution:
+
+**Disable system dnsmasq (recommended)**
+
+The simplest and most reliable solution is to disable the system dnsmasq service. NetworkManager will handle DNS/DHCP for the WiFi hotspot.
+
+```bash
+sudo systemctl stop dnsmasq
+sudo systemctl disable dnsmasq
+```
+
+Most Raspberry Pi setups don't need a system-wide dnsmasq service. If you do need it for other purposes, you'll need to configure it carefully to not conflict with NetworkManager.
 
 ## Common Scenarios
 
