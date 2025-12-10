@@ -312,6 +312,34 @@ class KinClient:
                         print("⚠️  Device is not paired with a user")
                         print("   Entering WiFi setup mode to collect pairing code...")
                         
+                        # Delete existing WiFi connection before entering setup mode
+                        # User will provide WiFi credentials anyway, so no need to keep old connection
+                        print("   Cleaning up existing WiFi connection...")
+                        try:
+                            import subprocess
+                            # Get active WiFi connection
+                            result = subprocess.run(
+                                ['nmcli', '-t', '-f', 'NAME,TYPE', 'connection', 'show', '--active'],
+                                capture_output=True,
+                                text=True,
+                                timeout=5
+                            )
+                            
+                            # Find and delete WiFi connections (type: 802-11-wireless)
+                            for line in result.stdout.strip().split('\n'):
+                                if line and '802-11-wireless' in line:
+                                    conn_name = line.split(':')[0]
+                                    # Don't delete the Kin_Hotspot connection
+                                    if conn_name and 'Kin_Hotspot' not in conn_name:
+                                        print(f"   Deleting WiFi connection: {conn_name}")
+                                        subprocess.run(
+                                            ['sudo', 'nmcli', 'connection', 'delete', conn_name],
+                                            capture_output=True,
+                                            timeout=5
+                                        )
+                        except Exception as e:
+                            print(f"   Warning: Could not clean up WiFi connection: {e}")
+                        
                         # WiFi setup + pairing loop
                         max_setup_attempts = 3
                         setup_attempt = 0
@@ -359,7 +387,28 @@ class KinClient:
                                         pass
                                     
                                     if setup_attempt < max_setup_attempts:
-                                        print(f"  Retrying... (attempt {setup_attempt + 1}/{max_setup_attempts})")
+                                        print("  Possible reasons:")
+                                        print("    - Incorrect pairing code")
+                                        print("    - Pairing code expired or already used")
+                                        print("    - Device not registered in admin portal")
+                                        print(f"\n  Cleaning up and restarting setup mode...")
+                                        
+                                        # Delete WiFi connection to prevent device from getting stuck
+                                        if wifi_manager._wifi_credentials:
+                                            failed_ssid = wifi_manager._wifi_credentials[0]
+                                            print(f"  Deleting WiFi connection: {failed_ssid}")
+                                            try:
+                                                import subprocess
+                                                subprocess.run(['sudo', 'nmcli', 'connection', 'delete', failed_ssid], 
+                                                             capture_output=True, timeout=5)
+                                            except Exception as e:
+                                                print(f"  Warning: Could not delete connection: {e}")
+                                        
+                                        # Clear credentials from manager so setup starts fresh
+                                        wifi_manager._wifi_credentials = None
+                                        wifi_manager._pairing_code = None
+                                        
+                                        print(f"  Please reconnect to Kin_Setup and try again")
                                         await asyncio.sleep(3)
                             else:
                                 print("✗ WiFi setup failed or cancelled")
