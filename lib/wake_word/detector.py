@@ -49,6 +49,7 @@ class WakeWordDetector:
         self.mic_device_index = mic_device_index
         self.orchestrator_client = orchestrator_client
         self.logger = Config.LOGGER
+        self._use_respeaker_aec = False  # Set to True in start() if ReSpeaker detected
         
         # -------------------------------------------------------------------------
         # Silero VAD Gate - Reduces false positives by only processing speech
@@ -269,10 +270,38 @@ class WakeWordDetector:
             
             print(f"   Required sample rate: {self.porcupine.sample_rate} Hz")
             
+            # -------------------------------------------------------------------------
+            # Detect ReSpeaker for 6-channel AEC extraction
+            # -------------------------------------------------------------------------
+            # Check if input device supports 6 channels (ReSpeaker 4-Mic Array)
+            # If so, open all 6 channels and extract Ch0 (AEC-processed) in callback
+            input_channels = Config.CHANNELS  # Default to mono
+            
+            try:
+                # Find the input device we'll use
+                if self.mic_device_index is not None:
+                    input_dev = devices[self.mic_device_index]
+                else:
+                    # Using default - check all devices for ReSpeaker
+                    input_dev = None
+                    for dev in devices:
+                        if any(kw in dev['name'].lower() for kw in ['respeaker', 'arrayuac10', 'uac1.0']):
+                            if dev['max_input_channels'] >= Config.RESPEAKER_CHANNELS:
+                                input_dev = dev
+                                break
+                
+                # Check if ReSpeaker with 6 channels
+                if input_dev and input_dev['max_input_channels'] >= Config.RESPEAKER_CHANNELS:
+                    self._use_respeaker_aec = True
+                    input_channels = Config.RESPEAKER_CHANNELS
+                    print(f"   ✓ ReSpeaker AEC: Opening {input_channels} channels, extracting Ch{Config.RESPEAKER_AEC_CHANNEL} (AEC-processed)")
+            except Exception as e:
+                print(f"   ⚠ Could not detect ReSpeaker channels: {e}")
+            
             # Start audio stream for wake word detection
             self.audio_stream = sd.InputStream(
                 device=self.mic_device_index,
-                channels=Config.CHANNELS,
+                channels=input_channels,
                 samplerate=self.porcupine.sample_rate,
                 blocksize=self.porcupine.frame_length,
                 dtype='int16',
@@ -353,8 +382,15 @@ class WakeWordDetector:
         if status:
             print(f"⚠ Audio status: {status}")
         
-        # Convert to the format Porcupine expects (int16)
-        audio_frame = indata[:, 0].astype(np.int16)
+        # -------------------------------------------------------------------------
+        # ReSpeaker AEC: Extract Channel 0 (AEC-processed audio)
+        # -------------------------------------------------------------------------
+        # If using ReSpeaker with 6 channels, extract only Ch0 (echo-cancelled)
+        if self._use_respeaker_aec and indata.ndim == 2 and indata.shape[1] >= Config.RESPEAKER_CHANNELS:
+            audio_frame = indata[:, Config.RESPEAKER_AEC_CHANNEL].astype(np.int16)
+        else:
+            # Standard mono input or fallback
+            audio_frame = indata[:, 0].astype(np.int16)
         
         # Track frame count for one-time VAD disabled warning
         self._vad_frame_count += 1

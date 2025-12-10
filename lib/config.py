@@ -28,8 +28,14 @@ class Config:
     
     # Audio settings (ALSA-only, single ReSpeaker device for both capture and playback)
     SAMPLE_RATE = 16000  # 16kHz for both capture and playback (hardcoded)
-    CHANNELS = 1  # Mono (ReSpeaker AEC expects mono reference)
+    CHANNELS = 1  # Mono output (ReSpeaker AEC expects mono reference)
     CHUNK_SIZE = 512  # ~32ms frames for low latency
+    
+    # ReSpeaker 4-Mic Array channel configuration
+    # The ReSpeaker outputs 6 channels: Ch0 = AEC-processed, Ch1-4 = raw mics, Ch5 = reference
+    # We open all 6 channels and extract Ch0 (AEC-processed) in Python code
+    RESPEAKER_CHANNELS = 6  # ReSpeaker 4-Mic Array outputs 6 channels
+    RESPEAKER_AEC_CHANNEL = 0  # Channel 0 is AEC-processed (echo-cancelled)
     
     # =========================================================================
     # RUNTIME CONFIGURATION (fetched from backend after authentication)
