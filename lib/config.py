@@ -57,6 +57,9 @@ class Config:
     OTEL_ENABLED = os.getenv("OTEL_ENABLED", "true").lower() == "true"
     OTEL_EXPORTER_ENDPOINT = os.getenv("OTEL_EXPORTER_ENDPOINT", "http://localhost:4318")
     
+    # ReSpeaker tuning configuration (fetched from backend, saved to file for wrapper)
+    RESPEAKER_CONFIG = None
+    
     # Environment
     ENV = os.getenv("ENV", "production")
     
@@ -116,6 +119,19 @@ class Config:
         # The local collector forwards to the central endpoint (configured by wrapper)
         cls.OTEL_EXPORTER_ENDPOINT = "http://localhost:4318"
         
+        # Load ReSpeaker configuration (if provided by backend)
+        cls.RESPEAKER_CONFIG = system_config.get("respeaker_config", {
+            "agc_gain": 3.0,
+            "agc_on_off": 0,
+            "aec_freeze_on_off": 0,
+            "echo_on_off": 1,
+            "hpf_on_off": 1,
+            "stat_noise_on_off": 1
+        })
+        
+        # Save ReSpeaker config to file for wrapper to use on next restart
+        cls._save_respeaker_config()
+        
         # Note: SAMPLE_RATE is hardcoded (16000 Hz) - not configurable
         
         print(f"✓ Runtime configuration loaded")
@@ -128,3 +144,22 @@ class Config:
             print(f"   Default Reactive Agent: Cached (fast wake word response)")
         else:
             print(f"   Default Reactive Agent: Not configured (will fetch on wake word)")
+    
+    @classmethod
+    def _save_respeaker_config(cls):
+        """
+        Save ReSpeaker configuration to file for wrapper to read on next boot.
+        
+        The wrapper's respeaker-init.sh script will read this file and apply
+        the tuning parameters before starting the Python client.
+        """
+        import json
+        
+        config_file = os.path.expanduser("~/.respeaker_config.json")
+        
+        try:
+            with open(config_file, 'w') as f:
+                json.dump(cls.RESPEAKER_CONFIG, f, indent=2)
+            print(f"✓ ReSpeaker config saved to {config_file} (will apply on next restart)")
+        except Exception as e:
+            print(f"⚠️  Could not save ReSpeaker config: {e}")
