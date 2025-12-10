@@ -24,38 +24,51 @@ class ConnectivityChecker:
         # Allow override via environment variable for testing
         self.orchestrator_url = Config.ORCHESTRATOR_URL
     
-    async def check_internet(self, timeout: int = 5) -> bool:
+    async def check_internet(self, timeout: int = 10, retries: int = 5, retry_delay: int = 2) -> bool:
         """
         Check if device has internet connectivity.
         
         Args:
-            timeout: Timeout in seconds
+            timeout: Timeout in seconds for each attempt
+            retries: Number of retry attempts
+            retry_delay: Delay between retries in seconds
             
         Returns:
             True if internet is accessible
         """
-        try:
-            # Try to ping Google DNS
-            proc = await asyncio.create_subprocess_exec(
-                'ping', '-c', '1', '-W', str(timeout), '8.8.8.8',
-                stdout=asyncio.subprocess.DEVNULL,
-                stderr=asyncio.subprocess.DEVNULL
-            )
-            returncode = await asyncio.wait_for(proc.wait(), timeout=timeout + 1)
-            
-            if returncode == 0:
-                logger.info("Internet connectivity confirmed")
-                return True
-            else:
-                logger.warning("Internet ping failed")
-                return False
+        logger.info(f"Starting internet connectivity check (timeout={timeout}s, retries={retries})")
+        
+        for attempt in range(retries):
+            try:
+                logger.info(f"Checking internet connectivity (attempt {attempt + 1}/{retries})...")
                 
-        except asyncio.TimeoutError:
-            logger.warning("Internet check timed out")
-            return False
-        except Exception as e:
-            logger.warning(f"Internet check error: {e}")
-            return False
+                # Try to ping Google DNS
+                logger.debug(f"Pinging 8.8.8.8 with {timeout}s timeout...")
+                proc = await asyncio.create_subprocess_exec(
+                    'ping', '-c', '1', '-W', str(timeout), '8.8.8.8',
+                    stdout=asyncio.subprocess.DEVNULL,
+                    stderr=asyncio.subprocess.DEVNULL
+                )
+                returncode = await asyncio.wait_for(proc.wait(), timeout=timeout + 1)
+                
+                if returncode == 0:
+                    logger.info(f"✓ Internet connectivity confirmed on attempt {attempt + 1}")
+                    return True
+                else:
+                    logger.warning(f"✗ Internet ping failed with return code {returncode} (attempt {attempt + 1}/{retries})")
+                    
+            except asyncio.TimeoutError:
+                logger.warning(f"✗ Internet check timed out after {timeout}s (attempt {attempt + 1}/{retries})")
+            except Exception as e:
+                logger.warning(f"✗ Internet check error on attempt {attempt + 1}/{retries}: {type(e).__name__}: {e}")
+            
+            # Wait before retrying (unless this was the last attempt)
+            if attempt < retries - 1:
+                logger.info(f"Retrying internet check in {retry_delay}s...")
+                await asyncio.sleep(retry_delay)
+        
+        logger.error(f"✗ No internet connectivity detected after {retries} attempts")
+        return False
     
     async def check_orchestrator(self, retries: int = 3, retry_delay: int = 5) -> bool:
         """
