@@ -395,6 +395,12 @@ class ElevenLabsConversationClient:
                 audio_b64 = base64.b64encode(audio_data.tobytes()).decode('utf-8')
                 message = {"user_audio_chunk": audio_b64}
                 
+                # Debug: Log what we're sending to ElevenLabs (every 3 seconds, synced with AEC debug)
+                now = time.time()
+                if self._use_respeaker_aec and (now - self._aec_debug_last_log) < 0.1:  # Log right after AEC debug
+                    sent_rms = np.sqrt(np.mean(audio_data.astype(float) ** 2)) / 32768.0
+                    print(f"📤 [SENT TO 11LABS] shape={audio_data.shape} RMS={sent_rms:.4f} (extracted from Ch{Config.RESPEAKER_AEC_CHANNEL})")
+                
                 try:
                     await asyncio.wait_for(
                         self.websocket.send(json.dumps(message)),
