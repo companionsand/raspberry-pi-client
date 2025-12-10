@@ -368,8 +368,8 @@ class ElevenLabsConversationClient:
                             None, self._input_queue.get
                         )
                     except Exception as e:
-                        print(f\"✗ Input queue error: {e}\")
-                        self.end_reason = \"network_failure\"
+                        print(f"✗ Input queue error: {e}")
+                        self.end_reason = "network_failure"
                         self.running = False
                         break
                 else:
