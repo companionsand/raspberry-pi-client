@@ -12,6 +12,7 @@ import certifi
 import sounddevice as sd
 import numpy as np
 import onnxruntime as ort
+import queue
 from typing import Optional
 from lib.config import Config
 from lib.orchestrator.client import OrchestratorClient
@@ -91,6 +92,9 @@ class ElevenLabsConversationClient:
         # The client just needs to stop playback and clear the queue when interrupted.
         self.audio_queue = asyncio.Queue()  # Queue for agent audio chunks
         self.playback_active = False  # Flag to stop current audio playback
+        # Callback mode queues (only used when ReSpeaker AEC is active)
+        self._input_queue = None   # Filled by PortAudio callback with mic frames
+        self._output_queue = None  # Consumed by PortAudio callback for playback
         
         # Dynamic VAD threshold: stricter during agent playback to filter echo
         # Normal threshold: 0.5 (sensitive, catches user speech quickly)
@@ -194,12 +198,44 @@ class ElevenLabsConversationClient:
             if self._use_respeaker_aec:
                 # Duplex stream: 6-channel input, mono output (fixes AEC reference signal)
                 # Input and output may be different device indices!
+                # Use callback-based I/O so PortAudio handles full-duplex safely.
+                self._input_queue = queue.Queue()
+                self._output_queue = queue.Queue(maxsize=50)  # prevent unbounded growth
+
+                def audio_callback(indata, outdata, frames, time_info, status):
+                    """PortAudio callback for full-duplex ReSpeaker capture/playback."""
+                    # Push captured audio to queue for async sender
+                    try:
+                        self._input_queue.put_nowait(indata.copy())
+                    except queue.Full:
+                        # Drop oldest frame if we're lagging to keep latency low
+                        try:
+                            self._input_queue.get_nowait()
+                        except queue.Empty:
+                            pass
+                        self._input_queue.put_nowait(indata.copy())
+
+                    # Pull next playback chunk (mono) or output silence
+                    try:
+                        out_chunk = self._output_queue.get_nowait()
+                        # Ensure shape (frames, 1)
+                        if out_chunk.ndim == 1:
+                            out_chunk = out_chunk.reshape(-1, 1)
+                        # Copy into PortAudio buffer (may be shorter; pad with zeros)
+                        frames_to_copy = min(len(out_chunk), len(outdata))
+                        outdata[:frames_to_copy, 0] = out_chunk[:frames_to_copy, 0]
+                        if frames_to_copy < len(outdata):
+                            outdata[frames_to_copy:] = 0
+                    except queue.Empty:
+                        outdata[:] = 0  # silence when nothing to play
+
                 self.stream = sd.Stream(
                     device=(respeaker_input_idx, respeaker_output_idx),
                     samplerate=Config.SAMPLE_RATE,
                     channels=(input_channels, Config.CHANNELS),
                     dtype='int16',
-                    blocksize=Config.CHUNK_SIZE
+                    blocksize=Config.CHUNK_SIZE,
+                    callback=audio_callback
                 )
                 self.stream.start()
                 # Duplex stream handles BOTH input (6ch) and output (1ch)
@@ -207,7 +243,7 @@ class ElevenLabsConversationClient:
                 # since ReSpeaker can only be opened once
                 self.input_stream = self.stream
                 self.output_stream = self.stream  # Same stream - duplex handles both
-                print(f"   ✓ ReSpeaker: Duplex stream (6ch in, 1ch out) on devices ({respeaker_input_idx}, {respeaker_output_idx})")
+                print(f"   ✓ ReSpeaker: Duplex stream (6ch in, 1ch out) on devices ({respeaker_input_idx}, {respeaker_output_idx}) [callback mode]")
             else:
                 # Non-ReSpeaker: Use separate streams (original behavior)
                 self.input_stream = sd.InputStream(
@@ -325,7 +361,19 @@ class ElevenLabsConversationClient:
         try:
             while self.running:
                 # Read audio from microphone
-                audio_data, _ = self.input_stream.read(Config.CHUNK_SIZE)
+                if self._use_respeaker_aec:
+                    # Callback mode: grab frames from PortAudio callback queue
+                    try:
+                        audio_data = await asyncio.get_running_loop().run_in_executor(
+                            None, self._input_queue.get
+                        )
+                    except Exception as e:
+                        print(f\"✗ Input queue error: {e}\")
+                        self.end_reason = \"network_failure\"
+                        self.running = False
+                        break
+                else:
+                    audio_data, _ = self.input_stream.read(Config.CHUNK_SIZE)
                 
                 # -------------------------------------------------------------------------
                 # AEC Debug Logging: Show RMS for all 6 channels (every 3 seconds)
@@ -607,15 +655,23 @@ class ElevenLabsConversationClient:
                     chunk = audio_array[i:i+sub_chunk_size]
                     try:
                         if self.output_stream and self.output_stream.active:
-                            # For duplex streams, reshape to 2D (samples, 1) for mono output
-                            # This ensures compatibility when output_stream IS the duplex stream
-                            if self._use_respeaker_aec and chunk.ndim == 1:
-                                chunk = chunk.reshape(-1, 1)
-                            # Run blocking write in thread pool with timeout
-                            await asyncio.wait_for(
-                                loop.run_in_executor(None, self.output_stream.write, chunk),
-                                timeout=2.0  # 2 second timeout for audio write
-                            )
+                            if self._use_respeaker_aec:
+                                # Callback mode: queue chunk for PortAudio callback
+                                try:
+                                    self._output_queue.put_nowait(chunk)
+                                except queue.Full:
+                                    # Drop oldest to keep latency low
+                                    try:
+                                        self._output_queue.get_nowait()
+                                    except queue.Empty:
+                                        pass
+                                    self._output_queue.put_nowait(chunk)
+                            else:
+                                # Run blocking write in thread pool with timeout
+                                await asyncio.wait_for(
+                                    loop.run_in_executor(None, self.output_stream.write, chunk),
+                                    timeout=2.0  # 2 second timeout for audio write
+                                )
                     except asyncio.TimeoutError:
                         print(f"⚠️ Audio write timeout - audio device may be stuck")
                         if logger:
