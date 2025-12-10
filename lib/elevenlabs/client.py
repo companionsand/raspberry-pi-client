@@ -96,6 +96,7 @@ class ElevenLabsConversationClient:
         # Callback mode queues (only used when ReSpeaker AEC is active)
         self._input_queue = None   # Filled by PortAudio callback with mic frames
         self._output_queue = None  # Consumed by PortAudio callback for playback
+        self._callback_remainder = None  # Store partial chunk for next callback
         
         # Dynamic VAD threshold: stricter during agent playback to filter echo
         # Normal threshold: 0.5 (sensitive, catches user speech quickly)
@@ -207,7 +208,9 @@ class ElevenLabsConversationClient:
                 # Input and output may be different device indices!
                 # Use callback-based I/O so PortAudio handles full-duplex safely.
                 self._input_queue = queue.Queue()
-                self._output_queue = queue.Queue(maxsize=50)  # prevent unbounded growth
+                # Larger queue to prevent underruns (callback needs ~512 samples per call)
+                # 100 chunks * 256 samples = 25,600 samples = 1.6s buffer at 16kHz
+                self._output_queue = queue.Queue(maxsize=200)
 
                 def audio_callback(indata, outdata, frames, time_info, status):
                     """PortAudio callback for full-duplex ReSpeaker capture/playback."""
@@ -223,34 +226,42 @@ class ElevenLabsConversationClient:
                         self._input_queue.put_nowait(indata.copy())
 
                     # Pull next playback chunk (mono) or output silence
-                    # Process in chunks to handle variable-sized audio from queue
+                    # PortAudio callback needs exactly 'frames' samples (typically 512)
                     outdata[:] = 0  # Start with silence
                     frames_written = 0
+                    remainder_chunk = None
+                    
+                    # First, use any remainder from previous callback if it exists
+                    if hasattr(self, '_callback_remainder') and self._callback_remainder is not None:
+                        remainder_chunk = self._callback_remainder
+                        self._callback_remainder = None
                     
                     while frames_written < len(outdata):
-                        try:
-                            out_chunk = self._output_queue.get_nowait()
-                            # Ensure shape (frames,) for mono
-                            if out_chunk.ndim == 2:
-                                out_chunk = out_chunk.flatten()
-                            elif out_chunk.ndim == 1:
-                                pass  # Already 1D
-                            else:
-                                out_chunk = out_chunk.flatten()
-                            
-                            # Copy into PortAudio buffer
-                            remaining = len(outdata) - frames_written
-                            frames_to_copy = min(len(out_chunk), remaining)
-                            outdata[frames_written:frames_written + frames_to_copy, 0] = out_chunk[:frames_to_copy]
-                            frames_written += frames_to_copy
-                            
-                            # If chunk was larger than remaining space, put remainder back
-                            if len(out_chunk) > frames_to_copy:
-                                # Put remainder back at front of queue (but this is complex, so just drop it)
-                                # Better to keep chunks small to avoid this
-                                pass
-                        except queue.Empty:
-                            break  # No more audio, fill rest with silence (already zeroed)
+                        # Use remainder first, then get from queue
+                        if remainder_chunk is not None:
+                            out_chunk = remainder_chunk
+                            remainder_chunk = None
+                        else:
+                            try:
+                                out_chunk = self._output_queue.get_nowait()
+                            except queue.Empty:
+                                break  # No more audio, fill rest with silence
+                        
+                        # Ensure shape (frames,) for mono
+                        if out_chunk.ndim == 2:
+                            out_chunk = out_chunk.flatten()
+                        elif out_chunk.ndim != 1:
+                            out_chunk = out_chunk.flatten()
+                        
+                        # Copy into PortAudio buffer
+                        remaining = len(outdata) - frames_written
+                        frames_to_copy = min(len(out_chunk), remaining)
+                        outdata[frames_written:frames_written + frames_to_copy, 0] = out_chunk[:frames_to_copy]
+                        frames_written += frames_to_copy
+                        
+                        # If chunk was larger than remaining space, save remainder for next callback
+                        if len(out_chunk) > frames_to_copy:
+                            self._callback_remainder = out_chunk[frames_to_copy:]
 
                 self.stream = sd.Stream(
                     device=(respeaker_input_idx, respeaker_output_idx),
@@ -656,7 +667,8 @@ class ElevenLabsConversationClient:
                 # Play the audio chunk in small sub-chunks for fast interruption
                 self.playback_active = True
                 
-                # Write in very small chunks (256 samples = ~16ms at 16kHz) for fast response
+                # Write in small chunks (256 samples = ~16ms at 16kHz) for fast response
+                # Small chunks also help with callback buffering (callback needs 512 samples per call)
                 sub_chunk_size = 256
                 interrupted = False
                 
@@ -692,6 +704,9 @@ class ElevenLabsConversationClient:
                                     except queue.Empty:
                                         pass
                                     self._output_queue.put_nowait(chunk)
+                                
+                                # Small yield to ensure queue stays filled (callback consumes at ~512 samples/call)
+                                await asyncio.sleep(0)
                             else:
                                 # Run blocking write in thread pool with timeout
                                 await asyncio.wait_for(
