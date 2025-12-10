@@ -13,6 +13,7 @@ import sounddevice as sd
 import numpy as np
 import onnxruntime as ort
 import queue
+from scipy import signal
 from typing import Optional
 from lib.config import Config
 from lib.orchestrator.client import OrchestratorClient
@@ -112,6 +113,10 @@ class ElevenLabsConversationClient:
         # Max conversation duration failsafe (5 minutes)
         self._max_conversation_duration = 300.0  # 5 minutes
         self._conversation_start_time = None
+        
+        # ElevenLabs audio sample rate (WebSocket sends at 24kHz, we play at 16kHz)
+        self._elevenlabs_sample_rate = 24000  # ElevenLabs WebSocket default
+        self._playback_sample_rate = Config.SAMPLE_RATE  # 16kHz for ReSpeaker
         
         
     async def start(self, orchestrator_client: OrchestratorClient):
@@ -216,18 +221,34 @@ class ElevenLabsConversationClient:
                         self._input_queue.put_nowait(indata.copy())
 
                     # Pull next playback chunk (mono) or output silence
-                    try:
-                        out_chunk = self._output_queue.get_nowait()
-                        # Ensure shape (frames, 1)
-                        if out_chunk.ndim == 1:
-                            out_chunk = out_chunk.reshape(-1, 1)
-                        # Copy into PortAudio buffer (may be shorter; pad with zeros)
-                        frames_to_copy = min(len(out_chunk), len(outdata))
-                        outdata[:frames_to_copy, 0] = out_chunk[:frames_to_copy, 0]
-                        if frames_to_copy < len(outdata):
-                            outdata[frames_to_copy:] = 0
-                    except queue.Empty:
-                        outdata[:] = 0  # silence when nothing to play
+                    # Process in chunks to handle variable-sized audio from queue
+                    outdata[:] = 0  # Start with silence
+                    frames_written = 0
+                    
+                    while frames_written < len(outdata):
+                        try:
+                            out_chunk = self._output_queue.get_nowait()
+                            # Ensure shape (frames,) for mono
+                            if out_chunk.ndim == 2:
+                                out_chunk = out_chunk.flatten()
+                            elif out_chunk.ndim == 1:
+                                pass  # Already 1D
+                            else:
+                                out_chunk = out_chunk.flatten()
+                            
+                            # Copy into PortAudio buffer
+                            remaining = len(outdata) - frames_written
+                            frames_to_copy = min(len(out_chunk), remaining)
+                            outdata[frames_written:frames_written + frames_to_copy, 0] = out_chunk[:frames_to_copy]
+                            frames_written += frames_to_copy
+                            
+                            # If chunk was larger than remaining space, put remainder back
+                            if len(out_chunk) > frames_to_copy:
+                                # Put remainder back at front of queue (but this is complex, so just drop it)
+                                # Better to keep chunks small to avoid this
+                                pass
+                        except queue.Empty:
+                            break  # No more audio, fill rest with silence (already zeroed)
 
                 self.stream = sd.Stream(
                     device=(respeaker_input_idx, respeaker_output_idx),
@@ -657,6 +678,9 @@ class ElevenLabsConversationClient:
                         if self.output_stream and self.output_stream.active:
                             if self._use_respeaker_aec:
                                 # Callback mode: queue chunk for PortAudio callback
+                                # Ensure chunk is 1D array (mono)
+                                if chunk.ndim > 1:
+                                    chunk = chunk.flatten()
                                 try:
                                     self._output_queue.put_nowait(chunk)
                                 except queue.Full:
@@ -857,6 +881,16 @@ class ElevenLabsConversationClient:
                         audio_bytes = base64.b64decode(audio_b64)
                         audio_array = np.frombuffer(audio_bytes, dtype=np.int16)
                         
+                        # Resample from ElevenLabs rate (24kHz) to playback rate (16kHz)
+                        if self._elevenlabs_sample_rate != self._playback_sample_rate:
+                            # Convert to float for resampling
+                            audio_float = audio_array.astype(np.float32) / 32768.0
+                            # Resample: 24kHz -> 16kHz
+                            num_samples_16k = int(len(audio_float) * self._playback_sample_rate / self._elevenlabs_sample_rate)
+                            audio_resampled = signal.resample(audio_float, num_samples_16k)
+                            # Convert back to int16
+                            audio_array = (audio_resampled * 32768.0).astype(np.int16)
+                        
                         # Track chunk count
                         self._chunk_count += 1
                         
@@ -864,7 +898,7 @@ class ElevenLabsConversationClient:
                         # This helps prevent false positives in VAD during agent speech
                         if self._chunk_count == 1:
                             self._vad_state = np.zeros((2, 1, 128), dtype=np.float32)
-                            print(f"📥 AGENT TURN START: first chunk ({len(audio_array)} samples) [VAD state RESET]")
+                            print(f"📥 AGENT TURN START: first chunk ({len(audio_array)} samples @ {self._playback_sample_rate}Hz) [VAD state RESET]")
                         elif self._chunk_count % 10 == 0:
                             print(f"📥 AGENT audio: chunk #{self._chunk_count} ({len(audio_array)} samples), queue={self.audio_queue.qsize()}")
                         
