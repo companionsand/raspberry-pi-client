@@ -80,8 +80,10 @@ class WakeWordDetector:
         self._hangover_frames = 30  # ~1 second at 32ms/frame
         self._hangover_counter = 0   # Current frames remaining
         
-        # Frame counter for one-time VAD disabled warning
-        self._vad_frame_count = 0
+        # Debug counters for VAD gate diagnostics
+        self._vad_frame_count = 0  # Total frames processed
+        self._vad_passed_count = 0  # Frames that passed VAD (sent to Porcupine)
+        self._vad_last_log_time = 0  # For periodic logging
         
         # -------------------------------------------------------------------------
         # Ring buffer for Scribe v2 verification (stores VAD-passed audio)
@@ -394,9 +396,23 @@ class WakeWordDetector:
                         # Below threshold but hangover active - decrement
                         self._hangover_counter -= 1
                     
+                    # Periodic diagnostic logging (every 5 seconds)
+                    now = time.time()
+                    if now - self._vad_last_log_time > 5.0:
+                        pass_rate = (self._vad_passed_count / max(1, self._vad_frame_count)) * 100
+                        gate_status = "OPEN" if (speech_prob >= self._vad_threshold or self._hangover_counter > 0) else "CLOSED"
+                        print(f"🔍 VAD diag: prob={speech_prob:.2f}, hangover={self._hangover_counter}, gate={gate_status}, passed={self._vad_passed_count}/{self._vad_frame_count} ({pass_rate:.1f}%)")
+                        self._vad_last_log_time = now
+                        # Reset counters for next period
+                        self._vad_frame_count = 0
+                        self._vad_passed_count = 0
+                    
                     # Gate: Only pass if probability high OR hangover active
                     if speech_prob < self._vad_threshold and self._hangover_counter == 0:
                         return  # No speech and no hangover - skip Porcupine
+                    
+                    # Gate is open - increment passed counter
+                    self._vad_passed_count += 1
                     
                 except Exception as e:
                     print(f"⚠ VAD inference error: {e}")
