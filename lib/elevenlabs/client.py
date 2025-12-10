@@ -43,6 +43,7 @@ class ElevenLabsConversationClient:
         self.input_stream = None  # Microphone input stream
         self.output_stream = None  # Speaker output stream (separate for instant abort)
         self.running = False
+        self._use_respeaker_aec = False  # Set to True in start() if ReSpeaker detected
         self.conversation_id = str(uuid.uuid4())
         self.elevenlabs_conversation_id = None
         self.end_reason = "normal"
@@ -136,12 +137,41 @@ class ElevenLabsConversationClient:
         ssl_context = ssl.create_default_context(cafile=certifi.where())
         
         try:
+            # -------------------------------------------------------------------------
+            # Detect ReSpeaker for 6-channel AEC extraction
+            # -------------------------------------------------------------------------
+            # Check if input device supports 6 channels (ReSpeaker 4-Mic Array)
+            # If so, open all 6 channels and extract Ch0 (AEC-processed) in code
+            input_channels = Config.CHANNELS  # Default to mono
+            
+            try:
+                devices = sd.query_devices()
+                # Find the input device we'll use
+                if self.mic_device_index is not None:
+                    input_dev = devices[self.mic_device_index]
+                else:
+                    # Using default - check all devices for ReSpeaker
+                    input_dev = None
+                    for dev in devices:
+                        if any(kw in dev['name'].lower() for kw in ['respeaker', 'arrayuac10', 'uac1.0']):
+                            if dev['max_input_channels'] >= Config.RESPEAKER_CHANNELS:
+                                input_dev = dev
+                                break
+                
+                # Check if ReSpeaker with 6 channels
+                if input_dev and input_dev['max_input_channels'] >= Config.RESPEAKER_CHANNELS:
+                    self._use_respeaker_aec = True
+                    input_channels = Config.RESPEAKER_CHANNELS
+                    print(f"   ✓ ReSpeaker AEC: Opening {input_channels} channels, extracting Ch{Config.RESPEAKER_AEC_CHANNEL} (AEC-processed)")
+            except Exception as e:
+                print(f"   ⚠ Could not detect ReSpeaker channels: {e}")
+            
             # Open separate input and output streams for independent control
-            # Input stream: microphone only
+            # Input stream: microphone (6 channels for ReSpeaker, 1 channel otherwise)
             self.input_stream = sd.InputStream(
                 device=self.mic_device_index,
                 samplerate=Config.SAMPLE_RATE,
-                channels=Config.CHANNELS,
+                channels=input_channels,
                 dtype='int16',
                 blocksize=Config.CHUNK_SIZE
             )
@@ -255,6 +285,15 @@ class ElevenLabsConversationClient:
             while self.running:
                 # Read audio from microphone
                 audio_data, _ = self.input_stream.read(Config.CHUNK_SIZE)
+                
+                # -------------------------------------------------------------------------
+                # ReSpeaker AEC: Extract Channel 0 (AEC-processed audio)
+                # -------------------------------------------------------------------------
+                # If using ReSpeaker with 6 channels, extract only Ch0 (echo-cancelled)
+                # This bypasses ALSA routing issues and directly accesses the AEC output
+                if self._use_respeaker_aec and audio_data.ndim == 2 and audio_data.shape[1] >= Config.RESPEAKER_CHANNELS:
+                    # Extract channel 0 (AEC-processed) and reshape to (samples, 1)
+                    audio_data = audio_data[:, Config.RESPEAKER_AEC_CHANNEL:Config.RESPEAKER_AEC_CHANNEL+1].copy()
                 
                 # -------------------------------------------------------------------------
                 # Voice Activity Detection (VAD) - Detect if user is speaking
