@@ -202,10 +202,18 @@ class ElevenLabsConversationClient:
                     blocksize=Config.CHUNK_SIZE
                 )
                 self.stream.start()
-                # Alias for compatibility with existing read/write code
+                # Duplex stream for reading 6 channels
                 self.input_stream = self.stream
-                self.output_stream = self.stream
-                print(f"   ✓ ReSpeaker: Using duplex stream (in:{respeaker_input_idx}, out:{respeaker_output_idx}) for AEC loopback")
+                # SEPARATE OutputStream for playback (critical: avoids corrupting duplex read)
+                self.output_stream = sd.OutputStream(
+                    device=respeaker_output_idx,
+                    samplerate=Config.SAMPLE_RATE,
+                    channels=Config.CHANNELS,
+                    dtype='int16',
+                    blocksize=Config.CHUNK_SIZE
+                )
+                self.output_stream.start()
+                print(f"   ✓ ReSpeaker: Duplex input (6ch, dev {respeaker_input_idx}) + separate output (dev {respeaker_output_idx})")
             else:
                 # Non-ReSpeaker: Use separate streams (original behavior)
                 self.input_stream = sd.InputStream(
