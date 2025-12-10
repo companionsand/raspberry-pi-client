@@ -114,9 +114,11 @@ class ElevenLabsConversationClient:
         self._max_conversation_duration = 300.0  # 5 minutes
         self._conversation_start_time = None
         
-        # ElevenLabs audio sample rate (WebSocket sends at 24kHz, we play at 16kHz)
-        self._elevenlabs_sample_rate = 24000  # ElevenLabs WebSocket default
+        # ElevenLabs audio sample rate - detect from metadata or assume 16kHz (same as playback)
+        # If audio sounds robotic/slow, ElevenLabs may be sending 24kHz - enable resampling
+        self._elevenlabs_sample_rate = None  # Will be detected from metadata or default to 16kHz
         self._playback_sample_rate = Config.SAMPLE_RATE  # 16kHz for ReSpeaker
+        self._resampling_enabled = False  # Disable by default - enable if audio sounds wrong
         
         
     async def start(self, orchestrator_client: OrchestratorClient):
@@ -854,6 +856,17 @@ class ElevenLabsConversationClient:
                 if 'conversation_initiation_metadata_event' in data:
                     metadata = data['conversation_initiation_metadata_event']
                     self.elevenlabs_conversation_id = metadata.get('conversation_id', None)
+                    # Check if sample rate is in metadata
+                    if 'sample_rate' in metadata:
+                        self._elevenlabs_sample_rate = metadata['sample_rate']
+                        self._resampling_enabled = (self._elevenlabs_sample_rate != self._playback_sample_rate)
+                        print(f"   ElevenLabs sample rate: {self._elevenlabs_sample_rate}Hz (resampling: {self._resampling_enabled})")
+                    else:
+                        # Default to 16kHz (no resampling) - assume same as playback
+                        if self._elevenlabs_sample_rate is None:
+                            self._elevenlabs_sample_rate = self._playback_sample_rate
+                            self._resampling_enabled = False
+                            print(f"   ElevenLabs sample rate: assuming {self._elevenlabs_sample_rate}Hz (no resampling)")
                     print(f"   ElevenLabs Conversation ID: {self.elevenlabs_conversation_id}")
                     
                     # Send conversation start notification
@@ -881,8 +894,8 @@ class ElevenLabsConversationClient:
                         audio_bytes = base64.b64decode(audio_b64)
                         audio_array = np.frombuffer(audio_bytes, dtype=np.int16)
                         
-                        # Resample from ElevenLabs rate (24kHz) to playback rate (16kHz)
-                        if self._elevenlabs_sample_rate != self._playback_sample_rate:
+                        # Resample if sample rates differ (only if resampling is enabled)
+                        if self._resampling_enabled and self._elevenlabs_sample_rate and self._elevenlabs_sample_rate != self._playback_sample_rate:
                             # Convert to float for resampling
                             audio_float = audio_array.astype(np.float32) / 32768.0
                             # Resample: 24kHz -> 16kHz
