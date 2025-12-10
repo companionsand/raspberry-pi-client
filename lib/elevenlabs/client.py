@@ -12,6 +12,8 @@ import certifi
 import sounddevice as sd
 import numpy as np
 import onnxruntime as ort
+import queue
+from scipy import signal
 from typing import Optional
 from lib.config import Config
 from lib.orchestrator.client import OrchestratorClient
@@ -91,6 +93,10 @@ class ElevenLabsConversationClient:
         # The client just needs to stop playback and clear the queue when interrupted.
         self.audio_queue = asyncio.Queue()  # Queue for agent audio chunks
         self.playback_active = False  # Flag to stop current audio playback
+        # Callback mode queues (only used when ReSpeaker AEC is active)
+        self._input_queue = None   # Filled by PortAudio callback with mic frames
+        self._output_queue = None  # Consumed by PortAudio callback for playback
+        self._callback_remainder = None  # Store partial chunk for next callback
         
         # Dynamic VAD threshold: stricter during agent playback to filter echo
         # Normal threshold: 0.5 (sensitive, catches user speech quickly)
@@ -108,6 +114,12 @@ class ElevenLabsConversationClient:
         # Max conversation duration failsafe (5 minutes)
         self._max_conversation_duration = 300.0  # 5 minutes
         self._conversation_start_time = None
+        
+        # ElevenLabs audio sample rate - detect from metadata or assume 16kHz (same as playback)
+        # If audio sounds robotic/slow, ElevenLabs may be sending 24kHz - enable resampling
+        self._elevenlabs_sample_rate = None  # Will be detected from metadata or default to 16kHz
+        self._playback_sample_rate = Config.SAMPLE_RATE  # 16kHz for ReSpeaker
+        self._resampling_enabled = False  # Disable by default - enable if audio sounds wrong
         
         
     async def start(self, orchestrator_client: OrchestratorClient):
@@ -194,12 +206,69 @@ class ElevenLabsConversationClient:
             if self._use_respeaker_aec:
                 # Duplex stream: 6-channel input, mono output (fixes AEC reference signal)
                 # Input and output may be different device indices!
+                # Use callback-based I/O so PortAudio handles full-duplex safely.
+                self._input_queue = queue.Queue()
+                # Unbounded queue to prevent dropping chunks (which causes audio jumps)
+                # Queue will naturally drain as callback consumes audio
+                self._output_queue = queue.Queue()
+
+                def audio_callback(indata, outdata, frames, time_info, status):
+                    """PortAudio callback for full-duplex ReSpeaker capture/playback."""
+                    # Push captured audio to queue for async sender
+                    try:
+                        self._input_queue.put_nowait(indata.copy())
+                    except queue.Full:
+                        # Drop oldest frame if we're lagging to keep latency low
+                        try:
+                            self._input_queue.get_nowait()
+                        except queue.Empty:
+                            pass
+                        self._input_queue.put_nowait(indata.copy())
+
+                    # Pull next playback chunk (mono) or output silence
+                    # PortAudio callback needs exactly 'frames' samples (typically 512)
+                    outdata[:] = 0  # Start with silence
+                    frames_written = 0
+                    remainder_chunk = None
+                    
+                    # First, use any remainder from previous callback if it exists
+                    if hasattr(self, '_callback_remainder') and self._callback_remainder is not None:
+                        remainder_chunk = self._callback_remainder
+                        self._callback_remainder = None
+                    
+                    while frames_written < len(outdata):
+                        # Use remainder first, then get from queue
+                        if remainder_chunk is not None:
+                            out_chunk = remainder_chunk
+                            remainder_chunk = None
+                        else:
+                            try:
+                                out_chunk = self._output_queue.get_nowait()
+                            except queue.Empty:
+                                break  # No more audio, fill rest with silence
+                        
+                        # Ensure shape (frames,) for mono
+                        if out_chunk.ndim == 2:
+                            out_chunk = out_chunk.flatten()
+                        elif out_chunk.ndim != 1:
+                            out_chunk = out_chunk.flatten()
+                        
+                        # Copy into PortAudio buffer
+                        remaining = len(outdata) - frames_written
+                        frames_to_copy = min(len(out_chunk), remaining)
+                        outdata[frames_written:frames_written + frames_to_copy, 0] = out_chunk[:frames_to_copy]
+                        frames_written += frames_to_copy
+                        
+                        # If chunk was larger than remaining space, save remainder for next callback
+                        if len(out_chunk) > frames_to_copy:
+                            self._callback_remainder = out_chunk[frames_to_copy:]
                 self.stream = sd.Stream(
                     device=(respeaker_input_idx, respeaker_output_idx),
                     samplerate=Config.SAMPLE_RATE,
                     channels=(input_channels, Config.CHANNELS),
                     dtype='int16',
-                    blocksize=Config.CHUNK_SIZE
+                    blocksize=Config.CHUNK_SIZE,
+                    callback=audio_callback
                 )
                 self.stream.start()
                 # Duplex stream handles BOTH input (6ch) and output (1ch)
@@ -207,7 +276,7 @@ class ElevenLabsConversationClient:
                 # since ReSpeaker can only be opened once
                 self.input_stream = self.stream
                 self.output_stream = self.stream  # Same stream - duplex handles both
-                print(f"   ✓ ReSpeaker: Duplex stream (6ch in, 1ch out) on devices ({respeaker_input_idx}, {respeaker_output_idx})")
+                print(f"   ✓ ReSpeaker: Duplex stream (6ch in, 1ch out) on devices ({respeaker_input_idx}, {respeaker_output_idx}) [callback mode]")
             else:
                 # Non-ReSpeaker: Use separate streams (original behavior)
                 self.input_stream = sd.InputStream(
@@ -325,7 +394,47 @@ class ElevenLabsConversationClient:
         try:
             while self.running:
                 # Read audio from microphone
-                audio_data, _ = self.input_stream.read(Config.CHUNK_SIZE)
+                if self._use_respeaker_aec:
+                    # Callback mode: grab frames from PortAudio callback queue
+                    try:
+                        audio_data = await asyncio.get_running_loop().run_in_executor(
+                            None, self._input_queue.get
+                        )
+                    except Exception as e:
+                        print(f"✗ Input queue error: {e}")
+                        self.end_reason = "network_failure"
+                        self.running = False
+                        break
+                else:
+                    audio_data, _ = self.input_stream.read(Config.CHUNK_SIZE)
+                
+                # -------------------------------------------------------------------------
+                # AEC Debug Logging: Show RMS for all 6 channels (every 3 seconds)
+                # -------------------------------------------------------------------------
+                if self._use_respeaker_aec and audio_data.ndim == 2 and audio_data.shape[1] >= Config.RESPEAKER_CHANNELS:
+                    now = time.time()
+                    if now - self._aec_debug_last_log >= 3.0:
+                        self._aec_debug_last_log = now
+                        # Debug: Log actual audio data shape and dtype
+                        print(f"🔍 [AEC DEBUG] audio_data shape={audio_data.shape}, dtype={audio_data.dtype}, ndim={audio_data.ndim}")
+                        # Calculate RMS for each channel
+                        ch_rms = []
+                        for ch in range(min(6, audio_data.shape[1])):
+                            rms = np.sqrt(np.mean(audio_data[:, ch].astype(float) ** 2)) / 32768.0
+                            ch_rms.append(rms)
+                        # Format like diagnostic script
+                        is_playing = self.playback_active or self.audio_queue.qsize() > 0
+                        status = "PLAYING" if is_playing else "IDLE"
+                        print(f"📊 [AEC DEBUG] [{status}] Ch0={ch_rms[0]:.4f} | Ch1={ch_rms[1]:.4f} | Ch2={ch_rms[2]:.4f} | Ch3={ch_rms[3]:.4f} | Ch4={ch_rms[4]:.4f} | Ch5={ch_rms[5]:.4f} | Using: Ch{Config.RESPEAKER_AEC_CHANNEL}")
+                
+                # -------------------------------------------------------------------------
+                # ReSpeaker AEC: Extract Channel 0 (AEC-processed audio)
+                # -------------------------------------------------------------------------
+                # If using ReSpeaker with 6 channels, extract only Ch0 (echo-cancelled)
+                # This bypasses ALSA routing issues and directly accesses the AEC output
+                if self._use_respeaker_aec and audio_data.ndim == 2 and audio_data.shape[1] >= Config.RESPEAKER_CHANNELS:
+                    # Extract channel 0 (AEC-processed) and reshape to (samples, 1)
+                    audio_data = audio_data[:, Config.RESPEAKER_AEC_CHANNEL:Config.RESPEAKER_AEC_CHANNEL+1].copy()
                 
                 # -------------------------------------------------------------------------
                 # AEC Debug Logging: Show RMS for all 6 channels (every 3 seconds)
@@ -585,7 +694,8 @@ class ElevenLabsConversationClient:
                 # Play the audio chunk in small sub-chunks for fast interruption
                 self.playback_active = True
                 
-                # Write in very small chunks (256 samples = ~16ms at 16kHz) for fast response
+                # Write in small chunks (256 samples = ~16ms at 16kHz) for fast response
+                # Small chunks also help with callback buffering (callback needs 512 samples per call)
                 sub_chunk_size = 256
                 interrupted = False
                 
@@ -607,15 +717,23 @@ class ElevenLabsConversationClient:
                     chunk = audio_array[i:i+sub_chunk_size]
                     try:
                         if self.output_stream and self.output_stream.active:
-                            # For duplex streams, reshape to 2D (samples, 1) for mono output
-                            # This ensures compatibility when output_stream IS the duplex stream
-                            if self._use_respeaker_aec and chunk.ndim == 1:
-                                chunk = chunk.reshape(-1, 1)
-                            # Run blocking write in thread pool with timeout
-                            await asyncio.wait_for(
-                                loop.run_in_executor(None, self.output_stream.write, chunk),
-                                timeout=2.0  # 2 second timeout for audio write
-                            )
+                            if self._use_respeaker_aec:
+                                # Callback mode: queue chunk for PortAudio callback
+                                # Ensure chunk is 1D array (mono)
+                                if chunk.ndim > 1:
+                                    chunk = chunk.flatten()
+                                # Queue chunk for callback (unbounded queue, no dropping)
+                                # This ensures sequential playback without jumps
+                                self._output_queue.put_nowait(chunk)
+                                
+                                # Small yield to ensure queue stays filled (callback consumes at ~512 samples/call)
+                                await asyncio.sleep(0)
+                            else:
+                                # Run blocking write in thread pool with timeout
+                                await asyncio.wait_for(
+                                    loop.run_in_executor(None, self.output_stream.write, chunk),
+                                    timeout=2.0  # 2 second timeout for audio write
+                                )
                     except asyncio.TimeoutError:
                         print(f"⚠️ Audio write timeout - audio device may be stuck")
                         if logger:
@@ -774,6 +892,17 @@ class ElevenLabsConversationClient:
                 if 'conversation_initiation_metadata_event' in data:
                     metadata = data['conversation_initiation_metadata_event']
                     self.elevenlabs_conversation_id = metadata.get('conversation_id', None)
+                    # Check if sample rate is in metadata
+                    if 'sample_rate' in metadata:
+                        self._elevenlabs_sample_rate = metadata['sample_rate']
+                        self._resampling_enabled = (self._elevenlabs_sample_rate != self._playback_sample_rate)
+                        print(f"   ElevenLabs sample rate: {self._elevenlabs_sample_rate}Hz (resampling: {self._resampling_enabled})")
+                    else:
+                        # Default to 16kHz (no resampling) - assume same as playback
+                        if self._elevenlabs_sample_rate is None:
+                            self._elevenlabs_sample_rate = self._playback_sample_rate
+                            self._resampling_enabled = False
+                            print(f"   ElevenLabs sample rate: assuming {self._elevenlabs_sample_rate}Hz (no resampling)")
                     print(f"   ElevenLabs Conversation ID: {self.elevenlabs_conversation_id}")
                     
                     # Send conversation start notification
@@ -801,6 +930,16 @@ class ElevenLabsConversationClient:
                         audio_bytes = base64.b64decode(audio_b64)
                         audio_array = np.frombuffer(audio_bytes, dtype=np.int16)
                         
+                        # Resample if sample rates differ (only if resampling is enabled)
+                        if self._resampling_enabled and self._elevenlabs_sample_rate and self._elevenlabs_sample_rate != self._playback_sample_rate:
+                            # Convert to float for resampling
+                            audio_float = audio_array.astype(np.float32) / 32768.0
+                            # Resample: 24kHz -> 16kHz
+                            num_samples_16k = int(len(audio_float) * self._playback_sample_rate / self._elevenlabs_sample_rate)
+                            audio_resampled = signal.resample(audio_float, num_samples_16k)
+                            # Convert back to int16
+                            audio_array = (audio_resampled * 32768.0).astype(np.int16)
+                        
                         # Track chunk count
                         self._chunk_count += 1
                         
@@ -808,7 +947,7 @@ class ElevenLabsConversationClient:
                         # This helps prevent false positives in VAD during agent speech
                         if self._chunk_count == 1:
                             self._vad_state = np.zeros((2, 1, 128), dtype=np.float32)
-                            print(f"📥 AGENT TURN START: first chunk ({len(audio_array)} samples) [VAD state RESET]")
+                            print(f"📥 AGENT TURN START: first chunk ({len(audio_array)} samples @ {self._playback_sample_rate}Hz) [VAD state RESET]")
                         elif self._chunk_count % 10 == 0:
                             print(f"📥 AGENT audio: chunk #{self._chunk_count} ({len(audio_array)} samples), queue={self.audio_queue.qsize()}")
                         
@@ -848,6 +987,18 @@ class ElevenLabsConversationClient:
                         except asyncio.QueueEmpty:
                             break
                     
+                    # Clear callback queue if using ReSpeaker AEC (callback mode)
+                    callback_cleared = 0
+                    if self._use_respeaker_aec and self._output_queue:
+                        while not self._output_queue.empty():
+                            try:
+                                self._output_queue.get_nowait()
+                                callback_cleared += 1
+                            except queue.Empty:
+                                break
+                        # Also clear any remainder chunk
+                        self._callback_remainder = None
+                    
                     # Reset chunk count for next agent turn
                     self._chunk_count = 0
                     
@@ -855,7 +1006,10 @@ class ElevenLabsConversationClient:
                     if self.led_controller:
                         self.led_controller.set_state(self.led_controller.STATE_CONVERSATION)
                     
-                    print(f"   ✓ Cleared {cleared_count} queued audio chunks, ready for user input")
+                    if callback_cleared > 0:
+                        print(f"   ✓ Cleared {cleared_count} queued audio chunks + {callback_cleared} callback chunks, ready for user input")
+                    else:
+                        print(f"   ✓ Cleared {cleared_count} queued audio chunks, ready for user input")
                     self.last_audio_time = time.time()  # Reset silence timer
                 
                 elif data.get('type') == 'agent_response_correction_event' or 'agent_response_correction_event' in data:
