@@ -32,11 +32,17 @@ def authenticate_device(pairing_code: Optional[str] = None) -> Optional[Dict[str
     
     Returns:
         Dict with authentication info:
-        - jwt_token: JWT token for API access
-        - device: Device information
-        - config: Runtime configuration (if paired)
+        - success: True if fully authenticated and paired
+        - jwt_token: JWT token for API access (if success=True)
+        - device: Device information (if success=True)
+        - config: Runtime configuration (if success=True and paired)
+        - reason: Reason for failure (if success=False)
+          - "unpaired": Device authenticated but not paired with user
+          - "not_found": Device ID not found in system
+          - "network_error": Network/connection error
+          - "auth_error": Authentication failed (wrong keys, etc.)
         
-        Returns None if authentication fails
+        Returns None for backward compatibility with old error cases
     """
     logger = Config.LOGGER
     print("\n🔐 Authenticating device...")
@@ -55,7 +61,7 @@ def authenticate_device(pairing_code: Optional[str] = None) -> Optional[Dict[str
         if challenge_response.status_code == 404:
             print(f"✗ Device not found: {Config.DEVICE_ID}")
             print("   Please provision this device through the admin portal.")
-            return None
+            return {"success": False, "reason": "not_found"}
             
         challenge_response.raise_for_status()
         challenge_data = challenge_response.json()
@@ -139,11 +145,12 @@ def authenticate_device(pairing_code: Optional[str] = None) -> Optional[Dict[str
             
             if config_data.get("admin_portal_url"):
                 print(f"   Admin Portal: {config_data['admin_portal_url']}")
-            return None
+            return {"success": False, "reason": "unpaired"}
         
         print(f"✓ Configuration loaded")
         
         return {
+            "success": True,
             "jwt_token": jwt_token,
             "device": device_info,
             "config": config_data
@@ -157,7 +164,7 @@ def authenticate_device(pairing_code: Optional[str] = None) -> Optional[Dict[str
                 extra={"error": str(e)},
                 exc_info=True
             )
-        return None
+        return {"success": False, "reason": "network_error", "error": str(e)}
     except Exception as e:
         print(f"✗ Authentication error: {e}")
         if logger:
@@ -166,7 +173,7 @@ def authenticate_device(pairing_code: Optional[str] = None) -> Optional[Dict[str
                 extra={"error": str(e)},
                 exc_info=True
             )
-        return None
+        return {"success": False, "reason": "auth_error", "error": str(e)}
 
 
 def get_serial_number() -> Optional[str]:

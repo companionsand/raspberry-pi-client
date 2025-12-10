@@ -232,7 +232,8 @@ class KinClient:
                         
                         print("\n🔐 Authenticating with pairing code...")
                         
-                        if authenticate(pairing_code=pairing_code):
+                        auth_result = authenticate(pairing_code=pairing_code)
+                        if auth_result and auth_result.get("success"):
                             authenticated = True
                             print("✓ Authentication and pairing successful!")
                             print("  Device is now paired and starting...")
@@ -299,18 +300,102 @@ class KinClient:
             else:
                 print("✓ Connectivity confirmed")
                 
-                # Authenticate without pairing code (device already paired)
-                if not authenticate():
-                    print("✗ Failed to authenticate device")
-                    return
+                # Try to authenticate without pairing code (device might already be paired)
+                auth_result = authenticate()
                 
-                # Update LED controller with backend config
-                if self.led_controller:
-                    self.led_controller.enabled = Config.LED_ENABLED
+                if not auth_result or not auth_result.get("success"):
+                    # Authentication failed - check the reason
+                    reason = auth_result.get("reason") if auth_result else "unknown"
+                    
+                    if reason == "unpaired":
+                        # Device is authenticated but not paired - enter WiFi setup mode to collect pairing code
+                        print("⚠️  Device is not paired with a user")
+                        print("   Entering WiFi setup mode to collect pairing code...")
+                        
+                        # WiFi setup + pairing loop
+                        max_setup_attempts = 3
+                        setup_attempt = 0
+                        authenticated = False
+                        
+                        while setup_attempt < max_setup_attempts and not authenticated:
+                            setup_attempt += 1
+                            print(f"\n🔧 Entering WiFi setup mode (attempt {setup_attempt}/{max_setup_attempts})...")
+                            print("="*60)
+                            
+                            # Start WiFi setup manager with LED controller
+                            wifi_manager = WiFiSetupManager(led_controller=self.led_controller)
+                            pairing_code, success = await wifi_manager.start_setup_mode()
+                            
+                            if success and pairing_code:
+                                print(f"\n✓ Setup complete!")
+                                print(f"  Pairing code received: {pairing_code}")
+                                print("="*60)
+                                
+                                print("\n🔐 Authenticating with pairing code...")
+                                
+                                pair_result = authenticate(pairing_code=pairing_code)
+                                if pair_result and pair_result.get("success"):
+                                    authenticated = True
+                                    print("✓ Authentication and pairing successful!")
+                                    print("  Device is now paired and starting...")
+                                    
+                                    # Update LED controller with backend config
+                                    if self.led_controller:
+                                        self.led_controller.enabled = Config.LED_ENABLED
+                                    
+                                    # Clean up
+                                    try:
+                                        await wifi_manager.http_server.stop()
+                                    except:
+                                        pass
+                                else:
+                                    print("✗ Authentication failed with pairing code")
+                                    print("  Please verify the pairing code is correct")
+                                    
+                                    # Clean up before retry
+                                    try:
+                                        await wifi_manager.http_server.stop()
+                                    except:
+                                        pass
+                                    
+                                    if setup_attempt < max_setup_attempts:
+                                        print(f"  Retrying... (attempt {setup_attempt + 1}/{max_setup_attempts})")
+                                        await asyncio.sleep(3)
+                            else:
+                                print("✗ WiFi setup failed or cancelled")
+                                
+                                # Clean up
+                                try:
+                                    await wifi_manager.http_server.stop()
+                                except:
+                                    pass
+                                
+                                if setup_attempt < max_setup_attempts:
+                                    print(f"  Retrying... (attempt {setup_attempt + 1}/{max_setup_attempts})")
+                                    await asyncio.sleep(3)
+                        
+                        if not authenticated:
+                            print("\n✗ Setup and authentication failed after all attempts")
+                            print("  Device will retry on next boot")
+                            print("="*60)
+                            return
+                    else:
+                        # Other authentication error (not unpaired) - exit with error
+                        print(f"✗ Failed to authenticate device (reason: {reason})")
+                        return
+                else:
+                    # Authentication successful, device is already paired
+                    print("✓ Device authenticated and paired")
+                    
+                    # Update LED controller with backend config
+                    if self.led_controller:
+                        self.led_controller.enabled = Config.LED_ENABLED
         else:
             # WiFi setup skipped, authenticate normally
-            if not authenticate():
-                print("✗ Failed to authenticate device")
+            auth_result = authenticate()
+            if not auth_result or not auth_result.get("success"):
+                reason = auth_result.get("reason") if auth_result else "unknown"
+                print(f"✗ Failed to authenticate device (reason: {reason})")
                 return
             
             # Update LED controller with backend config
