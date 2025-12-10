@@ -146,31 +146,43 @@ class ElevenLabsConversationClient:
             # If so, open all 6 channels and extract Ch0 (AEC-processed) in code
             input_channels = Config.CHANNELS  # Default to mono
             
-            # Track actual device index for duplex stream (might differ from self.mic_device_index)
-            respeaker_device_index = self.mic_device_index
+            # Track device indices for duplex stream
+            # ReSpeaker may expose INPUT and OUTPUT as DIFFERENT device indices!
+            respeaker_input_idx = self.mic_device_index
+            respeaker_output_idx = output_device  # Start with configured output
             
             try:
                 devices = sd.query_devices()
-                # Find the input device we'll use
+                
+                # Find ReSpeaker INPUT device (6+ input channels)
                 if self.mic_device_index is not None:
                     input_dev = devices[self.mic_device_index]
-                    respeaker_device_index = self.mic_device_index
+                    respeaker_input_idx = self.mic_device_index
                 else:
-                    # Using default - scan all devices for ReSpeaker
+                    # Scan for ReSpeaker input device
                     input_dev = None
                     for idx, dev in enumerate(devices):
                         if any(kw in dev['name'].lower() for kw in ['respeaker', 'arrayuac10', 'uac1.0']):
                             if dev['max_input_channels'] >= Config.RESPEAKER_CHANNELS:
                                 input_dev = dev
-                                respeaker_device_index = idx  # Capture the actual device index!
+                                respeaker_input_idx = idx
                                 break
                 
                 # Check if ReSpeaker with 6 channels
                 if input_dev and input_dev['max_input_channels'] >= Config.RESPEAKER_CHANNELS:
                     self._use_respeaker_aec = True
                     input_channels = Config.RESPEAKER_CHANNELS
+                    
+                    # Find ReSpeaker OUTPUT device (may be same or different index)
+                    # Look for device with same name pattern that has output channels
+                    for idx, dev in enumerate(devices):
+                        if any(kw in dev['name'].lower() for kw in ['respeaker', 'arrayuac10', 'uac1.0']):
+                            if dev['max_output_channels'] >= 1:
+                                respeaker_output_idx = idx
+                                break
+                    
                     print(f"   ✓ ReSpeaker AEC: Opening {input_channels} channels, extracting Ch{Config.RESPEAKER_AEC_CHANNEL} (AEC-processed)")
-                    print(f"   ✓ ReSpeaker device index: {respeaker_device_index}")
+                    print(f"   ✓ ReSpeaker input device: {respeaker_input_idx}, output device: {respeaker_output_idx}")
             except Exception as e:
                 print(f"   ⚠ Could not detect ReSpeaker channels: {e}")
             
@@ -181,9 +193,9 @@ class ElevenLabsConversationClient:
             # Separate streams cause Ch1-5 to be zero (hardware loopback issue).
             if self._use_respeaker_aec:
                 # Duplex stream: 6-channel input, mono output (fixes AEC reference signal)
-                # Use same device for both input and output (ReSpeaker has both)
+                # Input and output may be different device indices!
                 self.stream = sd.Stream(
-                    device=(respeaker_device_index, respeaker_device_index),
+                    device=(respeaker_input_idx, respeaker_output_idx),
                     samplerate=Config.SAMPLE_RATE,
                     channels=(input_channels, Config.CHANNELS),
                     dtype='int16',
@@ -193,7 +205,7 @@ class ElevenLabsConversationClient:
                 # Alias for compatibility with existing read/write code
                 self.input_stream = self.stream
                 self.output_stream = self.stream
-                print(f"   ✓ ReSpeaker: Using duplex stream (device {respeaker_device_index}) for proper AEC loopback")
+                print(f"   ✓ ReSpeaker: Using duplex stream (in:{respeaker_input_idx}, out:{respeaker_output_idx}) for AEC loopback")
             else:
                 # Non-ReSpeaker: Use separate streams (original behavior)
                 self.input_stream = sd.InputStream(
