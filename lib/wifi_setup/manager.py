@@ -92,7 +92,7 @@ class WiFiSetupManager:
                         self.led_controller.set_state(LEDController.STATE_ATTEMPTING_CONNECTION)
                     
                     # Update status: inform user they'll lose connection
-                    self.http_server.set_status("connecting", "✓ Credentials received!\n\nDevice will now connect to your WiFi network.\n\nYou can disconnect from Kin_Setup.\nThe device will reconnect to you if setup fails.")
+                    self.http_server.set_status("connecting", "✓ Credentials received!\n\nDevice will now connect to your WiFi network.\n\nYou can disconnect from Kin_Setup.")
                     await asyncio.sleep(5)  # Give user time to read before AP stops
                     
                     # Try to connect to configured WiFi (this will stop the AP)

@@ -78,14 +78,6 @@ HTML_TEMPLATE = '''<!DOCTYPE html>
             z-index: 1;
         }
         
-        .logo {
-            font-family: 'Limelight', cursive;
-            font-size: 32px;
-            color: var(--color-black);
-            margin-bottom: 8px;
-            font-weight: 400;
-        }
-        
         h1 { 
             font-family: 'Instrument Serif', serif;
             color: var(--color-black);
@@ -191,14 +183,8 @@ HTML_TEMPLATE = '''<!DOCTYPE html>
 </head>
 <body>
     <div class="container">
-        <div class="logo">Kin</div>
-        <h1>Device Setup</h1>
+        <h1>Kin Device Setup</h1>
         <p class="subtitle">Configure your WiFi network to get started</p>
-        <div class="message info" style="font-size: 14px;">
-            <strong>Connection Info:</strong><br>
-            Network: <span id="ap-ssid">Kin_Setup</span><br>
-            Password: <span id="ap-password">kinsetup123</span>
-        </div>
         <div id="message"></div>
         <form id="setupForm">
             <div class="form-group">
@@ -228,14 +214,9 @@ HTML_TEMPLATE = '''<!DOCTYPE html>
             messageDiv.innerHTML = '<div class="message ' + type + '">' + text + '</div>';
         }
         
-        // Load AP info
-        fetch('/ap-info')
-            .then(r => r.json())
-            .then(data => {
-                document.getElementById('ap-ssid').textContent = data.ssid;
-                document.getElementById('ap-password').textContent = data.password;
-            })
-            .catch(e => console.error('Failed to load AP info:', e));
+        function clearMessage() {
+            messageDiv.innerHTML = '';
+        }
         
         fetch('/networks')
             .then(r => r.json())
@@ -271,7 +252,7 @@ HTML_TEMPLATE = '''<!DOCTYPE html>
                         showMessage('✗ ' + data.message + (data.error ? '\\n' + data.error : ''), 'error');
                         clearInterval(statusPollInterval);
                         submitBtn.disabled = false;
-                        submitBtn.textContent = 'Try Again';
+                        submitBtn.textContent = 'Connect';
                     }
                 })
                 .catch(e => console.error('Status poll failed:', e));
@@ -279,6 +260,7 @@ HTML_TEMPLATE = '''<!DOCTYPE html>
         
         form.onsubmit = async (e) => {
             e.preventDefault();
+            clearMessage();  // Clear any old error messages
             submitBtn.disabled = true;
             submitBtn.textContent = 'Submitting...';
             
@@ -448,6 +430,11 @@ class SetupHTTPServer:
             def _handle_configure(self):
                 try:
                     logger.info("[HTTP] Processing configuration submission...")
+                    
+                    # Reset status to clear any old error messages
+                    setup_server._status = "waiting"
+                    setup_server._status_message = "Processing configuration..."
+                    setup_server._error_details = None
                     
                     content_length = int(self.headers['Content-Length'])
                     logger.debug(f"[HTTP] Receiving {content_length} bytes of configuration data")
