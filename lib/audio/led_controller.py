@@ -26,7 +26,10 @@ class LEDController:
     - WAKE_WORD_DETECTED: Very visible burst at 100% brightness with amber/gold/orange/white
     - CONVERSATION: Pulsating amber/gold (0-70% brightness) when listening, fast pulse (1.5s)
     - SPEAKING: White at 20-100% brightness, beating with voice energy
+    - THINKING: Fast amber pulse (15-70% brightness, 0.5s cycle) when preparing response
     - ERROR: Soft red slow blink (2s on/off) for issues
+    - WIFI_SETUP: Soft amber slow blink (60% brightness, 2s on/off) during WiFi setup mode
+    - ATTEMPTING_CONNECTION: Soft amber fast blink (60% brightness, 0.5s on/off) when connecting
     - OFF: No lights during shutdown
     """
     
@@ -39,6 +42,8 @@ class LEDController:
     STATE_ERROR = 5
     STATE_SPEAKING = 6      # SPEAKING: Agent speaking, white audio-reactive
     STATE_THINKING = 7      # THINKING: User paused, agent preparing response, fast amber pulse
+    STATE_WIFI_SETUP = 8    # WIFI_SETUP: Device in WiFi setup mode, ready for configuration
+    STATE_ATTEMPTING_CONNECTION = 9  # ATTEMPTING_CONNECTION: Attempting WiFi/pairing connection
     
     # Color palette (RGB, 0-255)
     # Colors are applied with brightness multipliers for visibility
@@ -130,7 +135,9 @@ class LEDController:
             self.STATE_CONVERSATION: "LISTENING (slow amber breathing, user speaking)",
             self.STATE_THINKING: "THINKING (fast amber pulse, preparing response)",
             self.STATE_SPEAKING: "SPEAKING (white audio-reactive, agent talking)",
-            self.STATE_ERROR: "ERROR (soft red blink)"
+            self.STATE_ERROR: "ERROR (soft red blink)",
+            self.STATE_WIFI_SETUP: "WIFI_SETUP (soft amber slow blink 60%, ready for configuration)",
+            self.STATE_ATTEMPTING_CONNECTION: "ATTEMPTING_CONNECTION (soft amber fast blink 60%, connecting)"
         }
         print(f"💡 LED: {state_names.get(state, f'UNKNOWN({state})')}")
         
@@ -175,6 +182,14 @@ class LEDController:
         elif state == self.STATE_ERROR:
             # Soft red slow blink (2s on/off)
             self._start_animation(self._error_blink_loop)
+        
+        elif state == self.STATE_WIFI_SETUP:
+            # WIFI_SETUP: Soft amber slow blink (2s on/off, 60% brightness)
+            self._start_animation(self._wifi_setup_blink_loop)
+        
+        elif state == self.STATE_ATTEMPTING_CONNECTION:
+            # ATTEMPTING_CONNECTION: Soft amber fast blink (0.5s on/off, 60% brightness)
+            self._start_animation(self._attempting_connection_blink_loop)
     
     # -------------------------------------------------------------------------
     # Animation Control Methods
@@ -494,6 +509,66 @@ class LEDController:
             pass
         except Exception as e:
             print(f"  ⚠ LED error animation error: {e}")
+    
+    async def _wifi_setup_blink_loop(self):
+        """
+        Soft amber slow blink for WiFi setup mode (2s on/off, 60% brightness).
+        Indicates device is in WiFi setup mode with hotspot active and ready for configuration.
+        """
+        if not self.enabled or not self.pixel_ring:
+            return
+        
+        BLINK_INTERVAL = 2.0  # 2 seconds on, 2 seconds off
+        BRIGHTNESS = 0.6  # 60% brightness
+        
+        base_color = self.COLORS['boot']  # Soft amber (244, 162, 97)
+        color = self._rgb_to_int_with_brightness(base_color, BRIGHTNESS)
+        
+        try:
+            while self.current_state == self.STATE_WIFI_SETUP:
+                # Turn on
+                self.pixel_ring.mono(color)
+                await asyncio.sleep(BLINK_INTERVAL)
+                
+                # Turn off
+                if self.current_state == self.STATE_WIFI_SETUP:  # Check state hasn't changed
+                    self.pixel_ring.off()
+                    await asyncio.sleep(BLINK_INTERVAL)
+                
+        except asyncio.CancelledError:
+            pass
+        except Exception as e:
+            print(f"  ⚠ LED WiFi setup animation error: {e}")
+    
+    async def _attempting_connection_blink_loop(self):
+        """
+        Soft amber fast blink for connection attempts (0.5s on/off, 60% brightness).
+        Indicates device is attempting to connect to WiFi and pair with backend.
+        """
+        if not self.enabled or not self.pixel_ring:
+            return
+        
+        BLINK_INTERVAL = 0.5  # 0.5 seconds on, 0.5 seconds off (fast blink)
+        BRIGHTNESS = 0.6  # 60% brightness
+        
+        base_color = self.COLORS['boot']  # Soft amber (244, 162, 97)
+        color = self._rgb_to_int_with_brightness(base_color, BRIGHTNESS)
+        
+        try:
+            while self.current_state == self.STATE_ATTEMPTING_CONNECTION:
+                # Turn on
+                self.pixel_ring.mono(color)
+                await asyncio.sleep(BLINK_INTERVAL)
+                
+                # Turn off
+                if self.current_state == self.STATE_ATTEMPTING_CONNECTION:  # Check state hasn't changed
+                    self.pixel_ring.off()
+                    await asyncio.sleep(BLINK_INTERVAL)
+                
+        except asyncio.CancelledError:
+            pass
+        except Exception as e:
+            print(f"  ⚠ LED attempting connection animation error: {e}")
     
     def update_speaking_leds(self, audio_chunk):
         """

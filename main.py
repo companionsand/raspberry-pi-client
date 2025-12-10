@@ -181,6 +181,11 @@ class KinClient:
         # Validate configuration
         Config.validate()
         
+        # Initialize LED controller early (before WiFi setup)
+        # This allows WiFi setup to show LED feedback
+        self.led_controller = LEDController(enabled=Config.LED_ENABLED)
+        self.led_controller.set_state(LEDController.STATE_BOOT)
+        
         # Check if WiFi setup should be skipped (default: no)
         skip_wifi_setup = os.getenv('SKIP_WIFI_SETUP', 'false').lower() == 'true'
         pairing_code = None  # Will be set by WiFi setup if needed
@@ -210,8 +215,8 @@ class KinClient:
                     print(f"\n🔧 Entering WiFi setup mode (attempt {setup_attempt}/{max_setup_attempts})...")
                     print("="*60)
                     
-                    # Start WiFi setup manager
-                    wifi_manager = WiFiSetupManager()
+                    # Start WiFi setup manager with LED controller
+                    wifi_manager = WiFiSetupManager(led_controller=self.led_controller)
                     pairing_code, success = await wifi_manager.start_setup_mode()
                     
                     if success and pairing_code:
@@ -298,9 +303,8 @@ class KinClient:
                 print("✗ Failed to authenticate device")
                 return
         
-        # Initialize LED controller AFTER authentication (when Config.LED_ENABLED is set)
-        # Show boot state while initializing remaining components
-        self.led_controller = LEDController(enabled=Config.LED_ENABLED)
+        # LED controller already initialized before WiFi setup
+        # Keep boot state while initializing remaining components
         self.led_controller.set_state(LEDController.STATE_BOOT)
         
         # Initialize context manager with logger

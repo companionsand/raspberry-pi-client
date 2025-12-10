@@ -29,13 +29,15 @@ class WiFiSetupManager:
         ap_password: str = "kinsetup123",
         ap_interface: str = "wlan0",
         http_port: int = 8080,
-        max_retries: int = 5
+        max_retries: int = 5,
+        led_controller = None
     ):
         self.ap_ssid = ap_ssid
         self.ap_password = ap_password
         self.ap_interface = ap_interface
         self.http_port = http_port
         self.max_retries = max_retries
+        self.led_controller = led_controller
         
         self.access_point = AccessPoint(ap_ssid, ap_interface, ap_password)
         self.http_server = SetupHTTPServer(http_port, ap_interface, ap_ssid, ap_password)
@@ -72,12 +74,23 @@ class WiFiSetupManager:
                 logger.info(f"Starting HTTP server on port {self.http_port}")
                 await self.http_server.start(self._handle_wifi_config)
                 
+                # Set LED state to WIFI_SETUP (ready for configuration)
+                if self.led_controller:
+                    # Import STATE_WIFI_SETUP constant
+                    from ..audio import LEDController
+                    self.led_controller.set_state(LEDController.STATE_WIFI_SETUP)
+                
                 logger.info(f"WiFi setup active. Connect to '{self.ap_ssid}' (password: {self.ap_password}) and go to http://192.168.4.1:{self.http_port}")
                 
                 # Wait for user to submit configuration
                 success = await self._wait_for_configuration()
                 
                 if success:
+                    # Set LED state to ATTEMPTING_CONNECTION
+                    if self.led_controller:
+                        from ..audio import LEDController
+                        self.led_controller.set_state(LEDController.STATE_ATTEMPTING_CONNECTION)
+                    
                     # Update status: inform user they'll lose connection
                     self.http_server.set_status("connecting", "✓ Credentials received!\n\nDevice will now connect to your WiFi network.\n\nYou can disconnect from Kin_Setup.\nThe device will reconnect to you if setup fails.")
                     await asyncio.sleep(5)  # Give user time to read before AP stops
@@ -106,6 +119,7 @@ class WiFiSetupManager:
                 retry_count += 1
                 if retry_count < self.max_retries:
                     logger.info(f"Retrying WiFi setup... ({retry_count}/{self.max_retries})")
+                    # LED will be set to WIFI_SETUP again when AP/HTTP server restart
                     await asyncio.sleep(2)
                 
             except Exception as e:
