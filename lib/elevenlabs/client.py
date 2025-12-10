@@ -202,18 +202,12 @@ class ElevenLabsConversationClient:
                     blocksize=Config.CHUNK_SIZE
                 )
                 self.stream.start()
-                # Duplex stream for reading 6 channels
+                # Duplex stream handles BOTH input (6ch) and output (1ch)
+                # Using the same stream for I/O avoids "Device unavailable" errors
+                # since ReSpeaker can only be opened once
                 self.input_stream = self.stream
-                # SEPARATE OutputStream for playback (critical: avoids corrupting duplex read)
-                self.output_stream = sd.OutputStream(
-                    device=respeaker_output_idx,
-                    samplerate=Config.SAMPLE_RATE,
-                    channels=Config.CHANNELS,
-                    dtype='int16',
-                    blocksize=Config.CHUNK_SIZE
-                )
-                self.output_stream.start()
-                print(f"   ✓ ReSpeaker: Duplex input (6ch, dev {respeaker_input_idx}) + separate output (dev {respeaker_output_idx})")
+                self.output_stream = self.stream  # Same stream - duplex handles both
+                print(f"   ✓ ReSpeaker: Duplex stream (6ch in, 1ch out) on devices ({respeaker_input_idx}, {respeaker_output_idx})")
             else:
                 # Non-ReSpeaker: Use separate streams (original behavior)
                 self.input_stream = sd.InputStream(
@@ -613,6 +607,10 @@ class ElevenLabsConversationClient:
                     chunk = audio_array[i:i+sub_chunk_size]
                     try:
                         if self.output_stream and self.output_stream.active:
+                            # For duplex streams, reshape to 2D (samples, 1) for mono output
+                            # This ensures compatibility when output_stream IS the duplex stream
+                            if self._use_respeaker_aec and chunk.ndim == 1:
+                                chunk = chunk.reshape(-1, 1)
                             # Run blocking write in thread pool with timeout
                             await asyncio.wait_for(
                                 loop.run_in_executor(None, self.output_stream.write, chunk),
