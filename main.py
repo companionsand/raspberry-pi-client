@@ -201,11 +201,8 @@ class KinClient:
                 orchestrator_retries=3
             )
             
-            if not has_internet or not orchestrator_reachable:
-                if not has_internet:
-                    print("✗ No internet connection detected")
-                else:
-                    print("✗ Internet connected but orchestrator unreachable")
+            if not has_internet:
+                print("✗ No internet connection detected")
                 
                 # WiFi setup + pairing loop - retry if pairing fails
                 max_setup_attempts = 3
@@ -298,7 +295,14 @@ class KinClient:
                     print("="*60)
                     return
             else:
-                print("✓ Connectivity confirmed")
+                print("✓ Internet connection confirmed")
+                if not orchestrator_reachable:
+                    print("⚠ Warning: Orchestrator is unreachable")
+                    print("  This may be due to:")
+                    print("    - Orchestrator service is down")
+                    print("    - Network/firewall issues")
+                    print("    - Incorrect orchestrator URL")
+                    print("  Device will continue but may have limited functionality")
                 
                 # Try to authenticate without pairing code (device might already be paired)
                 auth_result = authenticate()
