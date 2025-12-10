@@ -126,8 +126,10 @@ class Config:
         cls.OTEL_EXPORTER_ENDPOINT = "http://localhost:4318"
         
         # Load ReSpeaker configuration (if provided by backend)
+        # agc_gain: 1.0 = minimum (no amplification), higher values amplify echo
+        # agc_on_off: 0 = AGC disabled (prevents echo amplification)
         cls.RESPEAKER_CONFIG = system_config.get("respeaker_config", {
-            "agc_gain": 3.0,
+            "agc_gain": 1.0,
             "agc_on_off": 0,
             "aec_freeze_on_off": 0,
             "echo_on_off": 1,
