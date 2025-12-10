@@ -183,7 +183,9 @@ class KinClient:
         
         # Initialize LED controller early (before WiFi setup)
         # This allows WiFi setup to show LED feedback
-        self.led_controller = LEDController(enabled=Config.LED_ENABLED)
+        # Default to True if not set yet (will be set after authentication)
+        led_enabled = Config.LED_ENABLED if Config.LED_ENABLED is not None else True
+        self.led_controller = LEDController(enabled=led_enabled)
         self.led_controller.set_state(LEDController.STATE_BOOT)
         
         # Check if WiFi setup should be skipped (default: no)
@@ -234,6 +236,10 @@ class KinClient:
                             authenticated = True
                             print("✓ Authentication and pairing successful!")
                             print("  Device is now paired and starting...")
+                            
+                            # Update LED controller with backend config
+                            if self.led_controller:
+                                self.led_controller.enabled = Config.LED_ENABLED
                             
                             # Clean up (HTTP server already stopped during WiFi switch)
                             try:
@@ -297,11 +303,19 @@ class KinClient:
                 if not authenticate():
                     print("✗ Failed to authenticate device")
                     return
+                
+                # Update LED controller with backend config
+                if self.led_controller:
+                    self.led_controller.enabled = Config.LED_ENABLED
         else:
             # WiFi setup skipped, authenticate normally
             if not authenticate():
                 print("✗ Failed to authenticate device")
                 return
+            
+            # Update LED controller with backend config
+            if self.led_controller:
+                self.led_controller.enabled = Config.LED_ENABLED
         
         # LED controller already initialized before WiFi setup
         # Keep boot state while initializing remaining components
