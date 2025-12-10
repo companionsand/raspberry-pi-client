@@ -208,9 +208,9 @@ class ElevenLabsConversationClient:
                 # Input and output may be different device indices!
                 # Use callback-based I/O so PortAudio handles full-duplex safely.
                 self._input_queue = queue.Queue()
-                # Larger queue to prevent underruns (callback needs ~512 samples per call)
-                # 100 chunks * 256 samples = 25,600 samples = 1.6s buffer at 16kHz
-                self._output_queue = queue.Queue(maxsize=200)
+                # Unbounded queue to prevent dropping chunks (which causes audio jumps)
+                # Queue will naturally drain as callback consumes audio
+                self._output_queue = queue.Queue()
 
                 def audio_callback(indata, outdata, frames, time_info, status):
                     """PortAudio callback for full-duplex ReSpeaker capture/playback."""
@@ -695,15 +695,9 @@ class ElevenLabsConversationClient:
                                 # Ensure chunk is 1D array (mono)
                                 if chunk.ndim > 1:
                                     chunk = chunk.flatten()
-                                try:
-                                    self._output_queue.put_nowait(chunk)
-                                except queue.Full:
-                                    # Drop oldest to keep latency low
-                                    try:
-                                        self._output_queue.get_nowait()
-                                    except queue.Empty:
-                                        pass
-                                    self._output_queue.put_nowait(chunk)
+                                # Queue chunk for callback (unbounded queue, no dropping)
+                                # This ensures sequential playback without jumps
+                                self._output_queue.put_nowait(chunk)
                                 
                                 # Small yield to ensure queue stays filled (callback consumes at ~512 samples/call)
                                 await asyncio.sleep(0)
