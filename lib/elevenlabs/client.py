@@ -44,6 +44,7 @@ class ElevenLabsConversationClient:
         self.output_stream = None  # Speaker output stream (separate for instant abort)
         self.running = False
         self._use_respeaker_aec = False  # Set to True in start() if ReSpeaker detected
+        self._aec_debug_last_log = 0  # Timestamp for periodic AEC debug logging
         self.conversation_id = str(uuid.uuid4())
         self.elevenlabs_conversation_id = None
         self.end_reason = "normal"
@@ -285,6 +286,23 @@ class ElevenLabsConversationClient:
             while self.running:
                 # Read audio from microphone
                 audio_data, _ = self.input_stream.read(Config.CHUNK_SIZE)
+                
+                # -------------------------------------------------------------------------
+                # AEC Debug Logging: Show RMS for all 6 channels (every 3 seconds)
+                # -------------------------------------------------------------------------
+                if self._use_respeaker_aec and audio_data.ndim == 2 and audio_data.shape[1] >= Config.RESPEAKER_CHANNELS:
+                    now = time.time()
+                    if now - self._aec_debug_last_log >= 3.0:
+                        self._aec_debug_last_log = now
+                        # Calculate RMS for each channel
+                        ch_rms = []
+                        for ch in range(min(6, audio_data.shape[1])):
+                            rms = np.sqrt(np.mean(audio_data[:, ch].astype(float) ** 2)) / 32768.0
+                            ch_rms.append(rms)
+                        # Format like diagnostic script
+                        is_playing = self.playback_active or self.audio_queue.qsize() > 0
+                        status = "PLAYING" if is_playing else "IDLE"
+                        print(f"📊 [AEC DEBUG] [{status}] Ch0={ch_rms[0]:.4f} | Ch1={ch_rms[1]:.4f} | Ch2={ch_rms[2]:.4f} | Ch3={ch_rms[3]:.4f} | Ch4={ch_rms[4]:.4f} | Ch5={ch_rms[5]:.4f} | Using: Ch{Config.RESPEAKER_AEC_CHANNEL}")
                 
                 # -------------------------------------------------------------------------
                 # ReSpeaker AEC: Extract Channel 0 (AEC-processed audio)
