@@ -134,7 +134,10 @@ class Config:
             "aec_freeze_on_off": 0,
             "echo_on_off": 1,
             "hpf_on_off": 1,
-            "stat_noise_on_off": 1
+            "stat_noise_on_off": 1,
+            "gamma_e": 2.0,
+            "gamma_enl": 3.0,
+            "gamma_etail": 2.0
         })
         
         # Save ReSpeaker config to file for wrapper to use on next restart
