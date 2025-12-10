@@ -294,6 +294,8 @@ class ElevenLabsConversationClient:
                     now = time.time()
                     if now - self._aec_debug_last_log >= 3.0:
                         self._aec_debug_last_log = now
+                        # Debug: Log actual audio data shape and dtype
+                        print(f"🔍 [AEC DEBUG] audio_data shape={audio_data.shape}, dtype={audio_data.dtype}, ndim={audio_data.ndim}")
                         # Calculate RMS for each channel
                         ch_rms = []
                         for ch in range(min(6, audio_data.shape[1])):
