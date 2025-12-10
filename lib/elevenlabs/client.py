@@ -42,6 +42,7 @@ class ElevenLabsConversationClient:
         self.websocket = None
         self.input_stream = None  # Microphone input stream
         self.output_stream = None  # Speaker output stream (separate for instant abort)
+        self.stream = None  # Duplex stream for ReSpeaker (input_stream/output_stream alias to this)
         self.running = False
         self._use_respeaker_aec = False  # Set to True in start() if ReSpeaker detected
         self._aec_debug_last_log = 0  # Timestamp for periodic AEC debug logging
@@ -167,26 +168,44 @@ class ElevenLabsConversationClient:
             except Exception as e:
                 print(f"   ⚠ Could not detect ReSpeaker channels: {e}")
             
-            # Open separate input and output streams for independent control
-            # Input stream: microphone (6 channels for ReSpeaker, 1 channel otherwise)
-            self.input_stream = sd.InputStream(
-                device=self.mic_device_index,
-                samplerate=Config.SAMPLE_RATE,
-                channels=input_channels,
-                dtype='int16',
-                blocksize=Config.CHUNK_SIZE
-            )
-            self.input_stream.start()
-            
-            # Output stream: speaker only (separate from input for clean interruption handling)
-            self.output_stream = sd.OutputStream(
-                device=output_device,
-                samplerate=Config.SAMPLE_RATE,
-                channels=Config.CHANNELS,
-                dtype='int16',
-                blocksize=Config.CHUNK_SIZE
-            )
-            self.output_stream.start()
+            # -------------------------------------------------------------------------
+            # Open audio streams: Duplex for ReSpeaker, separate for other devices
+            # -------------------------------------------------------------------------
+            # ReSpeaker requires a duplex stream for proper multi-channel capture.
+            # Separate streams cause Ch1-5 to be zero (hardware loopback issue).
+            if self._use_respeaker_aec:
+                # Duplex stream: 6-channel input, mono output (fixes AEC reference signal)
+                self.stream = sd.Stream(
+                    device=(self.mic_device_index, output_device),
+                    samplerate=Config.SAMPLE_RATE,
+                    channels=(input_channels, Config.CHANNELS),
+                    dtype='int16',
+                    blocksize=Config.CHUNK_SIZE
+                )
+                self.stream.start()
+                # Alias for compatibility with existing read/write code
+                self.input_stream = self.stream
+                self.output_stream = self.stream
+                print(f"   ✓ ReSpeaker: Using duplex stream for proper AEC loopback")
+            else:
+                # Non-ReSpeaker: Use separate streams (original behavior)
+                self.input_stream = sd.InputStream(
+                    device=self.mic_device_index,
+                    samplerate=Config.SAMPLE_RATE,
+                    channels=input_channels,
+                    dtype='int16',
+                    blocksize=Config.CHUNK_SIZE
+                )
+                self.input_stream.start()
+                
+                self.output_stream = sd.OutputStream(
+                    device=output_device,
+                    samplerate=Config.SAMPLE_RATE,
+                    channels=Config.CHANNELS,
+                    dtype='int16',
+                    blocksize=Config.CHUNK_SIZE
+                )
+                self.output_stream.start()
             
             # Connect to WebSocket
             async with websockets.connect(ws_url, ssl=ssl_context) as websocket:
@@ -934,12 +953,14 @@ class ElevenLabsConversationClient:
         """Stop the conversation"""
         self.running = False
         
-        # Stop and close both input and output streams
+        # Stop and close audio streams
+        # Handle duplex case (ReSpeaker) where input_stream and output_stream are the same object
         if self.input_stream:
             self.input_stream.stop()
             self.input_stream.close()
         
-        if self.output_stream:
+        if self.output_stream and self.output_stream is not self.input_stream:
+            # Only close output_stream if it's a separate object (non-ReSpeaker case)
             self.output_stream.stop()
             self.output_stream.close()
         
