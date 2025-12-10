@@ -960,6 +960,18 @@ class ElevenLabsConversationClient:
                         except asyncio.QueueEmpty:
                             break
                     
+                    # Clear callback queue if using ReSpeaker AEC (callback mode)
+                    callback_cleared = 0
+                    if self._use_respeaker_aec and self._output_queue:
+                        while not self._output_queue.empty():
+                            try:
+                                self._output_queue.get_nowait()
+                                callback_cleared += 1
+                            except queue.Empty:
+                                break
+                        # Also clear any remainder chunk
+                        self._callback_remainder = None
+                    
                     # Reset chunk count for next agent turn
                     self._chunk_count = 0
                     
@@ -967,7 +979,10 @@ class ElevenLabsConversationClient:
                     if self.led_controller:
                         self.led_controller.set_state(self.led_controller.STATE_CONVERSATION)
                     
-                    print(f"   ✓ Cleared {cleared_count} queued audio chunks, ready for user input")
+                    if callback_cleared > 0:
+                        print(f"   ✓ Cleared {cleared_count} queued audio chunks + {callback_cleared} callback chunks, ready for user input")
+                    else:
+                        print(f"   ✓ Cleared {cleared_count} queued audio chunks, ready for user input")
                     self.last_audio_time = time.time()  # Reset silence timer
                 
                 elif data.get('type') == 'agent_response_correction_event' or 'agent_response_correction_event' in data:
