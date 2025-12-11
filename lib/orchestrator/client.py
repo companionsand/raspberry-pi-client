@@ -29,6 +29,7 @@ class OrchestratorClient:
         self.max_reconnect_attempts = 10
         self.reconnect_base_delay = 1.0  # Base delay for exponential backoff
         self.context_manager = context_manager
+        self.token_refresh_task = None  # Background task handle
         
     def is_connection_alive(self):
         """Check if the WebSocket connection is actually alive"""
@@ -59,11 +60,16 @@ class OrchestratorClient:
             pass
         return True
     
-    async def connect(self, is_reconnect=False):
+    async def connect(self, is_reconnect=False) -> tuple:
         """Connect to conversation-orchestrator
         
         Args:
             is_reconnect: True if this is a reconnection attempt
+            
+        Returns:
+            (success, auth_failed) tuple where:
+            - success: True if connected successfully
+            - auth_failed: True if failure was due to authentication (token invalid/expired)
         """
         logger = self.logger
         
@@ -126,7 +132,7 @@ class OrchestratorClient:
                             "is_reconnect": is_reconnect
                         }
                     )
-                return True
+                return (True, False)  # Success, no auth failure
             else:
                 print(f"✗ Connection failed: {data}")
                 if logger:
@@ -138,8 +144,35 @@ class OrchestratorClient:
                             "is_reconnect": is_reconnect
                         }
                     )
-                return False
+                return (False, False)  # Failed, but not necessarily auth
                 
+        except websockets.exceptions.ConnectionClosed as e:
+            # Check if this is an auth failure (1008 policy violation)
+            is_auth_failure = e.code == 1008 and (
+                "Invalid token" in str(e.reason) or 
+                "policy violation" in str(e.reason)
+            )
+            
+            if is_auth_failure:
+                print(f"✗ Authentication failed: {e.reason}")
+            else:
+                print(f"✗ Connection closed: {e.code} - {e.reason}")
+                
+            if logger:
+                logger.error(
+                    "conversation_orchestrator_connection_closed",
+                    extra={
+                        "error": str(e),
+                        "code": e.code,
+                        "reason": e.reason,
+                        "is_auth_failure": is_auth_failure,
+                        "user_id": Config.USER_ID,
+                        "is_reconnect": is_reconnect
+                    },
+                    exc_info=True
+                )
+            return (False, is_auth_failure)
+            
         except Exception as e:
             print(f"✗ Connection error: {e}")
             if logger:
@@ -152,10 +185,10 @@ class OrchestratorClient:
                     },
                     exc_info=True
                 )
-            return False
+            return (False, False)  # Failed, but not necessarily auth
     
     async def reconnect(self):
-        """Attempt to reconnect with exponential backoff"""
+        """Attempt to reconnect with exponential backoff and token refresh on auth failures"""
         if self.reconnect_attempts >= self.max_reconnect_attempts:
             print(f"✗ Max reconnection attempts ({self.max_reconnect_attempts}) reached")
             if self.logger:
@@ -188,7 +221,212 @@ class OrchestratorClient:
         await asyncio.sleep(delay)
         self.reconnect_attempts += 1
         
-        return await self.connect(is_reconnect=True)
+        # Try to connect
+        success, auth_failed = await self.connect(is_reconnect=True)
+        
+        if success:
+            return True
+        
+        # If auth failed, try to refresh token (REACTIVE FALLBACK)
+        if auth_failed:
+            print("🔄 Token invalid/expired, refreshing authentication...")
+            if self.logger:
+                self.logger.info(
+                    "reactive_token_refresh_triggered",
+                    extra={
+                        "trigger": "auth_failure_during_reconnect",
+                        "user_id": Config.USER_ID,
+                        "device_id": Config.DEVICE_ID
+                    }
+                )
+            
+            # Attempt to refresh token
+            refresh_success = await self.refresh_auth_token()
+            
+            if refresh_success:
+                print("✓ Token refreshed, retrying connection...")
+                # Reset reconnection attempts - fresh start with new token
+                self.reconnect_attempts = 0
+                # Try connecting again immediately with new token
+                success, _ = await self.connect(is_reconnect=True)
+                return success
+            else:
+                print("✗ Failed to refresh token")
+                if self.logger:
+                    self.logger.error(
+                        "reactive_token_refresh_failed",
+                        extra={
+                            "user_id": Config.USER_ID,
+                            "device_id": Config.DEVICE_ID
+                        }
+                    )
+                return False
+        
+        # Network or other error - will retry on next attempt
+        return False
+    
+    async def refresh_auth_token(self) -> bool:
+        """
+        Refresh the authentication token proactively.
+        
+        Returns:
+            True if token refreshed successfully, False otherwise
+        """
+        import time
+        from lib.auth import authenticate
+        
+        logger = self.logger
+        
+        if logger:
+            logger.info(
+                "token_refresh_starting",
+                extra={
+                    "user_id": Config.USER_ID,
+                    "device_id": Config.DEVICE_ID
+                }
+            )
+        
+        print("🔄 Refreshing authentication token...")
+        
+        try:
+            # Re-authenticate to get fresh token
+            auth_result = authenticate()
+            
+            if auth_result and auth_result.get("success"):
+                print("✓ Token refreshed successfully")
+                
+                if logger:
+                    logger.info(
+                        "token_refreshed",
+                        extra={
+                            "user_id": Config.USER_ID,
+                            "device_id": Config.DEVICE_ID,
+                            "new_expiry": Config.AUTH_TOKEN_EXPIRES_AT
+                        }
+                    )
+                return True
+            else:
+                print(f"✗ Token refresh failed: {auth_result.get('reason') if auth_result else 'unknown'}")
+                
+                if logger:
+                    logger.error(
+                        "token_refresh_failed",
+                        extra={
+                            "reason": auth_result.get("reason") if auth_result else "unknown",
+                            "user_id": Config.USER_ID,
+                            "device_id": Config.DEVICE_ID
+                        }
+                    )
+                return False
+                
+        except Exception as e:
+            print(f"✗ Token refresh error: {e}")
+            
+            if logger:
+                logger.error(
+                    "token_refresh_error",
+                    extra={
+                        "error": str(e),
+                        "user_id": Config.USER_ID,
+                        "device_id": Config.DEVICE_ID
+                    },
+                    exc_info=True
+                )
+            return False
+    
+    async def start_token_refresh_monitor(self):
+        """
+        Background task to proactively refresh token before expiry.
+        
+        Monitors token expiry and refreshes at 75% of lifetime.
+        Runs continuously until client is stopped.
+        """
+        logger = self.logger
+        
+        if logger:
+            logger.info(
+                "token_refresh_monitor_started",
+                extra={
+                    "user_id": Config.USER_ID,
+                    "device_id": Config.DEVICE_ID
+                }
+            )
+        
+        # Check every 30 seconds
+        check_interval = 30
+        
+        # Refresh when 25% of lifetime remains (minimum 10 minutes buffer)
+        min_buffer_seconds = 600  # 10 minutes minimum
+        
+        while self.running:
+            try:
+                await asyncio.sleep(check_interval)
+                
+                # Check if we have a token and expiry time
+                if not Config.AUTH_TOKEN or not Config.AUTH_TOKEN_EXPIRES_AT:
+                    continue
+                
+                # Calculate time until expiry
+                import time
+                time_until_expiry = Config.AUTH_TOKEN_EXPIRES_AT - time.time()
+                
+                # Calculate 25% of original token lifetime for refresh buffer
+                # Assuming standard 1-hour token, this would be 15 minutes
+                # But we'll use at least 10 minutes as minimum buffer
+                refresh_buffer = max(min_buffer_seconds, 900)  # 15 minutes or 10 minutes minimum
+                
+                # If token expires soon, refresh it
+                if time_until_expiry < refresh_buffer:
+                    if logger:
+                        logger.info(
+                            "token_expiry_approaching",
+                            extra={
+                                "seconds_until_expiry": int(time_until_expiry),
+                                "user_id": Config.USER_ID,
+                                "device_id": Config.DEVICE_ID
+                            }
+                        )
+                    
+                    print(f"⏰ Token expires in {int(time_until_expiry/60)} minutes, refreshing...")
+                    
+                    # Refresh the token
+                    success = await self.refresh_auth_token()
+                    
+                    if not success:
+                        # If refresh fails, we'll try again on next check
+                        if logger:
+                            logger.warning(
+                                "token_refresh_failed_will_retry",
+                                extra={
+                                    "retry_in_seconds": check_interval,
+                                    "seconds_until_expiry": int(time_until_expiry),
+                                    "user_id": Config.USER_ID,
+                                    "device_id": Config.DEVICE_ID
+                                }
+                            )
+                
+            except Exception as e:
+                if logger:
+                    logger.error(
+                        "token_refresh_monitor_error",
+                        extra={
+                            "error": str(e),
+                            "user_id": Config.USER_ID,
+                            "device_id": Config.DEVICE_ID
+                        },
+                        exc_info=True
+                    )
+                # Continue monitoring even if there's an error
+                await asyncio.sleep(check_interval)
+        
+        if logger:
+            logger.info(
+                "token_refresh_monitor_stopped",
+                extra={
+                    "user_id": Config.USER_ID,
+                    "device_id": Config.DEVICE_ID
+                }
+            )
     
     async def send_reactive(self):
         """Send reactive conversation request with trace context"""

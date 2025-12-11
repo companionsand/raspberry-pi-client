@@ -43,6 +43,7 @@ class Config:
     # These will be populated after device authentication
     USER_ID = None
     AUTH_TOKEN = None  # JWT token for WebSocket authentication
+    AUTH_TOKEN_EXPIRES_AT = None  # Unix timestamp when token expires (decoded from JWT)
     
     # API Keys (fetched from backend)
     ELEVENLABS_API_KEY = None

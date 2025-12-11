@@ -481,11 +481,17 @@ class KinClient:
         )
         
         # Connect to conversation-orchestrator
-        connected = await self.orchestrator_client.connect()
+        connected, _ = await self.orchestrator_client.connect()
         if not connected:
             self.led_controller.set_state(LEDController.STATE_ERROR)
             print("✗ Failed to connect to conversation-orchestrator")
             return
+        
+        # Start background token refresh monitor
+        print("✓ Starting token refresh monitor...")
+        self.orchestrator_client.token_refresh_task = asyncio.create_task(
+            self.orchestrator_client.start_token_refresh_monitor()
+        )
         
         # Record successful connection
         if TELEMETRY_AVAILABLE:
@@ -862,6 +868,14 @@ class KinClient:
         """Clean up resources gracefully"""
         print("\n🧹 Cleaning up...")
         self.running = False
+        
+        # Stop token refresh monitor
+        if self.orchestrator_client and self.orchestrator_client.token_refresh_task:
+            self.orchestrator_client.token_refresh_task.cancel()
+            try:
+                await self.orchestrator_client.token_refresh_task
+            except asyncio.CancelledError:
+                pass
         
         # Stop context manager
         if self.context_manager:

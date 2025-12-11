@@ -18,6 +18,9 @@ python-dotenv>=1.0.0
 cryptography>=41.0.0
 requests>=2.31.0
 
+# JWT token decoding for token expiry tracking
+PyJWT>=2.8.0
+
 # Async HTTP client for WiFi-based geolocation
 aiohttp>=3.9.0
 
