@@ -106,6 +106,7 @@ class WakeWordDetector:
         self._scribe_verifications_total = 0
         self._scribe_verifications_passed = 0
         self._scribe_verifications_failed = 0
+        self._scribe_empty_transcripts = 0
         self._scribe_api_errors = 0
         
         # Initialize OpenTelemetry metrics (if available)
@@ -127,6 +128,11 @@ class WakeWordDetector:
                     "scribe_verifications_failed": meter.create_counter(
                         name="scribe_verifications_failed_total",
                         description="Scribe v2 verifications that failed",
+                        unit="1",
+                    ),
+                    "scribe_empty_transcripts": meter.create_counter(
+                        name="scribe_empty_transcripts_total",
+                        description="Scribe v2 verifications with empty transcript",
                         unit="1",
                     ),
                     "scribe_api_errors": meter.create_counter(
@@ -828,8 +834,25 @@ class WakeWordDetector:
                         )
                     return False
             else:
-                print("   ⚠ Scribe verification: No transcript received")
-                return True  # Fail-open: accept wake word if no transcript
+                self._scribe_empty_transcripts += 1
+                
+                # Emit telemetry metric
+                if self._metrics:
+                    self._metrics["scribe_empty_transcripts"].add(1, {
+                        "device_id": Config.DEVICE_ID,
+                    })
+                
+                if self.logger:
+                    self.logger.warning(
+                        "scribe_verification_empty_transcript",
+                        extra={
+                            "user_id": Config.USER_ID,
+                            "device_id": Config.DEVICE_ID
+                        }
+                    )
+                
+                print("   ⚠ Scribe verification: No transcript received - rejecting")
+                return False  # Fail-closed: reject wake word if no transcript
                 
         except Exception as e:
             self._scribe_api_errors += 1
