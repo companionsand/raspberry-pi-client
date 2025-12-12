@@ -44,3 +44,5 @@ onnxruntime>=1.16.0
 # ElevenLabs Scribe v2 for wake word verification
 elevenlabs>=1.0.0
 
+# ReSpeaker hardware control
+pyusb>=1.2.1  # For ReSpeaker tuning via USB HID

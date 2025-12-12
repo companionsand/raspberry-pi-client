@@ -141,8 +141,10 @@ class Config:
             "gamma_etail": 2.0
         })
         
-        # Save ReSpeaker config to file for wrapper to use on next restart
-        cls._save_respeaker_config()
+        # Note: ReSpeaker config is now applied by the Python client on startup (main.py)
+        # We no longer need to save to file for the wrapper to read on next boot
+        # Keeping _save_respeaker_config() method for backward compatibility / debugging
+        # cls._save_respeaker_config()
         
         # Note: SAMPLE_RATE is hardcoded (16000 Hz) - not configurable
         

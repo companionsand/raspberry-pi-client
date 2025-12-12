@@ -471,6 +471,28 @@ class KinClient:
         else:
             print("⚠️  Location data unavailable - continuing without location")
         
+        # Initialize ReSpeaker hardware tuning if configuration is available
+        print("🔧 Checking for ReSpeaker hardware...")
+        if Config.RESPEAKER_CONFIG:
+            from lib.audio.respeaker import ReSpeakerController
+            
+            respeaker = ReSpeakerController(
+                config=Config.RESPEAKER_CONFIG,
+                logger=self.logger
+            )
+            
+            if respeaker.is_available():
+                print("✓ ReSpeaker detected, applying tuning parameters...")
+                if respeaker.initialize():
+                    print("✓ ReSpeaker initialized successfully")
+                else:
+                    print("⚠️  Some ReSpeaker parameters failed to apply - check logs")
+            else:
+                print("⚠️  ReSpeaker tuning tools not available")
+                print("   Install: cd ~ && git clone https://github.com/respeaker/usb_4_mic_array.git")
+        else:
+            print("⚠️  No ReSpeaker configuration available from backend")
+        
         # Detect audio devices
         self.mic_device_index, self.speaker_device_index, self.has_hardware_aec = get_audio_devices()
         
