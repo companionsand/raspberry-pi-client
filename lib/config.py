@@ -55,6 +55,7 @@ class Config:
     LED_ENABLED = None
     LED_BRIGHTNESS = 60  # Default, may be overridden
     WAKE_WORD_ASR_SIMILARITY_THRESHOLD = 0.6  # Default similarity threshold for wake word matching
+    SPEAKER_VOLUME_PERCENT = 50  # Default speaker volume (0-100)
     
     # Default reactive agent (cached from backend for faster wake word response)
     DEFAULT_REACTIVE_AGENT_ID = None
@@ -113,6 +114,7 @@ class Config:
         cls.LED_ENABLED = system_config.get("led_enabled", "true").lower() == "true"
         cls.OTEL_ENABLED = system_config.get("otel_enabled", "true").lower() == "true"
         cls.WAKE_WORD_ASR_SIMILARITY_THRESHOLD = float(system_config.get("wake_word_asr_similarity_threshold", "0.6"))
+        cls.SPEAKER_VOLUME_PERCENT = int(system_config.get("speaker_volume_percent", "50"))
         
         # Set default reactive agent (for fast wake word response)
         if default_reactive_agent:
@@ -153,6 +155,7 @@ class Config:
         print(f"   Sample Rate: {cls.SAMPLE_RATE} Hz")
         print(f"   OTEL Enabled: {cls.OTEL_ENABLED}")
         print(f"   LED Enabled: {cls.LED_ENABLED}")
+        print(f"   Speaker Volume: {cls.SPEAKER_VOLUME_PERCENT}%")
         print(f"   Wake Word ASR Similarity Threshold: {cls.WAKE_WORD_ASR_SIMILARITY_THRESHOLD}")
         if cls.DEFAULT_REACTIVE_AGENT_ID:
             print(f"   Default Reactive Agent: Cached (fast wake word response)")

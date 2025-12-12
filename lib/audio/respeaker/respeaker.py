@@ -50,9 +50,61 @@ class ReSpeakerController:
         """Check if ReSpeaker tools are available"""
         return os.path.exists(self.TUNING_SCRIPT)
     
-    def initialize(self) -> bool:
+    def set_speaker_volume(self, volume_percent: int) -> bool:
         """
-        Apply all ReSpeaker tuning parameters.
+        Set ReSpeaker speaker volume using ALSA amixer.
+        
+        Args:
+            volume_percent: Volume level (0-100)
+            
+        Returns:
+            True if volume set successfully, False otherwise
+        """
+        try:
+            # Clamp volume to valid range
+            volume_percent = max(0, min(100, volume_percent))
+            
+            self.logger.info("Setting ReSpeaker speaker volume to %d%%", volume_percent)
+            
+            # Set volume using amixer
+            # Find the ReSpeaker card number (usually card 3 on RPI)
+            # We'll try to find it by name first
+            list_result = subprocess.run(
+                ["amixer", "scontents"],
+                capture_output=True,
+                text=True,
+                timeout=5
+            )
+            
+            # Set volume on the Speaker control
+            # Format: amixer -c <card> set <control> <volume>%
+            result = subprocess.run(
+                ["amixer", "set", "Speaker", f"{volume_percent}%"],
+                capture_output=True,
+                text=True,
+                timeout=5
+            )
+            
+            if result.returncode != 0:
+                self.logger.warning("Failed to set speaker volume: %s", result.stderr)
+                return False
+            
+            self.logger.info("✓ Speaker volume set to %d%%", volume_percent)
+            return True
+            
+        except subprocess.TimeoutExpired:
+            self.logger.error("Timeout setting speaker volume")
+            return False
+        except Exception as e:
+            self.logger.error("Error setting speaker volume: %s", e)
+            return False
+    
+    def initialize(self, speaker_volume_percent: Optional[int] = None) -> bool:
+        """
+        Apply all ReSpeaker tuning parameters and optionally set speaker volume.
+        
+        Args:
+            speaker_volume_percent: Optional speaker volume (0-100). If provided, sets speaker volume via ALSA.
         
         Returns:
             True if all parameters applied successfully, False otherwise
@@ -90,6 +142,11 @@ class ReSpeakerController:
         success &= self._apply_parameter("GAMMA_E", self.config.get("gamma_e", 2.0))
         success &= self._apply_parameter("GAMMA_ENL", self.config.get("gamma_enl", 3.0))
         success &= self._apply_parameter("GAMMA_ETAIL", self.config.get("gamma_etail", 2.0))
+        
+        # 8. Set speaker volume if provided
+        if speaker_volume_percent is not None:
+            volume_success = self.set_speaker_volume(speaker_volume_percent)
+            success &= volume_success
         
         if success:
             self.logger.info("ReSpeaker initialization complete")

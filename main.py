@@ -483,8 +483,9 @@ class KinClient:
             
             if respeaker.is_available():
                 print("✓ ReSpeaker detected, applying tuning parameters...")
-                if respeaker.initialize():
+                if respeaker.initialize(speaker_volume_percent=Config.SPEAKER_VOLUME_PERCENT):
                     print("✓ ReSpeaker initialized successfully")
+                    print(f"   Speaker volume set to {Config.SPEAKER_VOLUME_PERCENT}%")
                 else:
                     print("⚠️  Some ReSpeaker parameters failed to apply - check logs")
             else:
