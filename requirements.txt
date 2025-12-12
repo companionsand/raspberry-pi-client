@@ -44,3 +44,5 @@ onnxruntime>=1.16.0
 # ElevenLabs Scribe v2 for wake word verification
 elevenlabs>=1.0.0
 
+# Note: ReSpeaker hardware control requires python3-usb system package
+# Install via: sudo apt install python3-usb (handled by install.sh)
