@@ -104,9 +104,9 @@ class ReSpeakerController:
             True if successfully applied and verified, False otherwise
         """
         try:
-            # Apply the parameter
+            # Apply the parameter (use python3 explicitly - tuning.py needs Python 3 + pyusb)
             result = subprocess.run(
-                ["sudo", "python", self.TUNING_SCRIPT, param_name, str(param_value)],
+                ["sudo", "python3", self.TUNING_SCRIPT, param_name, str(param_value)],
                 capture_output=True,
                 text=True,
                 timeout=5
@@ -118,7 +118,7 @@ class ReSpeakerController:
             
             # Verify it was set correctly
             verify_result = subprocess.run(
-                ["sudo", "python", self.TUNING_SCRIPT, param_name],
+                ["sudo", "python3", self.TUNING_SCRIPT, param_name],
                 capture_output=True,
                 text=True,
                 timeout=5
