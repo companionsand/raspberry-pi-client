@@ -131,7 +131,12 @@ class ReSpeakerController:
             )
             
             if verify_result.returncode == 0:
-                current_value = verify_result.stdout.strip().split('\n')[-1].strip()
+                output = verify_result.stdout.strip().split('\n')[-1].strip()
+                # Parse output format: "PARAMNAME: value" -> extract just "value"
+                if ': ' in output:
+                    current_value = output.split(': ', 1)[1].strip()
+                else:
+                    current_value = output
                 
                 # For numeric values, compare with tolerance
                 if self._values_match(current_value, str(param_value)):
@@ -157,6 +162,16 @@ class ReSpeakerController:
         try:
             actual_float = float(actual)
             expected_float = float(expected)
+            
+            # For integer values (1 vs 1.0), use exact comparison
+            if actual_float == expected_float:
+                return True
+            
+            # For floating point values, use tolerance-based comparison
+            # Avoid division by zero
+            if expected_float == 0:
+                return abs(actual_float) <= tolerance
+            
             return abs(actual_float - expected_float) <= abs(expected_float * tolerance)
         except ValueError:
             # Not numeric, do string comparison
