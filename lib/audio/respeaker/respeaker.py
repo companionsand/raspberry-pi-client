@@ -10,11 +10,17 @@ class ReSpeakerController:
     """
     Controls ReSpeaker 4-Mic Array tuning parameters via USB.
     
-    Uses the tuning.py script from https://github.com/respeaker/usb_4_mic_array
-    to apply hardware DSP parameters for acoustic echo cancellation and gain control.
+    Uses the vendored tuning.py script (Python 3.13 compatible) from the 
+    ReSpeaker usb_4_mic_array repository to apply hardware DSP parameters 
+    for acoustic echo cancellation and gain control.
     """
     
-    TUNING_SCRIPT = os.path.expanduser("~/usb_4_mic_array/tuning.py")
+    # Use vendored tuning script (located in same package)
+    TUNING_SCRIPT = os.path.join(
+        os.path.dirname(__file__), 
+        "usb_4_mic_array", 
+        "tuning.py"
+    )
     
     # Default configuration (matches wrapper defaults)
     DEFAULT_CONFIG = {

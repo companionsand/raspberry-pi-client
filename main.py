@@ -488,8 +488,7 @@ class KinClient:
                 else:
                     print("⚠️  Some ReSpeaker parameters failed to apply - check logs")
             else:
-                print("⚠️  ReSpeaker tuning tools not available")
-                print("   Install: cd ~ && git clone https://github.com/respeaker/usb_4_mic_array.git")
+                print("⚠️  ReSpeaker tuning tools not available (this should not happen)")
         else:
             print("⚠️  No ReSpeaker configuration available from backend")
         
