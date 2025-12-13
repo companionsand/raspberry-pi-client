@@ -177,7 +177,6 @@ class Config:
         print(f"   Sample Rate: {cls.SAMPLE_RATE} Hz")
         print(f"   OTEL Enabled: {cls.OTEL_ENABLED}")
         print(f"   LED Enabled: {cls.LED_ENABLED}")
-        print(f"   Speaker Volume: {cls.SPEAKER_VOLUME_PERCENT}%")
         print(f"   Wake Word ASR Similarity Threshold: {cls.WAKE_WORD_ASR_SIMILARITY_THRESHOLD}")
         if cls.DEFAULT_REACTIVE_AGENT_ID:
             print(f"   Default Reactive Agent: Cached (fast wake word response)")

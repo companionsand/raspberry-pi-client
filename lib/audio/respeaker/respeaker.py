@@ -143,11 +143,6 @@ class ReSpeakerController:
         success &= self._apply_parameter("GAMMA_ENL", self.config.get("gamma_enl", 3.0))
         success &= self._apply_parameter("GAMMA_ETAIL", self.config.get("gamma_etail", 2.0))
         
-        # 8. Set speaker volume if provided
-        if speaker_volume_percent is not None:
-            volume_success = self.set_speaker_volume(speaker_volume_percent)
-            success &= volume_success
-        
         if success:
             self.logger.info("ReSpeaker initialization complete")
         else:
