@@ -34,13 +34,14 @@ except ImportError:
 class WakeWordDetector:
     """Porcupine-based wake word detection with telemetry"""
     
-    def __init__(self, mic_device_index=None, orchestrator_client=None):
+    def __init__(self, mic_device_index=None, orchestrator_client=None, event_loop=None):
         """
         Initialize wake word detector.
         
         Args:
             mic_device_index: Audio device index for microphone (None for default)
             orchestrator_client: OrchestratorClient for sending detection data (optional)
+            event_loop: Event loop that orchestrator_client is bound to (required for thread-safe async calls)
         """
         self.porcupine = None
         self.audio_stream = None
@@ -48,6 +49,7 @@ class WakeWordDetector:
         self.running = False
         self.mic_device_index = mic_device_index
         self.orchestrator_client = orchestrator_client
+        self.event_loop = event_loop  # Store main event loop for thread-safe coroutine submission
         self.logger = Config.LOGGER
         self._use_respeaker_aec = False  # Set to True in start() if ReSpeaker detected
         
@@ -582,7 +584,7 @@ class WakeWordDetector:
                 
                 # Run async Scribe verification synchronously (blocks audio callback)
                 try:
-                    # Create new event loop for this thread if needed
+                    # Create temporary event loop for Scribe verification (doesn't touch orchestrator)
                     try:
                         loop = asyncio.get_event_loop()
                     except RuntimeError:
@@ -594,17 +596,48 @@ class WakeWordDetector:
                         loop = asyncio.new_event_loop()
                         asyncio.set_event_loop(loop)
                     
-                    # Run verification synchronously
+                    # Run verification synchronously (Scribe only, doesn't use orchestrator)
                     verified = loop.run_until_complete(self._verify_with_scribe(verification_audio))
                     
-                    # Send detection data async (fire and forget - don't block wake word)
-                    loop.run_until_complete(self._send_detection_data_async(
-                        wake_word_detector_result=True,  # Picovoice detected
-                        verification_audio=verification_audio,
-                        asr_result=verified,  # Scribe result
-                        transcript=self._last_scribe_transcript,
-                        asr_error=self._last_scribe_error
-                    ))
+                    # Send detection data and WAIT for it to complete (including receiving detection_id)
+                    # This ensures wake_word_detection_id is available before conversation starts
+                    if self.event_loop and self.orchestrator_client:
+                        future = asyncio.run_coroutine_threadsafe(
+                            self._send_detection_data_async(
+                                wake_word_detector_result=True,  # Picovoice detected
+                                verification_audio=verification_audio,
+                                asr_result=verified,  # Scribe result
+                                transcript=self._last_scribe_transcript,
+                                asr_error=self._last_scribe_error
+                            ),
+                            self.event_loop
+                        )
+                        # CRITICAL: Wait for detection data to be sent and ID to be received
+                        # This blocks the audio thread but ensures no race condition
+                        try:
+                            future.result(timeout=6.0)  # Wait up to 6s (allows 5s server response + 1s buffer)
+                        except Exception as e:
+                            if self.logger and Config.SHOW_WAKE_WORD_DEBUG_LOGS:
+                                self.logger.warning(
+                                    "[WW DEBUG] send_wake_word_detection failed or timed out",
+                                    extra={
+                                        "error": str(e),
+                                        "error_type": type(e).__name__,
+                                        "user_id": Config.USER_ID,
+                                        "device_id": Config.DEVICE_ID
+                                    }
+                                )
+                    else:
+                        if self.logger and Config.SHOW_WAKE_WORD_DEBUG_LOGS:
+                            self.logger.warning(
+                                "[WW DEBUG] Cannot send detection data: event_loop or orchestrator_client not available",
+                                extra={
+                                    "has_event_loop": self.event_loop is not None,
+                                    "has_orchestrator": self.orchestrator_client is not None,
+                                    "user_id": Config.USER_ID,
+                                    "device_id": Config.DEVICE_ID
+                                }
+                            )
                     
                     if verified:
                         print(f"✓ Scribe verification PASSED - accepting wake word")
@@ -636,26 +669,33 @@ class WakeWordDetector:
                         
                 except Exception as e:
                     print(f"⚠ Scribe verification exception: {e} - accepting wake word (fail-open)")
+                    
+                    # Send detection data with exception error and WAIT for completion
+                    if self.event_loop and self.orchestrator_client:
+                        future = asyncio.run_coroutine_threadsafe(
+                            self._send_detection_data_async(
+                                wake_word_detector_result=True,
+                                verification_audio=verification_audio if 'verification_audio' in locals() else [],
+                                asr_result=None,  # Error occurred
+                                transcript=None,
+                                asr_error=str(e)
+                            ),
+                            self.event_loop
+                        )
+                        try:
+                            future.result(timeout=6.0)
+                        except Exception as send_error:
+                            if self.logger and Config.SHOW_WAKE_WORD_DEBUG_LOGS:
+                                self.logger.warning(
+                                    "[WW DEBUG] send_wake_word_detection failed in exception handler",
+                                    extra={
+                                        "error": str(send_error),
+                                        "user_id": Config.USER_ID,
+                                        "device_id": Config.DEVICE_ID
+                                    }
+                                )
+                    
                     self.detected = True
-                    
-                    # Send detection data with exception error
-                    try:
-                        loop = asyncio.get_event_loop()
-                    except RuntimeError:
-                        loop = asyncio.new_event_loop()
-                        asyncio.set_event_loop(loop)
-                    
-                    if loop.is_running():
-                        loop = asyncio.new_event_loop()
-                        asyncio.set_event_loop(loop)
-                    
-                    loop.run_until_complete(self._send_detection_data_async(
-                        wake_word_detector_result=True,
-                        verification_audio=verification_audio if 'verification_audio' in locals() else [],
-                        asr_result=None,  # Error occurred
-                        transcript=None,
-                        asr_error=str(e)
-                    ))
                     
                     if self.logger:
                         self.logger.info(
@@ -670,30 +710,38 @@ class WakeWordDetector:
                         )
             else:
                 # Scribe verification disabled or no API key - accept immediately
-                self.detected = True
                 
                 # Send detection data without Scribe verification
                 # Extract audio from ring buffer
                 buffer_list = list(self._ring_buffer)
                 verification_audio = buffer_list[-int(self._frames_per_second * 1.7):] if len(buffer_list) > 0 else []
                 
-                try:
-                    loop = asyncio.get_event_loop()
-                except RuntimeError:
-                    loop = asyncio.new_event_loop()
-                    asyncio.set_event_loop(loop)
+                # Send detection data and WAIT for completion to get detection_id
+                if self.event_loop and self.orchestrator_client:
+                    future = asyncio.run_coroutine_threadsafe(
+                        self._send_detection_data_async(
+                            wake_word_detector_result=True,
+                            verification_audio=verification_audio,
+                            asr_result=None,  # Scribe not enabled
+                            transcript=None,
+                            asr_error="Scribe verification disabled"
+                        ),
+                        self.event_loop
+                    )
+                    try:
+                        future.result(timeout=6.0)
+                    except Exception as e:
+                        if self.logger and Config.SHOW_WAKE_WORD_DEBUG_LOGS:
+                            self.logger.warning(
+                                "[WW DEBUG] send_wake_word_detection failed (Scribe disabled path)",
+                                extra={
+                                    "error": str(e),
+                                    "user_id": Config.USER_ID,
+                                    "device_id": Config.DEVICE_ID
+                                }
+                            )
                 
-                if loop.is_running():
-                    loop = asyncio.new_event_loop()
-                    asyncio.set_event_loop(loop)
-                
-                loop.run_until_complete(self._send_detection_data_async(
-                    wake_word_detector_result=True,
-                    verification_audio=verification_audio,
-                    asr_result=None,  # Scribe not enabled
-                    transcript=None,
-                    asr_error="Scribe verification disabled"
-                ))
+                self.detected = True
                 
                 if self.logger:
                     self.logger.info(

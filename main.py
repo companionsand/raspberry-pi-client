@@ -496,10 +496,14 @@ class KinClient:
         # Detect audio devices
         self.mic_device_index, self.speaker_device_index, self.has_hardware_aec = get_audio_devices()
         
-        # Initialize wake word detector with detected microphone
+        # Get the current event loop for thread-safe async operations
+        current_loop = asyncio.get_running_loop()
+        
+        # Initialize wake word detector with detected microphone and event loop
         self.wake_detector = WakeWordDetector(
             mic_device_index=self.mic_device_index,
-            orchestrator_client=self.orchestrator_client
+            orchestrator_client=self.orchestrator_client,
+            event_loop=current_loop  # Pass event loop for thread-safe coroutine submission
         )
         
         # Connect to conversation-orchestrator
