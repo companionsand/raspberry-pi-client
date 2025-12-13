@@ -28,13 +28,25 @@
 - States: BOOT, IDLE, WAKE_WORD_DETECTED, CONVERSATION, ERROR, OFF
 - Animated patterns designed for elderly users
 
-### 4. **Signal Handling**
+### 4. **Voice Feedback System**
+
+- Voice guidance during device startup and setup
+- Pre-recorded voice messages for key events:
+  - "Starting up" when client initializes
+  - "No internet detected, entering setup mode" when connectivity fails
+  - "Device not paired, entering setup mode" when pairing is required
+  - "Join Kin underscore Setup WiFi and enter WiFi credentials" when HTTP server is ready
+- Graceful degradation if voice message files are missing
+- Uses blocking playback to ensure messages are heard
+- Compatible with all ALSA audio devices
+
+### 5. **Signal Handling**
 
 - `SIGUSR1`: Terminates current conversation only (graceful)
 - `SIGINT/SIGTERM`: Full shutdown (graceful if not in conversation)
 - Proper cleanup in all cases
 
-### 5. **Modular Architecture**
+### 6. **Modular Architecture**
 
 - Clean separation of concerns
 - Easy to test and maintain
@@ -45,6 +57,8 @@
 ```
 raspberry-pi-client/
 ├── main.py               # Entry point with KinClient
+├── scripts/
+│   └── generate_voice_messages.py  # Voice message generation helper
 └── lib/
     ├── __init__.py
     ├── config.py         # Configuration from env vars
@@ -53,6 +67,15 @@ raspberry-pi-client/
     │   ├── __init__.py
     │   ├── device_detection.py  # ALSA device detection
     │   └── led_controller.py    # LED visual feedback
+    ├── voice_feedback/
+    │   ├── __init__.py
+    │   ├── voice_feedback.py    # Voice feedback system
+    │   └── voice_messages/      # Pre-recorded voice message files
+    │       ├── README.md         # Audio format specifications
+    │       ├── startup.wav
+    │       ├── no_internet.wav
+    │       ├── device_not_paired.wav
+    │       └── wifi_setup_ready.wav
     ├── wake_word/
     │   ├── __init__.py
     │   └── detector.py   # Porcupine wake word detection
@@ -62,6 +85,13 @@ raspberry-pi-client/
     ├── orchestrator/
     │   ├── __init__.py
     │   └── client.py     # Orchestrator WebSocket client
+    ├── wifi_setup/
+    │   ├── __init__.py
+    │   ├── manager.py    # WiFi setup orchestration
+    │   ├── access_point.py
+    │   ├── http_server.py
+    │   ├── network_connector.py
+    │   └── connectivity.py
     └── telemetry/
         ├── __init__.py
         └── telemetry.py  # OpenTelemetry setup
@@ -100,6 +130,53 @@ Optional configuration:
 
 Note: Most settings (API keys, wake word, LED settings) are fetched from backend after authentication.
 
+## Voice Feedback Setup
+
+The voice feedback system uses pre-recorded WAV files to provide voice guidance. To set up voice feedback:
+
+### Option 1: Generate Voice Message Files (Recommended)
+
+Use the provided script to generate all voice message files using ElevenLabs API:
+
+```bash
+# Set your ElevenLabs API key
+export ELEVENLABS_API_KEY="your-api-key-here"
+
+# Generate voice message files
+python scripts/generate_voice_messages.py
+
+# Or specify a custom voice:
+python scripts/generate_voice_messages.py --voice your-voice-id
+```
+
+### Option 2: Manual Recording
+
+Record your own voice messages and convert them to the required format:
+
+```bash
+# Required format: 16kHz, mono, 16-bit PCM WAV
+ffmpeg -i input.mp3 -ar 16000 -ac 1 -sample_fmt s16 lib/voice_feedback/voice_messages/startup.wav
+```
+
+### Required Voice Message Files
+
+- `startup.wav` - "Starting up"
+- `no_internet.wav` - "No internet detected, entering setup mode"
+- `device_not_paired.wav` - "Device not paired, entering setup mode"
+- `wifi_setup_ready.wav` - "Join Kin underscore Setup WiFi and enter WiFi credentials"
+
+### Testing Voice Message Files
+
+```bash
+# Verify audio format
+file lib/voice_feedback/voice_messages/startup.wav
+
+# Play voice message file
+aplay lib/voice_feedback/voice_messages/startup.wav
+```
+
+**Note**: If voice message files are missing, the system will continue to work normally but without voice guidance. Warnings will be logged for each missing file.
+
 ## Telemetry Details
 
 The telemetry system provides comprehensive observability:
@@ -116,11 +193,12 @@ The telemetry system provides comprehensive observability:
 To test the client:
 
 1. **Audio detection**: Verify ReSpeaker is detected or fallback works
-2. **Wake word**: Test wake word detection with detected microphone
-3. **Conversation**: Verify full conversation flow works
-4. **Signals**: Test SIGUSR1 (conversation only) and SIGINT (full shutdown)
-5. **LEDs**: Verify LED states if ReSpeaker is available
-6. **Telemetry**: Check OTEL traces in your observability backend
+2. **Voice feedback**: Test that voice messages play during startup and setup
+3. **Wake word**: Test wake word detection with detected microphone
+4. **Conversation**: Verify full conversation flow works
+5. **Signals**: Test SIGUSR1 (conversation only) and SIGINT (full shutdown)
+6. **LEDs**: Verify LED states if ReSpeaker is available
+7. **Telemetry**: Check OTEL traces in your observability backend
 
 ## Future Enhancements
 

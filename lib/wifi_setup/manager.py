@@ -30,7 +30,8 @@ class WiFiSetupManager:
         ap_interface: str = "wlan0",
         http_port: int = 8080,
         max_retries: int = 5,
-        led_controller = None
+        led_controller = None,
+        voice_feedback = None
     ):
         self.ap_ssid = ap_ssid
         self.ap_password = ap_password
@@ -38,6 +39,7 @@ class WiFiSetupManager:
         self.http_port = http_port
         self.max_retries = max_retries
         self.led_controller = led_controller
+        self.voice_feedback = voice_feedback
         
         self.access_point = AccessPoint(ap_ssid, ap_interface, ap_password)
         self.http_server = SetupHTTPServer(http_port, ap_interface, ap_ssid, ap_password)
@@ -81,6 +83,10 @@ class WiFiSetupManager:
                     self.led_controller.set_state(LEDController.STATE_WIFI_SETUP)
                 
                 logger.info(f"WiFi setup active. Connect to '{self.ap_ssid}' (password: {self.ap_password}) and go to http://192.168.4.1:{self.http_port}")
+                
+                # Play voice feedback to guide user
+                if self.voice_feedback:
+                    self.voice_feedback.play("wifi_setup_ready")
                 
                 # Wait for user to submit configuration
                 success = await self._wait_for_configuration()

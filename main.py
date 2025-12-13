@@ -42,6 +42,7 @@ logging.basicConfig(
 from lib.config import Config
 from lib.auth import authenticate
 from lib.audio import get_audio_devices, LEDController
+from lib.voice_feedback import VoiceFeedback
 from lib.wake_word import WakeWordDetector
 from lib.orchestrator import OrchestratorClient
 from lib.elevenlabs import ElevenLabsConversationClient
@@ -88,6 +89,7 @@ class KinClient:
         self.context_manager = ContextManager()
         self.orchestrator_client = OrchestratorClient(context_manager=self.context_manager)
         self.led_controller = None
+        self.voice_feedback = None  # Will be initialized after speaker detection
         self.running = True
         self.conversation_active = False
         self.awaiting_agent_details = False
@@ -178,6 +180,12 @@ class KinClient:
         print("🎙️  Kin AI Raspberry Pi Client (v2)")
         print("="*60)
         
+        # Initialize voice feedback early (will work without speaker_device_index)
+        self.voice_feedback = VoiceFeedback(speaker_device_index=None)
+        
+        # Play startup sound
+        self.voice_feedback.play("startup")
+        
         # Validate configuration
         Config.validate()
         
@@ -204,6 +212,10 @@ class KinClient:
             if not has_internet:
                 print("✗ No internet connection detected")
                 
+                # Play voice feedback
+                if self.voice_feedback:
+                    self.voice_feedback.play("no_internet")
+                
                 # WiFi setup + pairing loop - retry if pairing fails
                 max_setup_attempts = 3
                 setup_attempt = 0
@@ -214,8 +226,11 @@ class KinClient:
                     print(f"\n🔧 Entering WiFi setup mode (attempt {setup_attempt}/{max_setup_attempts})...")
                     print("="*60)
                     
-                    # Start WiFi setup manager with LED controller
-                    wifi_manager = WiFiSetupManager(led_controller=self.led_controller)
+                    # Start WiFi setup manager with LED controller and voice feedback
+                    wifi_manager = WiFiSetupManager(
+                        led_controller=self.led_controller,
+                        voice_feedback=self.voice_feedback
+                    )
                     pairing_code, success = await wifi_manager.start_setup_mode()
                     
                     if success and pairing_code:
@@ -316,6 +331,10 @@ class KinClient:
                         print("⚠️  Device is not paired with a user")
                         print("   Entering WiFi setup mode to collect pairing code...")
                         
+                        # Play voice feedback
+                        if self.voice_feedback:
+                            self.voice_feedback.play("device_not_paired")
+                        
                         # Delete existing WiFi connection before entering setup mode
                         # User will provide WiFi credentials anyway, so no need to keep old connection
                         print("   Cleaning up existing WiFi connection...")
@@ -354,8 +373,11 @@ class KinClient:
                             print(f"\n🔧 Entering WiFi setup mode (attempt {setup_attempt}/{max_setup_attempts})...")
                             print("="*60)
                             
-                            # Start WiFi setup manager with LED controller
-                            wifi_manager = WiFiSetupManager(led_controller=self.led_controller)
+                            # Start WiFi setup manager with LED controller and voice feedback
+                            wifi_manager = WiFiSetupManager(
+                                led_controller=self.led_controller,
+                                voice_feedback=self.voice_feedback
+                            )
                             pairing_code, success = await wifi_manager.start_setup_mode()
                             
                             if success and pairing_code:
@@ -495,6 +517,10 @@ class KinClient:
         
         # Detect audio devices
         self.mic_device_index, self.speaker_device_index, self.has_hardware_aec = get_audio_devices()
+        
+        # Update voice feedback with detected speaker device
+        if self.voice_feedback:
+            self.voice_feedback.speaker_device_index = self.speaker_device_index
         
         # Initialize wake word detector with detected microphone
         # (No event loop needed anymore - uses synchronous HTTP!)
