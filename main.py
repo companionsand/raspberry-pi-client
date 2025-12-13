@@ -180,11 +180,8 @@ class KinClient:
         print("🎙️  Kin AI Raspberry Pi Client (v2)")
         print("="*60)
         
-        # Initialize voice feedback early (will work without speaker_device_index)
+        # Initialize voice feedback early (speaker device will be set after detection)
         self.voice_feedback = VoiceFeedback(speaker_device_index=None)
-        
-        # Play startup sound
-        self.voice_feedback.play("startup")
         
         # Validate configuration
         Config.validate()
@@ -521,6 +518,10 @@ class KinClient:
         # Update voice feedback with detected speaker device
         if self.voice_feedback:
             self.voice_feedback.speaker_device_index = self.speaker_device_index
+        
+        # Play startup message now that speaker device is configured
+        if self.voice_feedback:
+            self.voice_feedback.play("startup")
         
         # Initialize wake word detector with detected microphone
         # (No event loop needed anymore - uses synchronous HTTP!)
