@@ -820,6 +820,8 @@ class OrchestratorClient:
             print(f"✗ Invalid WebSocket URL format: {ws_url}")
             return None
         
+        print(f"[WW DEBUG] Constructed HTTP URL: {http_url}")
+        
         # Encode audio to base64
         audio_base64 = base64.b64encode(audio_data).decode('utf-8')
         
@@ -844,12 +846,15 @@ class OrchestratorClient:
         # Retry with exponential backoff
         for attempt in range(retry_attempts):
             try:
+                print(f"[WW DEBUG] Sending HTTP POST to {http_url}")
                 response = requests.post(
                     http_url,
                     json=payload,
                     headers=headers,
                     timeout=10.0  # 10 second timeout
                 )
+                
+                print(f"[WW DEBUG] HTTP Response: {response.status_code}")
                 
                 if response.status_code == 200:
                     result = response.json()
@@ -876,6 +881,7 @@ class OrchestratorClient:
                     return detection_id
                 else:
                     error_msg = f"HTTP {response.status_code}: {response.text}"
+                    print(f"✗ HTTP Error: {error_msg}")
                     if self.logger:
                         self.logger.warning(
                             "wake_word_detection_http_error",
@@ -892,6 +898,7 @@ class OrchestratorClient:
                         time.sleep(0.5 * (2 ** attempt))  # Exponential backoff
                     
             except requests.exceptions.Timeout:
+                print(f"✗ HTTP Timeout on attempt {attempt + 1}")
                 if self.logger:
                     self.logger.warning(
                         "wake_word_detection_http_timeout",
@@ -905,6 +912,7 @@ class OrchestratorClient:
                     time.sleep(0.5 * (2 ** attempt))
                     
             except Exception as e:
+                print(f"✗ HTTP Exception: {type(e).__name__}: {e}")
                 if self.logger:
                     self.logger.warning(
                         "wake_word_detection_http_failed",
