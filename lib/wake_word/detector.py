@@ -218,8 +218,12 @@ class WakeWordDetector:
         # Calculate audio duration
         audio_duration_ms = int((len(verification_audio) * 512 / 16000) * 1000) if verification_audio else None
         
-        # Generate timestamp in YYYYMMDDHHmmss format
-        timestamp = datetime.now().strftime("%Y%m%d%H%M%S")
+        # Capture detection timestamp (ISO format for metrics)
+        detected_at = datetime.now(timezone.utc)
+        detected_at_iso = detected_at.isoformat()
+        
+        # Generate timestamp in YYYYMMDDHHmmss format (for storage path)
+        timestamp = detected_at.strftime("%Y%m%d%H%M%S")
         
         # Send detection data (fire and forget - async)
         try:
@@ -229,6 +233,7 @@ class WakeWordDetector:
                 asr_result=asr_result,
                 audio_data=audio_wav,
                 timestamp=timestamp,
+                detected_at=detected_at_iso,  # NEW: ISO timestamp for metrics
                 asr_error=asr_error,
                 transcript=transcript,
                 confidence_score=None,  # Not available from Picovoice/Scribe

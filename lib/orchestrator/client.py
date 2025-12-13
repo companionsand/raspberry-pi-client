@@ -30,6 +30,7 @@ class OrchestratorClient:
         self.reconnect_base_delay = 1.0  # Base delay for exponential backoff
         self.context_manager = context_manager
         self.token_refresh_task = None  # Background task handle
+        self.current_wake_word_detection_id = None  # NEW: Track wake word detection ID
         
     def is_connection_alive(self):
         """Check if the WebSocket connection is actually alive"""
@@ -504,7 +505,11 @@ class OrchestratorClient:
                 "device_id": Config.DEVICE_ID,
                 "user_id": Config.USER_ID,
                 "start_time": datetime.now(timezone.utc).isoformat(),
+                "wake_word_detection_id": self.current_wake_word_detection_id,  # NEW
             }
+            
+            # Clear the detection_id after sending
+            self.current_wake_word_detection_id = None  # NEW
             
             # Inject trace context for propagation
             if TELEMETRY_AVAILABLE:
@@ -610,6 +615,7 @@ class OrchestratorClient:
         asr_result: Optional[bool],
         audio_data: bytes,
         timestamp: str,
+        detected_at: str,  # NEW: ISO timestamp from device
         asr_error: Optional[str] = None,
         transcript: Optional[str] = None,
         confidence_score: Optional[float] = None,
@@ -624,6 +630,7 @@ class OrchestratorClient:
             asr_result: Scribe v2 result (true/false/null)
             audio_data: Raw audio bytes (WAV format)
             timestamp: Timestamp in YYYYMMDDHHmmss format
+            detected_at: ISO timestamp when wake word was detected
             asr_error: Error message if Scribe failed
             transcript: Actual transcript from Scribe
             confidence_score: Confidence score (optional)
@@ -657,6 +664,7 @@ class OrchestratorClient:
             "asr_result": asr_result,
             "audio_data": audio_base64,
             "timestamp": timestamp,
+            "detected_at": detected_at,  # NEW
             "asr_error": asr_error,
             "transcript": transcript,
             "confidence_score": confidence_score,
@@ -681,6 +689,31 @@ class OrchestratorClient:
                             "device_id": Config.DEVICE_ID
                         }
                     )
+                
+                # Wait for response with detection_id (with timeout)
+                try:
+                    response = await asyncio.wait_for(self.receive_message(), timeout=5.0)
+                    if response and response.get("type") == "wake_word_detection_created":
+                        self.current_wake_word_detection_id = response.get("wake_word_detection_id")
+                        if self.logger:
+                            self.logger.info(
+                                "wake_word_detection_id_received",
+                                extra={
+                                    "detection_id": self.current_wake_word_detection_id,
+                                    "user_id": Config.USER_ID,
+                                    "device_id": Config.DEVICE_ID
+                                }
+                            )
+                except asyncio.TimeoutError:
+                    if self.logger:
+                        self.logger.warning(
+                            "wake_word_detection_id_timeout",
+                            extra={
+                                "user_id": Config.USER_ID,
+                                "device_id": Config.DEVICE_ID
+                            }
+                        )
+                
                 return True
                 
             except Exception as e:
