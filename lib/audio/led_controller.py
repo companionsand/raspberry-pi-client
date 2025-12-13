@@ -8,6 +8,7 @@ import asyncio
 import time
 import math
 import numpy as np
+from lib.config import Config
 
 
 class LEDController:
