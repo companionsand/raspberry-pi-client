@@ -34,14 +34,13 @@ except ImportError:
 class WakeWordDetector:
     """Porcupine-based wake word detection with telemetry"""
     
-    def __init__(self, mic_device_index=None, orchestrator_client=None, event_loop=None):
+    def __init__(self, mic_device_index=None, orchestrator_client=None):
         """
         Initialize wake word detector.
         
         Args:
             mic_device_index: Audio device index for microphone (None for default)
             orchestrator_client: OrchestratorClient for sending detection data (optional)
-            event_loop: Event loop that orchestrator_client is bound to (required for thread-safe async calls)
         """
         self.porcupine = None
         self.audio_stream = None
@@ -49,7 +48,6 @@ class WakeWordDetector:
         self.running = False
         self.mic_device_index = mic_device_index
         self.orchestrator_client = orchestrator_client
-        self.event_loop = event_loop  # Store main event loop for thread-safe coroutine submission
         self.logger = Config.LOGGER
         self._use_respeaker_aec = False  # Set to True in start() if ReSpeaker detected
         
@@ -184,7 +182,7 @@ class WakeWordDetector:
         wav_buffer.seek(0)
         return wav_buffer.read()
     
-    async def _send_detection_data_async(
+    def _send_detection_data_sync(
         self,
         wake_word_detector_result: bool,
         verification_audio: list,
@@ -192,7 +190,10 @@ class WakeWordDetector:
         transcript: Optional[str] = None,
         asr_error: Optional[str] = None
     ):
-        """Send wake word detection data to orchestrator (async, non-blocking).
+        """Send wake word detection data to orchestrator via HTTP (synchronous, thread-safe).
+        
+        Nuclear option: Completely synchronous HTTP POST. No asyncio, no event loops, no threads.
+        Can be safely called from the audio callback thread.
         
         Args:
             wake_word_detector_result: Picovoice result
@@ -203,7 +204,7 @@ class WakeWordDetector:
         """
         if self.logger and Config.SHOW_WAKE_WORD_DEBUG_LOGS:
             self.logger.info(
-                "[WW DEBUG] _send_detection_data_async called",
+                "[WW DEBUG] _send_detection_data_sync called",
                 extra={
                     "wake_word_detector_result": wake_word_detector_result,
                     "asr_result": asr_result,
@@ -276,7 +277,7 @@ class WakeWordDetector:
         
         if self.logger and Config.SHOW_WAKE_WORD_DEBUG_LOGS:
             self.logger.info(
-                "[WW DEBUG] Prepared detection data, calling send_wake_word_detection",
+                "[WW DEBUG] Prepared detection data, calling send_wake_word_detection_sync",
                 extra={
                     "audio_size_bytes": len(audio_wav),
                     "audio_duration_ms": audio_duration_ms,
@@ -287,15 +288,15 @@ class WakeWordDetector:
                 }
             )
         
-        # Send detection data (fire and forget - async)
+        # Send detection data synchronously via HTTP (nuclear option - no asyncio!)
         try:
-            await self.orchestrator_client.send_wake_word_detection(
+            detection_id = self.orchestrator_client.send_wake_word_detection_sync(
                 wake_word=Config.WAKE_WORD,
                 wake_word_detector_result=wake_word_detector_result,
                 asr_result=asr_result,
                 audio_data=audio_wav,
                 timestamp=timestamp,
-                detected_at=detected_at_iso,  # NEW: ISO timestamp for metrics
+                detected_at=detected_at_iso,
                 asr_error=asr_error,
                 transcript=transcript,
                 confidence_score=None,  # Not available from Picovoice/Scribe
@@ -303,18 +304,28 @@ class WakeWordDetector:
                 retry_attempts=3
             )
             if self.logger and Config.SHOW_WAKE_WORD_DEBUG_LOGS:
-                self.logger.info(
-                    "[WW DEBUG] send_wake_word_detection completed successfully",
-                    extra={
-                        "user_id": Config.USER_ID,
-                        "device_id": Config.DEVICE_ID
-                    }
-                )
+                if detection_id:
+                    self.logger.info(
+                        "[WW DEBUG] send_wake_word_detection_sync completed successfully",
+                        extra={
+                            "detection_id": detection_id,
+                            "user_id": Config.USER_ID,
+                            "device_id": Config.DEVICE_ID
+                        }
+                    )
+                else:
+                    self.logger.warning(
+                        "[WW DEBUG] send_wake_word_detection_sync returned None",
+                        extra={
+                            "user_id": Config.USER_ID,
+                            "device_id": Config.DEVICE_ID
+                        }
+                    )
         except Exception as e:
             # Log but don't block wake word detection
             if self.logger and Config.SHOW_WAKE_WORD_DEBUG_LOGS:
                 self.logger.error(
-                    "[WW DEBUG] send_wake_word_detection_async_failed",
+                    "[WW DEBUG] send_wake_word_detection_sync_failed",
                     extra={
                         "error": str(e),
                         "error_type": type(e).__name__,
@@ -599,41 +610,21 @@ class WakeWordDetector:
                     # Run verification synchronously (Scribe only, doesn't use orchestrator)
                     verified = loop.run_until_complete(self._verify_with_scribe(verification_audio))
                     
-                    # Send detection data and WAIT for it to complete (including receiving detection_id)
-                    # This ensures wake_word_detection_id is available before conversation starts
-                    if self.event_loop and self.orchestrator_client:
-                        future = asyncio.run_coroutine_threadsafe(
-                            self._send_detection_data_async(
-                                wake_word_detector_result=True,  # Picovoice detected
-                                verification_audio=verification_audio,
-                                asr_result=verified,  # Scribe result
-                                transcript=self._last_scribe_transcript,
-                                asr_error=self._last_scribe_error
-                            ),
-                            self.event_loop
+                    # Send detection data synchronously via HTTP (nuclear option!)
+                    # This is now completely synchronous - no asyncio event loop juggling
+                    if self.orchestrator_client:
+                        self._send_detection_data_sync(
+                            wake_word_detector_result=True,  # Picovoice detected
+                            verification_audio=verification_audio,
+                            asr_result=verified,  # Scribe result
+                            transcript=self._last_scribe_transcript,
+                            asr_error=self._last_scribe_error
                         )
-                        # CRITICAL: Wait for detection data to be sent and ID to be received
-                        # This blocks the audio thread but ensures no race condition
-                        try:
-                            future.result(timeout=6.0)  # Wait up to 6s (allows 5s server response + 1s buffer)
-                        except Exception as e:
-                            if self.logger and Config.SHOW_WAKE_WORD_DEBUG_LOGS:
-                                self.logger.warning(
-                                    "[WW DEBUG] send_wake_word_detection failed or timed out",
-                                    extra={
-                                        "error": str(e),
-                                        "error_type": type(e).__name__,
-                                        "user_id": Config.USER_ID,
-                                        "device_id": Config.DEVICE_ID
-                                    }
-                                )
                     else:
                         if self.logger and Config.SHOW_WAKE_WORD_DEBUG_LOGS:
                             self.logger.warning(
-                                "[WW DEBUG] Cannot send detection data: event_loop or orchestrator_client not available",
+                                "[WW DEBUG] Cannot send detection data: orchestrator_client not available",
                                 extra={
-                                    "has_event_loop": self.event_loop is not None,
-                                    "has_orchestrator": self.orchestrator_client is not None,
                                     "user_id": Config.USER_ID,
                                     "device_id": Config.DEVICE_ID
                                 }
@@ -670,30 +661,15 @@ class WakeWordDetector:
                 except Exception as e:
                     print(f"⚠ Scribe verification exception: {e} - accepting wake word (fail-open)")
                     
-                    # Send detection data with exception error and WAIT for completion
-                    if self.event_loop and self.orchestrator_client:
-                        future = asyncio.run_coroutine_threadsafe(
-                            self._send_detection_data_async(
-                                wake_word_detector_result=True,
-                                verification_audio=verification_audio if 'verification_audio' in locals() else [],
-                                asr_result=None,  # Error occurred
-                                transcript=None,
-                                asr_error=str(e)
-                            ),
-                            self.event_loop
+                    # Send detection data with exception error synchronously
+                    if self.orchestrator_client:
+                        self._send_detection_data_sync(
+                            wake_word_detector_result=True,
+                            verification_audio=verification_audio if 'verification_audio' in locals() else [],
+                            asr_result=None,  # Error occurred
+                            transcript=None,
+                            asr_error=str(e)
                         )
-                        try:
-                            future.result(timeout=6.0)
-                        except Exception as send_error:
-                            if self.logger and Config.SHOW_WAKE_WORD_DEBUG_LOGS:
-                                self.logger.warning(
-                                    "[WW DEBUG] send_wake_word_detection failed in exception handler",
-                                    extra={
-                                        "error": str(send_error),
-                                        "user_id": Config.USER_ID,
-                                        "device_id": Config.DEVICE_ID
-                                    }
-                                )
                     
                     self.detected = True
                     
@@ -716,30 +692,15 @@ class WakeWordDetector:
                 buffer_list = list(self._ring_buffer)
                 verification_audio = buffer_list[-int(self._frames_per_second * 1.7):] if len(buffer_list) > 0 else []
                 
-                # Send detection data and WAIT for completion to get detection_id
-                if self.event_loop and self.orchestrator_client:
-                    future = asyncio.run_coroutine_threadsafe(
-                        self._send_detection_data_async(
-                            wake_word_detector_result=True,
-                            verification_audio=verification_audio,
-                            asr_result=None,  # Scribe not enabled
-                            transcript=None,
-                            asr_error="Scribe verification disabled"
-                        ),
-                        self.event_loop
+                # Send detection data synchronously
+                if self.orchestrator_client:
+                    self._send_detection_data_sync(
+                        wake_word_detector_result=True,
+                        verification_audio=verification_audio,
+                        asr_result=None,  # Scribe not enabled
+                        transcript=None,
+                        asr_error="Scribe verification disabled"
                     )
-                    try:
-                        future.result(timeout=6.0)
-                    except Exception as e:
-                        if self.logger and Config.SHOW_WAKE_WORD_DEBUG_LOGS:
-                            self.logger.warning(
-                                "[WW DEBUG] send_wake_word_detection failed (Scribe disabled path)",
-                                extra={
-                                    "error": str(e),
-                                    "user_id": Config.USER_ID,
-                                    "device_id": Config.DEVICE_ID
-                                }
-                            )
                 
                 self.detected = True
                 

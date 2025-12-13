@@ -6,6 +6,7 @@ import ssl
 from typing import Optional
 import websockets
 import certifi
+import requests
 from datetime import datetime, timezone
 from lib.config import Config
 
@@ -768,6 +769,166 @@ class OrchestratorClient:
                 return False
         
         return False
+    
+    def send_wake_word_detection_sync(
+        self,
+        wake_word: str,
+        wake_word_detector_result: bool,
+        asr_result: Optional[bool],
+        audio_data: bytes,
+        timestamp: str,
+        detected_at: str,
+        asr_error: Optional[str] = None,
+        transcript: Optional[str] = None,
+        confidence_score: Optional[float] = None,
+        audio_duration_ms: Optional[int] = None,
+        retry_attempts: int = 3
+    ) -> Optional[str]:
+        """Send wake word detection data via HTTP POST (synchronous, thread-safe).
+        
+        This is the "nuclear option" - completely synchronous HTTP request that can be
+        called from any thread without asyncio complexity.
+        
+        Args:
+            wake_word: Expected wake word
+            wake_word_detector_result: Picovoice result (true/false)
+            asr_result: Scribe v2 result (true/false/null)
+            audio_data: Raw audio bytes (WAV format)
+            timestamp: Timestamp in YYYYMMDDHHmmss format
+            detected_at: ISO timestamp when wake word was detected
+            asr_error: Error message if Scribe failed
+            transcript: Actual transcript from Scribe
+            confidence_score: Confidence score (optional)
+            audio_duration_ms: Audio duration in milliseconds
+            retry_attempts: Number of retry attempts
+            
+        Returns:
+            wake_word_detection_id if successful, None otherwise
+        """
+        import base64
+        import time
+        
+        # Build HTTP endpoint URL from WebSocket URL
+        # ws://host:port/ws -> http://host:port/wake-word-detection
+        # wss://host:port/ws -> https://host:port/wake-word-detection
+        ws_url = Config.ORCHESTRATOR_URL
+        if ws_url.startswith("ws://"):
+            http_url = ws_url.replace("ws://", "http://").replace("/ws", "/wake-word-detection")
+        elif ws_url.startswith("wss://"):
+            http_url = ws_url.replace("wss://", "https://").replace("/ws", "/wake-word-detection")
+        else:
+            print(f"✗ Invalid WebSocket URL format: {ws_url}")
+            return None
+        
+        # Encode audio to base64
+        audio_base64 = base64.b64encode(audio_data).decode('utf-8')
+        
+        payload = {
+            "wake_word": wake_word,
+            "wake_word_detector_result": wake_word_detector_result,
+            "asr_result": asr_result,
+            "audio_data": audio_base64,
+            "timestamp": timestamp,
+            "detected_at": detected_at,
+            "asr_error": asr_error,
+            "transcript": transcript,
+            "confidence_score": confidence_score,
+            "audio_duration_ms": audio_duration_ms,
+        }
+        
+        headers = {
+            "Authorization": f"Bearer {Config.AUTH_TOKEN}",
+            "Content-Type": "application/json"
+        }
+        
+        # Retry with exponential backoff
+        for attempt in range(retry_attempts):
+            try:
+                response = requests.post(
+                    http_url,
+                    json=payload,
+                    headers=headers,
+                    timeout=10.0  # 10 second timeout
+                )
+                
+                if response.status_code == 200:
+                    result = response.json()
+                    detection_id = result.get("wake_word_detection_id")
+                    
+                    # Store the ID for conversation_start linking
+                    self.current_wake_word_detection_id = detection_id
+                    
+                    if self.logger:
+                        self.logger.info(
+                            "wake_word_detection_sent_http",
+                            extra={
+                                "wake_word": wake_word,
+                                "detector_result": wake_word_detector_result,
+                                "asr_result": asr_result,
+                                "audio_size_bytes": len(audio_data),
+                                "detection_id": detection_id,
+                                "attempt": attempt + 1,
+                                "user_id": Config.USER_ID,
+                                "device_id": Config.DEVICE_ID
+                            }
+                        )
+                    
+                    return detection_id
+                else:
+                    error_msg = f"HTTP {response.status_code}: {response.text}"
+                    if self.logger:
+                        self.logger.warning(
+                            "wake_word_detection_http_error",
+                            extra={
+                                "status_code": response.status_code,
+                                "error": error_msg,
+                                "attempt": attempt + 1,
+                                "user_id": Config.USER_ID,
+                                "device_id": Config.DEVICE_ID
+                            }
+                        )
+                    
+                    if attempt < retry_attempts - 1:
+                        time.sleep(0.5 * (2 ** attempt))  # Exponential backoff
+                    
+            except requests.exceptions.Timeout:
+                if self.logger:
+                    self.logger.warning(
+                        "wake_word_detection_http_timeout",
+                        extra={
+                            "attempt": attempt + 1,
+                            "user_id": Config.USER_ID,
+                            "device_id": Config.DEVICE_ID
+                        }
+                    )
+                if attempt < retry_attempts - 1:
+                    time.sleep(0.5 * (2 ** attempt))
+                    
+            except Exception as e:
+                if self.logger:
+                    self.logger.warning(
+                        "wake_word_detection_http_failed",
+                        extra={
+                            "error": str(e),
+                            "error_type": type(e).__name__,
+                            "attempt": attempt + 1,
+                            "user_id": Config.USER_ID,
+                            "device_id": Config.DEVICE_ID
+                        }
+                    )
+                if attempt < retry_attempts - 1:
+                    time.sleep(0.5 * (2 ** attempt))
+        
+        # All retries failed
+        if self.logger:
+            self.logger.error(
+                "wake_word_detection_http_all_retries_failed",
+                extra={
+                    "user_id": Config.USER_ID,
+                    "device_id": Config.DEVICE_ID
+                }
+            )
+        return None
     
     async def receive_message(self):
         """Receive and return a message from orchestrator"""
