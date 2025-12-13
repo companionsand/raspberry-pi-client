@@ -425,7 +425,8 @@ class LEDController:
         start_time = time.time()
         
         # Diagnostic: Log when conversation pulse loop starts
-        print("💡 LED diag: starting CONVERSATION pulse loop (0-70%, 1.5s cycle)")
+        if Config.SHOW_LED_STATE_LOGS:
+            print("💡 LED diag: starting CONVERSATION pulse loop (0-70%, 1.5s cycle)")
         
         try:
             while self.current_state == self.STATE_CONVERSATION:

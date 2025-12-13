@@ -7,7 +7,7 @@ import asyncio
 import base64
 from collections import deque
 from difflib import SequenceMatcher
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Optional
 import wave
 import pvporcupine
