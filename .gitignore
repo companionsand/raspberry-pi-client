@@ -37,8 +37,3 @@ logs/
 # OS
 .DS_Store
 Thumbs.db
-
-# Audio test files
-*.wav
-test.wav
-
