@@ -691,28 +691,49 @@ class OrchestratorClient:
                     )
                 
                 # Wait for response with detection_id (with timeout)
-                try:
-                    response = await asyncio.wait_for(self.receive_message(), timeout=5.0)
-                    if response and response.get("type") == "wake_word_detection_created":
-                        self.current_wake_word_detection_id = response.get("wake_word_detection_id")
+                # Loop and retry receive_message() until we get the response or timeout
+                start_time = time.time()
+                timeout_secs = 5.0
+                response_received = False
+                
+                while time.time() - start_time < timeout_secs:
+                    try:
+                        response = await self.receive_message()
+                        if response and response.get("type") == "wake_word_detection_created":
+                            self.current_wake_word_detection_id = response.get("wake_word_detection_id")
+                            if self.logger:
+                                self.logger.info(
+                                    "wake_word_detection_id_received",
+                                    extra={
+                                        "detection_id": self.current_wake_word_detection_id,
+                                        "user_id": Config.USER_ID,
+                                        "device_id": Config.DEVICE_ID
+                                    }
+                                )
+                            response_received = True
+                            break
+                        # If we got a different message type, keep waiting
+                        await asyncio.sleep(0.05)  # Small delay before retry
+                    except Exception as e:
                         if self.logger:
-                            self.logger.info(
-                                "wake_word_detection_id_received",
+                            self.logger.debug(
+                                "wake_word_detection_id_receive_error",
                                 extra={
-                                    "detection_id": self.current_wake_word_detection_id,
+                                    "error": str(e),
                                     "user_id": Config.USER_ID,
                                     "device_id": Config.DEVICE_ID
                                 }
                             )
-                except asyncio.TimeoutError:
-                    if self.logger:
-                        self.logger.warning(
-                            "wake_word_detection_id_timeout",
-                            extra={
-                                "user_id": Config.USER_ID,
-                                "device_id": Config.DEVICE_ID
-                            }
-                        )
+                        await asyncio.sleep(0.05)
+                
+                if not response_received and self.logger:
+                    self.logger.warning(
+                        "wake_word_detection_id_timeout",
+                        extra={
+                            "user_id": Config.USER_ID,
+                            "device_id": Config.DEVICE_ID
+                        }
+                    )
                 
                 return True
                 

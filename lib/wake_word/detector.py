@@ -199,7 +199,28 @@ class WakeWordDetector:
             transcript: Actual transcript from Scribe
             asr_error: Error message if Scribe failed
         """
+        if self.logger and Config.SHOW_WAKE_WORD_DEBUG_LOGS:
+            self.logger.info(
+                "[WW DEBUG] _send_detection_data_async called",
+                extra={
+                    "wake_word_detector_result": wake_word_detector_result,
+                    "asr_result": asr_result,
+                    "has_audio": len(verification_audio) > 0 if verification_audio else False,
+                    "orchestrator_client_exists": self.orchestrator_client is not None,
+                    "user_id": Config.USER_ID,
+                    "device_id": Config.DEVICE_ID
+                }
+            )
+        
         if not self.orchestrator_client:
+            if self.logger and Config.SHOW_WAKE_WORD_DEBUG_LOGS:
+                self.logger.warning(
+                    "[WW DEBUG] No orchestrator client, skipping send",
+                    extra={
+                        "user_id": Config.USER_ID,
+                        "device_id": Config.DEVICE_ID
+                    }
+                )
             return
         
         # Throttle negative detections (once per 15 minutes)
@@ -207,12 +228,38 @@ class WakeWordDetector:
             current_time = time.time()
             if current_time - self._last_negative_detection_time < self._negative_detection_throttle_seconds:
                 # Skip this negative detection (within throttle window)
+                if self.logger and Config.SHOW_WAKE_WORD_DEBUG_LOGS:
+                    self.logger.info(
+                        "[WW DEBUG] Negative detection throttled",
+                        extra={
+                            "time_since_last": current_time - self._last_negative_detection_time,
+                            "throttle_window": self._negative_detection_throttle_seconds,
+                            "user_id": Config.USER_ID,
+                            "device_id": Config.DEVICE_ID
+                        }
+                    )
                 return
             self._last_negative_detection_time = current_time
+            if self.logger and Config.SHOW_WAKE_WORD_DEBUG_LOGS:
+                self.logger.info(
+                    "[WW DEBUG] Sending negative detection (throttle window passed)",
+                    extra={
+                        "user_id": Config.USER_ID,
+                        "device_id": Config.DEVICE_ID
+                    }
+                )
         
         # Convert audio frames to WAV
         audio_wav = self._convert_frames_to_wav(verification_audio)
         if not audio_wav:
+            if self.logger and Config.SHOW_WAKE_WORD_DEBUG_LOGS:
+                self.logger.warning(
+                    "[WW DEBUG] Failed to convert audio to WAV",
+                    extra={
+                        "user_id": Config.USER_ID,
+                        "device_id": Config.DEVICE_ID
+                    }
+                )
             return
         
         # Calculate audio duration
@@ -224,6 +271,19 @@ class WakeWordDetector:
         
         # Generate timestamp in YYYYMMDDHHmmss format (for storage path)
         timestamp = detected_at.strftime("%Y%m%d%H%M%S")
+        
+        if self.logger and Config.SHOW_WAKE_WORD_DEBUG_LOGS:
+            self.logger.info(
+                "[WW DEBUG] Prepared detection data, calling send_wake_word_detection",
+                extra={
+                    "audio_size_bytes": len(audio_wav),
+                    "audio_duration_ms": audio_duration_ms,
+                    "detected_at": detected_at_iso,
+                    "timestamp": timestamp,
+                    "user_id": Config.USER_ID,
+                    "device_id": Config.DEVICE_ID
+                }
+            )
         
         # Send detection data (fire and forget - async)
         try:
@@ -240,13 +300,22 @@ class WakeWordDetector:
                 audio_duration_ms=audio_duration_ms,
                 retry_attempts=3
             )
+            if self.logger and Config.SHOW_WAKE_WORD_DEBUG_LOGS:
+                self.logger.info(
+                    "[WW DEBUG] send_wake_word_detection completed successfully",
+                    extra={
+                        "user_id": Config.USER_ID,
+                        "device_id": Config.DEVICE_ID
+                    }
+                )
         except Exception as e:
             # Log but don't block wake word detection
-            if self.logger:
-                self.logger.warning(
-                    "send_wake_word_detection_async_failed",
+            if self.logger and Config.SHOW_WAKE_WORD_DEBUG_LOGS:
+                self.logger.error(
+                    "[WW DEBUG] send_wake_word_detection_async_failed",
                     extra={
                         "error": str(e),
+                        "error_type": type(e).__name__,
                         "user_id": Config.USER_ID,
                         "device_id": Config.DEVICE_ID
                     }
@@ -448,7 +517,8 @@ class WakeWordDetector:
                     if now - self._vad_last_log_time > 5.0:
                         pass_rate = (self._vad_passed_count / max(1, self._vad_frame_count)) * 100
                         gate_status = "OPEN" if (speech_prob >= self._vad_threshold or self._hangover_counter > 0) else "CLOSED"
-                        print(f"🔍 VAD diag: prob={speech_prob:.2f}, hangover={self._hangover_counter}, gate={gate_status}, passed={self._vad_passed_count}/{self._vad_frame_count} ({pass_rate:.1f}%)")
+                        if Config.SHOW_VAD_DIAGNOSTIC_LOGS:
+                            print(f"🔍 VAD diag: prob={speech_prob:.2f}, hangover={self._hangover_counter}, gate={gate_status}, passed={self._vad_passed_count}/{self._vad_frame_count} ({pass_rate:.1f}%)")
                         self._vad_last_log_time = now
                         # Reset counters for next period
                         self._vad_frame_count = 0

@@ -416,7 +416,8 @@ class ElevenLabsConversationClient:
                     if now - self._aec_debug_last_log >= 3.0:
                         self._aec_debug_last_log = now
                         # Debug: Log actual audio data shape and dtype
-                        print(f"🔍 [AEC DEBUG] audio_data shape={audio_data.shape}, dtype={audio_data.dtype}, ndim={audio_data.ndim}")
+                        if Config.SHOW_AEC_DEBUG_LOGS:
+                            print(f"🔍 [AEC DEBUG] audio_data shape={audio_data.shape}, dtype={audio_data.dtype}, ndim={audio_data.ndim}")
                         # Calculate RMS for each channel
                         ch_rms = []
                         for ch in range(min(6, audio_data.shape[1])):
@@ -425,7 +426,8 @@ class ElevenLabsConversationClient:
                         # Format like diagnostic script
                         is_playing = self.playback_active or self.audio_queue.qsize() > 0
                         status = "PLAYING" if is_playing else "IDLE"
-                        print(f"📊 [AEC DEBUG] [{status}] Ch0={ch_rms[0]:.4f} | Ch1={ch_rms[1]:.4f} | Ch2={ch_rms[2]:.4f} | Ch3={ch_rms[3]:.4f} | Ch4={ch_rms[4]:.4f} | Ch5={ch_rms[5]:.4f} | Using: Ch{Config.RESPEAKER_AEC_CHANNEL}")
+                        if Config.SHOW_AEC_DEBUG_LOGS:
+                            print(f"📊 [AEC DEBUG] [{status}] Ch0={ch_rms[0]:.4f} | Ch1={ch_rms[1]:.4f} | Ch2={ch_rms[2]:.4f} | Ch3={ch_rms[3]:.4f} | Ch4={ch_rms[4]:.4f} | Ch5={ch_rms[5]:.4f} | Using: Ch{Config.RESPEAKER_AEC_CHANNEL}")
                 
                 # -------------------------------------------------------------------------
                 # ReSpeaker AEC: Extract Channel 0 (AEC-processed audio)
@@ -444,7 +446,8 @@ class ElevenLabsConversationClient:
                     if now - self._aec_debug_last_log >= 3.0:
                         self._aec_debug_last_log = now
                         # Debug: Log actual audio data shape and dtype
-                        print(f"🔍 [AEC DEBUG] audio_data shape={audio_data.shape}, dtype={audio_data.dtype}, ndim={audio_data.ndim}")
+                        if Config.SHOW_AEC_DEBUG_LOGS:
+                            print(f"🔍 [AEC DEBUG] audio_data shape={audio_data.shape}, dtype={audio_data.dtype}, ndim={audio_data.ndim}")
                         # Calculate RMS for each channel
                         ch_rms = []
                         for ch in range(min(6, audio_data.shape[1])):
@@ -453,7 +456,8 @@ class ElevenLabsConversationClient:
                         # Format like diagnostic script
                         is_playing = self.playback_active or self.audio_queue.qsize() > 0
                         status = "PLAYING" if is_playing else "IDLE"
-                        print(f"📊 [AEC DEBUG] [{status}] Ch0={ch_rms[0]:.4f} | Ch1={ch_rms[1]:.4f} | Ch2={ch_rms[2]:.4f} | Ch3={ch_rms[3]:.4f} | Ch4={ch_rms[4]:.4f} | Ch5={ch_rms[5]:.4f} | Using: Ch{Config.RESPEAKER_AEC_CHANNEL}")
+                        if Config.SHOW_AEC_DEBUG_LOGS:
+                            print(f"📊 [AEC DEBUG] [{status}] Ch0={ch_rms[0]:.4f} | Ch1={ch_rms[1]:.4f} | Ch2={ch_rms[2]:.4f} | Ch3={ch_rms[3]:.4f} | Ch4={ch_rms[4]:.4f} | Ch5={ch_rms[5]:.4f} | Using: Ch{Config.RESPEAKER_AEC_CHANNEL}")
                 
                 # -------------------------------------------------------------------------
                 # ReSpeaker AEC: Extract Channel 0 (AEC-processed audio)
@@ -550,7 +554,8 @@ class ElevenLabsConversationClient:
                 now = time.time()
                 if self._use_respeaker_aec and (now - self._aec_debug_last_log) < 0.1:  # Log right after AEC debug
                     sent_rms = np.sqrt(np.mean(audio_data.astype(float) ** 2)) / 32768.0
-                    print(f"📤 [SENT TO 11LABS] shape={audio_data.shape} RMS={sent_rms:.4f} (extracted from Ch{Config.RESPEAKER_AEC_CHANNEL})")
+                    if Config.SHOW_ELEVENLABS_AUDIO_CHUNK_LOGS:
+                        print(f"📤 [SENT TO 11LABS] shape={audio_data.shape} RMS={sent_rms:.4f} (extracted from Ch{Config.RESPEAKER_AEC_CHANNEL})")
                 
                 try:
                     await asyncio.wait_for(
@@ -616,7 +621,8 @@ class ElevenLabsConversationClient:
                     conversation_duration = now - self._conversation_start_time if self._conversation_start_time else 0
                     led_state = self.led_controller.current_state if self.led_controller else "unknown"
                     vad_info = f"VAD={speech_prob:.2f}" if self.vad_enabled else "VAD=off"
-                    print(f"📊 [STATUS] duration={conversation_duration:.1f}s, silence={silence_duration:.1f}s, LED={led_state}, {vad_info}, RMS={mic_rms:.0f}, queue={self.audio_queue.qsize()}")
+                    if Config.SHOW_CONVERSATION_STATUS_LOGS:
+                        print(f"📊 [STATUS] duration={conversation_duration:.1f}s, silence={silence_duration:.1f}s, LED={led_state}, {vad_info}, RMS={mic_rms:.0f}, queue={self.audio_queue.qsize()}")
                     
                     # If in prolonged silence (>30s) with no transcripts, reset VAD state
                     # to clear any accumulated false positive state
@@ -687,7 +693,8 @@ class ElevenLabsConversationClient:
                     # Queue empty - if agent was speaking, mark turn as ended
                     # Reset chunk count so next agent turn triggers VAD state reset
                     if self._chunk_count > 0 and self.audio_queue.qsize() == 0:
-                        print(f"📤 AGENT TURN END: {self._chunk_count} chunks played, resetting for next turn")
+                        if Config.SHOW_AGENT_TURN_LOGS:
+                            print(f"📤 AGENT TURN END: {self._chunk_count} chunks played, resetting for next turn")
                         self._chunk_count = 0  # Critical: allows VAD reset on next agent turn
                     continue
                 
@@ -947,7 +954,8 @@ class ElevenLabsConversationClient:
                         # This helps prevent false positives in VAD during agent speech
                         if self._chunk_count == 1:
                             self._vad_state = np.zeros((2, 1, 128), dtype=np.float32)
-                            print(f"📥 AGENT TURN START: first chunk ({len(audio_array)} samples @ {self._playback_sample_rate}Hz) [VAD state RESET]")
+                            if Config.SHOW_AGENT_TURN_LOGS:
+                                print(f"📥 AGENT TURN START: first chunk ({len(audio_array)} samples @ {self._playback_sample_rate}Hz) [VAD state RESET]")
                         elif self._chunk_count % 10 == 0:
                             print(f"📥 AGENT audio: chunk #{self._chunk_count} ({len(audio_array)} samples), queue={self.audio_queue.qsize()}")
                         

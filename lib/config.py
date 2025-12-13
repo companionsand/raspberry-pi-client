@@ -45,6 +45,18 @@ class Config:
     AUTH_TOKEN = None  # JWT token for WebSocket authentication
     AUTH_TOKEN_EXPIRES_AT = None  # Unix timestamp when token expires (decoded from JWT)
     
+    # =========================================================================
+    # LOGGING CONFIGURATION (fetched from device_settings)
+    # =========================================================================
+    # These control which log categories are shown
+    SHOW_AEC_DEBUG_LOGS = True
+    SHOW_ELEVENLABS_AUDIO_CHUNK_LOGS = True
+    SHOW_CONVERSATION_STATUS_LOGS = True
+    SHOW_AGENT_TURN_LOGS = True
+    SHOW_LED_STATE_LOGS = True
+    SHOW_VAD_DIAGNOSTIC_LOGS = True
+    SHOW_WAKE_WORD_DEBUG_LOGS = True
+    
     # API Keys (fetched from backend)
     ELEVENLABS_API_KEY = None
     PICOVOICE_ACCESS_KEY = None
@@ -100,6 +112,7 @@ class Config:
         system_config = config_data.get("system", {})
         api_keys = config_data.get("api_keys", {})
         default_reactive_agent = config_data.get("default_reactive_agent")
+        logging_settings = config_data.get("logging_settings", {})
         
         # Set device info
         cls.USER_ID = device_config.get("user_id")
@@ -115,6 +128,15 @@ class Config:
         cls.OTEL_ENABLED = system_config.get("otel_enabled", "true").lower() == "true"
         cls.WAKE_WORD_ASR_SIMILARITY_THRESHOLD = float(system_config.get("wake_word_asr_similarity_threshold", "0.6"))
         cls.SPEAKER_VOLUME_PERCENT = int(system_config.get("speaker_volume_percent", "50"))
+        
+        # Set logging settings (default to True if not provided)
+        cls.SHOW_AEC_DEBUG_LOGS = str(logging_settings.get("show_aec_debug_logs", "true")).lower() == "true"
+        cls.SHOW_ELEVENLABS_AUDIO_CHUNK_LOGS = str(logging_settings.get("show_elevenlabs_audio_chunk_logs", "true")).lower() == "true"
+        cls.SHOW_CONVERSATION_STATUS_LOGS = str(logging_settings.get("show_conversation_status_logs", "true")).lower() == "true"
+        cls.SHOW_AGENT_TURN_LOGS = str(logging_settings.get("show_agent_turn_logs", "true")).lower() == "true"
+        cls.SHOW_LED_STATE_LOGS = str(logging_settings.get("show_led_state_logs", "true")).lower() == "true"
+        cls.SHOW_VAD_DIAGNOSTIC_LOGS = str(logging_settings.get("show_vad_diagnostic_logs", "true")).lower() == "true"
+        cls.SHOW_WAKE_WORD_DEBUG_LOGS = str(logging_settings.get("show_wake_word_debug_logs", "true")).lower() == "true"
         
         # Set default reactive agent (for fast wake word response)
         if default_reactive_agent:

@@ -139,7 +139,8 @@ class LEDController:
             self.STATE_WIFI_SETUP: "WIFI_SETUP (soft amber slow blink 60%, ready for configuration)",
             self.STATE_ATTEMPTING_CONNECTION: "ATTEMPTING_CONNECTION (soft amber fast blink 60%, connecting)"
         }
-        print(f"💡 LED: {state_names.get(state, f'UNKNOWN({state})')}")
+        if Config.SHOW_LED_STATE_LOGS:
+            print(f"💡 LED: {state_names.get(state, f'UNKNOWN({state})')}")
         
         # Stop any running animation when changing states
         self._stop_animation()
@@ -244,7 +245,8 @@ class LEDController:
                     
                     if elapsed_ms > self.AUDIO_TIMEOUT_MS:
                         # No audio for AUDIO_TIMEOUT_MS -> agent stopped speaking
-                        print(f"💡 LED: audio timeout ({elapsed_ms:.0f}ms) -> returning to CONVERSATION")
+                        if Config.SHOW_LED_STATE_LOGS:
+                            print(f"💡 LED: audio timeout ({elapsed_ms:.0f}ms) -> returning to CONVERSATION")
                         self.set_state(self.STATE_CONVERSATION)
                         break
                         
