@@ -479,12 +479,12 @@ class HumanPresenceDetector:
             self.last_detection_time = time.time()
             
             # Get top 5 contributing classes for sending to orchestrator
-            # contribution = probability × weight
+            # Calculate percent_contribution: (contribution / weighted_sum) × 100
+            # This shows each event's percentage contribution to the final weighted score
             top_events = [
                 {
                     "event": name,
-                    "probability": float(prob),  # Raw YAMNet probability (0-1)
-                    "contribution": float(contribution)  # prob × weight (unnormalized)
+                    "percent_contribution": float((contribution / weighted_sum) * 100) if weighted_sum > 0 else 0.0
                 }
                 for name, prob, contribution in contributing_classes[:5]
             ]
