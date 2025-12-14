@@ -47,6 +47,7 @@ from lib.wake_word import WakeWordDetector
 from lib.orchestrator import OrchestratorClient
 from lib.elevenlabs import ElevenLabsConversationClient
 from lib.local_storage import ContextManager
+from lib.presence_detection import HumanPresenceDetector
 
 # Import WiFi setup module (optional - graceful degradation)
 try:
@@ -86,6 +87,7 @@ class KinClient:
     
     def __init__(self):
         self.wake_detector = None
+        self.presence_detector = None  # Will be initialized after runtime config is loaded
         self.context_manager = ContextManager()
         self.orchestrator_client = OrchestratorClient(context_manager=self.context_manager)
         self.led_controller = None
@@ -173,6 +175,10 @@ class KinClient:
         if self.wake_detector:
             self.wake_detector.start()
             print(f"\n✓ Listening for '{Config.WAKE_WORD}' again...")
+        
+        # Resume presence detection
+        if self.presence_detector and not self.presence_detector.running:
+            self.presence_detector.start()
     
     async def run(self):
         """Main application loop"""
@@ -522,11 +528,22 @@ class KinClient:
         if self.voice_feedback:
             self.voice_feedback.play("startup")
         
+        # Initialize human presence detector first (so we can pass it to wake word detector)
+        print("\n📊 Initializing human presence detector...")
+        self.presence_detector = HumanPresenceDetector(
+            mic_device_index=self.mic_device_index,
+            threshold=Config.HUMAN_PRESENCE_DETECTION_SCORE_THRESHOLD,
+            weights=Config.YAMNET_WEIGHTS,
+            orchestrator_client=self.orchestrator_client,
+            event_loop=asyncio.get_event_loop()  # Pass main event loop for async operations
+        )
+        
         # Initialize wake word detector with detected microphone
-        # (No event loop needed anymore - uses synchronous HTTP!)
+        # Pass presence_detector so they can share the audio stream
         self.wake_detector = WakeWordDetector(
             mic_device_index=self.mic_device_index,
-            orchestrator_client=self.orchestrator_client
+            orchestrator_client=self.orchestrator_client,
+            presence_detector=self.presence_detector
         )
         
         # Connect to conversation-orchestrator
@@ -548,6 +565,10 @@ class KinClient:
         
         # Start wake word detection
         self.wake_detector.start()
+        
+        # Start presence detection
+        if self.presence_detector:
+            self.presence_detector.start()
         
         # System ready - show idle state (soft breathing, ready for wake word)
         self.led_controller.set_state(LEDController.STATE_IDLE)
@@ -586,6 +607,10 @@ class KinClient:
                     
                     # Stop wake word detection during conversation
                     self.wake_detector.stop()
+                    
+                    # Stop presence detection during conversation
+                    if self.presence_detector:
+                        self.presence_detector.stop()
                     
                     # Handle conversation
                     await self._handle_conversation()
@@ -773,6 +798,10 @@ class KinClient:
             # Stop wake word detection during conversation
             self.wake_detector.stop()
             
+            # Stop presence detection during conversation
+            if self.presence_detector:
+                self.presence_detector.stop()
+            
             # Show conversation state (pulsating green - active conversation)
             self.led_controller.set_state(LEDController.STATE_CONVERSATION)
             
@@ -938,6 +967,10 @@ class KinClient:
         # Stop wake word detector
         if self.wake_detector:
             self.wake_detector.cleanup()
+        
+        # Stop presence detector
+        if self.presence_detector:
+            self.presence_detector.cleanup()
         
         # Disconnect from orchestrator
         await self.orchestrator_client.disconnect()

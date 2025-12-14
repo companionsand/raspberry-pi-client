@@ -34,13 +34,14 @@ except ImportError:
 class WakeWordDetector:
     """Porcupine-based wake word detection with telemetry"""
     
-    def __init__(self, mic_device_index=None, orchestrator_client=None):
+    def __init__(self, mic_device_index=None, orchestrator_client=None, presence_detector=None):
         """
         Initialize wake word detector.
         
         Args:
             mic_device_index: Audio device index for microphone (None for default)
             orchestrator_client: OrchestratorClient for sending detection data (optional)
+            presence_detector: HumanPresenceDetector to share audio with (optional)
         """
         self.porcupine = None
         self.audio_stream = None
@@ -48,6 +49,7 @@ class WakeWordDetector:
         self.running = False
         self.mic_device_index = mic_device_index
         self.orchestrator_client = orchestrator_client
+        self.presence_detector = presence_detector
         self.logger = Config.LOGGER
         self._use_respeaker_aec = False  # Set to True in start() if ReSpeaker detected
         
@@ -486,6 +488,14 @@ class WakeWordDetector:
         else:
             # Standard mono input or fallback
             audio_frame = indata[:, 0].astype(np.int16)
+        
+        # -------------------------------------------------------------------------
+        # Share audio with presence detector (if configured)
+        # -------------------------------------------------------------------------
+        if self.presence_detector:
+            # Convert to float32 normalized [-1, 1] for presence detector
+            audio_float_for_presence = audio_frame.astype(np.float32) / 32768.0
+            self.presence_detector.feed_audio(audio_float_for_presence)
         
         # Track frame count for one-time VAD disabled warning
         self._vad_frame_count += 1

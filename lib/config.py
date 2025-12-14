@@ -69,6 +69,10 @@ class Config:
     WAKE_WORD_ASR_SIMILARITY_THRESHOLD = 0.6  # Default similarity threshold for wake word matching
     SPEAKER_VOLUME_PERCENT = 50  # Default speaker volume (0-100)
     
+    # Presence detection settings (fetched from backend)
+    YAMNET_WEIGHTS = {}  # Dict mapping event names to weights (0.0-1.0)
+    HUMAN_PRESENCE_DETECTION_SCORE_THRESHOLD = 0.3  # Threshold for positive detection
+    
     # Default reactive agent (cached from backend for faster wake word response)
     DEFAULT_REACTIVE_AGENT_ID = None
     DEFAULT_REACTIVE_WEB_SOCKET_URL = None
@@ -129,6 +133,10 @@ class Config:
         cls.WAKE_WORD_ASR_SIMILARITY_THRESHOLD = float(system_config.get("wake_word_asr_similarity_threshold", "0.6"))
         cls.SPEAKER_VOLUME_PERCENT = int(system_config.get("speaker_volume_percent", "50"))
         
+        # Set presence detection settings
+        cls.YAMNET_WEIGHTS = system_config.get("yamnet_weights", {})
+        cls.HUMAN_PRESENCE_DETECTION_SCORE_THRESHOLD = float(system_config.get("human_presence_detection_score_threshold", "0.3"))
+        
         # Set logging settings (default to True if not provided)
         cls.SHOW_AEC_DEBUG_LOGS = str(logging_settings.get("show_aec_debug_logs", "true")).lower() == "true"
         cls.SHOW_ELEVENLABS_AUDIO_CHUNK_LOGS = str(logging_settings.get("show_elevenlabs_audio_chunk_logs", "true")).lower() == "true"
@@ -178,6 +186,8 @@ class Config:
         print(f"   OTEL Enabled: {cls.OTEL_ENABLED}")
         print(f"   LED Enabled: {cls.LED_ENABLED}")
         print(f"   Wake Word ASR Similarity Threshold: {cls.WAKE_WORD_ASR_SIMILARITY_THRESHOLD}")
+        print(f"   Presence Detection Threshold: {cls.HUMAN_PRESENCE_DETECTION_SCORE_THRESHOLD}")
+        print(f"   YAMNet Weights Loaded: {len(cls.YAMNET_WEIGHTS)} events")
         if cls.DEFAULT_REACTIVE_AGENT_ID:
             print(f"   Default Reactive Agent: Cached (fast wake word response)")
         else:
