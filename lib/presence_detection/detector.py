@@ -1,14 +1,16 @@
 """
 Human presence detection using YAMNet ONNX model with weighted scoring.
 
-Runs on a background thread with a 30-second duty cycle to detect
+Runs on a background thread with a 5-second duty cycle to detect
 human presence through audio classification with weighted scoring.
 """
 
 import os
 import csv
 import time
+import asyncio
 import threading
+from datetime import datetime, timezone
 import numpy as np
 import sounddevice as sd
 import onnxruntime as ort
@@ -16,10 +18,10 @@ from lib.config import Config
 
 
 # -------------------------------------------------------------------------
-# Weighted class mapping for human presence detection
-# Higher weights = stronger indicator of human presence
+# NOTE: Weights are now loaded dynamically from runtime config
+# The hardcoded weights below are kept as fallback only
 # -------------------------------------------------------------------------
-HUMAN_PRESENCE_WEIGHTS = {
+FALLBACK_HUMAN_PRESENCE_WEIGHTS = {
     # Speech & Voice (1.0 - Strongest indicators)
     'Speech': 1.0,
     'Child speech, kid speaking': 1.0,
@@ -172,21 +174,27 @@ class HumanPresenceDetector:
     human presence without blocking the main thread.
     """
     
-    def __init__(self, mic_device_index=None, threshold=DETECTION_THRESHOLD, on_detection=None, on_cycle=None):
+    def __init__(self, mic_device_index=None, threshold=DETECTION_THRESHOLD, weights=None, orchestrator_client=None, on_detection=None, on_cycle=None):
         """
         Initialize the human presence detector.
         
         Args:
             mic_device_index: Audio device index (None for system default).
             threshold: Detection threshold for weighted score (0.0-1.0).
+            weights: Dict mapping event names to weights (0.0-1.0). If None, uses fallback weights.
+            orchestrator_client: OrchestratorClient instance for sending detections.
             on_detection: Optional callback(weighted_score, top_classes) when humans detected.
             on_cycle: Optional callback(weighted_score) called every detection cycle.
         """
         self.mic_device_index = mic_device_index
         self.threshold = threshold
         self.logger = Config.LOGGER
+        self.orchestrator_client = orchestrator_client
         self.on_detection = on_detection
         self.on_cycle = on_cycle
+        
+        # Use provided weights or fallback to hardcoded weights
+        self.event_weights = weights if weights is not None else FALLBACK_HUMAN_PRESENCE_WEIGHTS
         
         # Thread control
         self._thread = None
@@ -236,12 +244,14 @@ class HumanPresenceDetector:
         # Create mapping of class index -> weight for fast lookup
         self._class_weights = {}
         for class_idx, class_name in self._class_names.items():
-            if class_name in HUMAN_PRESENCE_WEIGHTS:
-                self._class_weights[class_idx] = HUMAN_PRESENCE_WEIGHTS[class_name]
+            if class_name in self.event_weights:
+                self._class_weights[class_idx] = self.event_weights[class_name]
         
+        weights_source = "runtime config" if weights is not None else "fallback"
         print(f"✓ HumanPresenceDetector initialized")
         print(f"  - {len(self._class_names)} total classes")
         print(f"  - {len(self._class_weights)} weighted classes for human presence")
+        print(f"  - Weights source: {weights_source}")
         print(f"  - Detection threshold: {self.threshold}")
     
     def start(self):
@@ -397,7 +407,16 @@ class HumanPresenceDetector:
         if weighted_score >= self.threshold:
             self.last_detection_time = time.time()
             
-            # Get top 3 contributing classes for logging
+            # Get top 5 contributing classes for sending to orchestrator
+            top_events = [
+                {
+                    "event": name,
+                    "percent_contribution": float(contribution * 100)  # Convert to 0-100 scale
+                }
+                for name, prob, contribution in contributing_classes[:5]
+            ]
+            
+            # Get top 3 for logging
             top_classes = [
                 f"{name} ({prob:.2f})"
                 for name, prob, _ in contributing_classes[:3]
@@ -415,6 +434,40 @@ class HumanPresenceDetector:
                         "threshold": self.threshold,
                     }
                 )
+            
+            # Send detection to orchestrator via WebSocket
+            if self.orchestrator_client:
+                try:
+                    # Prepare message
+                    message = {
+                        "type": "human_presence_detection",
+                        "probability": float(weighted_score * 100),  # Convert to 0-100 scale
+                        "detected_at": datetime.now(timezone.utc).isoformat(),
+                        "top_events": top_events
+                    }
+                    
+                    # Send asynchronously
+                    asyncio.run_coroutine_threadsafe(
+                        self.orchestrator_client.send_message(message),
+                        self.orchestrator_client.loop
+                    )
+                    
+                    if self.logger:
+                        self.logger.info(
+                            "presence_detection_sent",
+                            extra={
+                                "probability": message["probability"],
+                                "top_events_count": len(top_events),
+                            }
+                        )
+                except Exception as e:
+                    print(f"⚠ Failed to send detection to orchestrator: {e}")
+                    if self.logger:
+                        self.logger.warning(
+                            "presence_detection_send_failed",
+                            extra={"error": str(e)},
+                            exc_info=True
+                        )
             
             # Call detection callback (if provided)
             if self.on_detection:
