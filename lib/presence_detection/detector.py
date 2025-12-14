@@ -204,6 +204,11 @@ class HumanPresenceDetector:
         self.last_detection_time = None
         self.running = False
         
+        # Audio stream (persistent, similar to wake word detector)
+        self.audio_stream = None
+        self._audio_buffer = []
+        self._buffer_lock = threading.Lock()
+        
         # -------------------------------------------------------------------------
         # Load YAMNet ONNX model
         # -------------------------------------------------------------------------
@@ -255,33 +260,59 @@ class HumanPresenceDetector:
         print(f"  - Detection threshold: {self.threshold}")
     
     def start(self):
-        """Start the background presence detection thread."""
+        """Start the background presence detection thread and audio stream."""
         if self.running:
             return
         
-        self._stop_event.clear()
-        self._thread = threading.Thread(target=self._duty_cycle_loop, daemon=True)
-        self._thread.start()
-        self.running = True
-        
-        print(f"✓ HumanPresenceDetector started (checking every {DUTY_CYCLE_SECONDS}s)")
-        
-        if self.logger:
-            self.logger.info(
-                "human_presence_detector_started",
-                extra={
-                    "duty_cycle_seconds": DUTY_CYCLE_SECONDS,
-                    "threshold": self.threshold,
-                    "num_weighted_classes": len(self._class_weights),
-                }
+        try:
+            # Start persistent audio stream (similar to wake word detector)
+            # Use a larger blocksize to reduce overhead - we only need samples every 5s
+            self.audio_stream = sd.InputStream(
+                device=self.mic_device_index,
+                channels=1,
+                samplerate=SAMPLE_RATE,
+                blocksize=SAMPLE_RATE // 4,  # 0.25s blocks (larger = less overhead)
+                dtype='float32',
+                callback=self._audio_callback
             )
+            self.audio_stream.start()
+            
+            self._stop_event.clear()
+            self._thread = threading.Thread(target=self._duty_cycle_loop, daemon=True)
+            self._thread.start()
+            self.running = True
+            
+            print(f"✓ HumanPresenceDetector started (checking every {DUTY_CYCLE_SECONDS}s)")
+            
+            if self.logger:
+                self.logger.info(
+                    "human_presence_detector_started",
+                    extra={
+                        "duty_cycle_seconds": DUTY_CYCLE_SECONDS,
+                        "threshold": self.threshold,
+                        "num_weighted_classes": len(self._class_weights),
+                    }
+                )
+        except Exception as e:
+            print(f"⚠ Failed to start HumanPresenceDetector audio stream: {e}")
+            self.running = False
+            raise
     
     def stop(self):
-        """Stop the background presence detection thread."""
+        """Stop the background presence detection thread and audio stream."""
         if not self.running:
             return
         
         self._stop_event.set()
+        
+        # Stop audio stream
+        if self.audio_stream:
+            try:
+                self.audio_stream.stop()
+                self.audio_stream.close()
+            except Exception as e:
+                print(f"⚠ Error closing audio stream: {e}")
+            self.audio_stream = None
         
         if self._thread and self._thread.is_alive():
             self._thread.join(timeout=2.0)
@@ -289,7 +320,25 @@ class HumanPresenceDetector:
         self._thread = None
         self.running = False
         
+        # Clear buffer
+        with self._buffer_lock:
+            self._audio_buffer.clear()
+        
         print("✓ HumanPresenceDetector stopped")
+    
+    def _audio_callback(self, indata, frames, time_info, status):
+        """
+        Audio callback - buffers incoming audio.
+        
+        Called by sounddevice from a separate thread.
+        Similar approach to wake word detector's callback.
+        """
+        if status:
+            print(f"⚠ Audio callback status: {status}")
+        
+        # Buffer audio data (copy to avoid corruption)
+        with self._buffer_lock:
+            self._audio_buffer.append(indata.copy())
     
     def _duty_cycle_loop(self):
         """
@@ -317,40 +366,39 @@ class HumanPresenceDetector:
     
     def _detect_human_presence(self):
         """
-        Capture audio sample and run YAMNet inference with weighted scoring.
+        Capture audio sample from buffer and run YAMNet inference with weighted scoring.
         
-        Opens mic, captures NUM_SAMPLES, closes mic, then processes.
-        This open/close pattern avoids hogging the mic driver.
+        Reads buffered audio from the persistent audio stream (similar to wake word detector).
         """
         # -------------------------------------------------------------------------
-        # Capture audio (blocking read, then release mic)
+        # Get recent audio from buffer
         # -------------------------------------------------------------------------
-        try:
-            audio_data = sd.rec(
-                frames=NUM_SAMPLES,
-                samplerate=SAMPLE_RATE,
-                channels=1,
-                dtype='float32',
-                device=self.mic_device_index,
-                blocking=True
-            )
-        except sd.PortAudioError as e:
-            print(f"⚠ Mic capture failed: {e}")
-            return
+        with self._buffer_lock:
+            if not self._audio_buffer:
+                # No audio data yet (stream just started)
+                return
+            
+            # Concatenate all buffered audio chunks
+            audio_data = np.concatenate(self._audio_buffer, axis=0)
+            
+            # Clear buffer for next cycle
+            self._audio_buffer.clear()
         
         # -------------------------------------------------------------------------
-        # Normalize and reshape for YAMNet input
+        # Extract most recent NUM_SAMPLES for YAMNet
         # YAMNet expects shape [15600] with float32 values in [-1.0, 1.0]
         # -------------------------------------------------------------------------
         audio_flat = audio_data.flatten()
         
-        # Ensure correct length (pad or trim if necessary)
-        if len(audio_flat) < NUM_SAMPLES:
-            audio_flat = np.pad(audio_flat, (0, NUM_SAMPLES - len(audio_flat)))
-        elif len(audio_flat) > NUM_SAMPLES:
-            audio_flat = audio_flat[:NUM_SAMPLES]
+        # Take the most recent NUM_SAMPLES (or pad if not enough)
+        if len(audio_flat) >= NUM_SAMPLES:
+            # Use the most recent audio
+            audio_flat = audio_flat[-NUM_SAMPLES:]
+        else:
+            # Pad with zeros if we don't have enough samples yet
+            audio_flat = np.pad(audio_flat, (NUM_SAMPLES - len(audio_flat), 0))
         
-        # Normalize to [-1.0, 1.0]
+        # Already float32, just ensure it's clipped to [-1.0, 1.0]
         audio_normalized = np.clip(audio_flat, -1.0, 1.0).astype(np.float32)
         
         # -------------------------------------------------------------------------
