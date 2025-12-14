@@ -528,20 +528,21 @@ class KinClient:
         if self.voice_feedback:
             self.voice_feedback.play("startup")
         
-        # Initialize wake word detector with detected microphone
-        # (No event loop needed anymore - uses synchronous HTTP!)
-        self.wake_detector = WakeWordDetector(
-            mic_device_index=self.mic_device_index,
-            orchestrator_client=self.orchestrator_client
-        )
-        
-        # Initialize human presence detector with runtime config weights and threshold
+        # Initialize human presence detector first (so we can pass it to wake word detector)
         print("\n📊 Initializing human presence detector...")
         self.presence_detector = HumanPresenceDetector(
             mic_device_index=self.mic_device_index,
             threshold=Config.HUMAN_PRESENCE_DETECTION_SCORE_THRESHOLD,
             weights=Config.YAMNET_WEIGHTS,
             orchestrator_client=self.orchestrator_client
+        )
+        
+        # Initialize wake word detector with detected microphone
+        # Pass presence_detector so they can share the audio stream
+        self.wake_detector = WakeWordDetector(
+            mic_device_index=self.mic_device_index,
+            orchestrator_client=self.orchestrator_client,
+            presence_detector=self.presence_detector
         )
         
         # Connect to conversation-orchestrator

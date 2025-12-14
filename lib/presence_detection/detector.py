@@ -204,8 +204,8 @@ class HumanPresenceDetector:
         self.last_detection_time = None
         self.running = False
         
-        # Audio stream (persistent, similar to wake word detector)
-        self.audio_stream = None
+        # Audio buffering (receives audio from wake word detector's stream)
+        # We don't open our own stream - that would conflict with wake word detector
         self._audio_buffer = []
         self._buffer_lock = threading.Lock()
         
@@ -260,59 +260,37 @@ class HumanPresenceDetector:
         print(f"  - Detection threshold: {self.threshold}")
     
     def start(self):
-        """Start the background presence detection thread and audio stream."""
+        """Start the background presence detection thread (audio comes from wake word detector)."""
         if self.running:
             return
         
-        try:
-            # Start persistent audio stream (similar to wake word detector)
-            # Use a larger blocksize to reduce overhead - we only need samples every 5s
-            self.audio_stream = sd.InputStream(
-                device=self.mic_device_index,
-                channels=1,
-                samplerate=SAMPLE_RATE,
-                blocksize=SAMPLE_RATE // 4,  # 0.25s blocks (larger = less overhead)
-                dtype='float32',
-                callback=self._audio_callback
+        # NOTE: We don't open our own audio stream - that would conflict with wake word detector
+        # Instead, we receive audio via feed_audio() called from wake word detector's callback
+        
+        self._stop_event.clear()
+        self._thread = threading.Thread(target=self._duty_cycle_loop, daemon=True)
+        self._thread.start()
+        self.running = True
+        
+        print(f"✓ HumanPresenceDetector started (checking every {DUTY_CYCLE_SECONDS}s)")
+        print(f"   Receiving audio from wake word detector's stream")
+        
+        if self.logger:
+            self.logger.info(
+                "human_presence_detector_started",
+                extra={
+                    "duty_cycle_seconds": DUTY_CYCLE_SECONDS,
+                    "threshold": self.threshold,
+                    "num_weighted_classes": len(self._class_weights),
+                }
             )
-            self.audio_stream.start()
-            
-            self._stop_event.clear()
-            self._thread = threading.Thread(target=self._duty_cycle_loop, daemon=True)
-            self._thread.start()
-            self.running = True
-            
-            print(f"✓ HumanPresenceDetector started (checking every {DUTY_CYCLE_SECONDS}s)")
-            
-            if self.logger:
-                self.logger.info(
-                    "human_presence_detector_started",
-                    extra={
-                        "duty_cycle_seconds": DUTY_CYCLE_SECONDS,
-                        "threshold": self.threshold,
-                        "num_weighted_classes": len(self._class_weights),
-                    }
-                )
-        except Exception as e:
-            print(f"⚠ Failed to start HumanPresenceDetector audio stream: {e}")
-            self.running = False
-            raise
     
     def stop(self):
-        """Stop the background presence detection thread and audio stream."""
+        """Stop the background presence detection thread."""
         if not self.running:
             return
         
         self._stop_event.set()
-        
-        # Stop audio stream
-        if self.audio_stream:
-            try:
-                self.audio_stream.stop()
-                self.audio_stream.close()
-            except Exception as e:
-                print(f"⚠ Error closing audio stream: {e}")
-            self.audio_stream = None
         
         if self._thread and self._thread.is_alive():
             self._thread.join(timeout=2.0)
@@ -326,19 +304,19 @@ class HumanPresenceDetector:
         
         print("✓ HumanPresenceDetector stopped")
     
-    def _audio_callback(self, indata, frames, time_info, status):
+    def feed_audio(self, audio_data: np.ndarray):
         """
-        Audio callback - buffers incoming audio.
+        Feed audio data to the presence detector (called from wake word detector).
         
-        Called by sounddevice from a separate thread.
-        Similar approach to wake word detector's callback.
+        Args:
+            audio_data: Audio samples as float32 array (16kHz mono, values in [-1, 1])
         """
-        if status:
-            print(f"⚠ Audio callback status: {status}")
+        if not self.running:
+            return
         
         # Buffer audio data (copy to avoid corruption)
         with self._buffer_lock:
-            self._audio_buffer.append(indata.copy())
+            self._audio_buffer.append(audio_data.copy())
     
     def _duty_cycle_loop(self):
         """
