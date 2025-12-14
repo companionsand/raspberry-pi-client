@@ -164,7 +164,7 @@ SAMPLE_RATE = 16000          # YAMNet expects 16kHz
 NUM_SAMPLES = 15600          # ~0.975 seconds of audio
 DUTY_CYCLE_SECONDS = 5       # Run detection every 5 seconds
 DETECTION_THRESHOLD = 0.3    # Weighted mean threshold for human presence (0.0-1.0)
-                             # Score = Σ(probability × weight) / Σ(weight)
+                             # Score = Σ(prob × weight) / Σ(weight) for prob > 0.1
 
 
 class HumanPresenceDetector:
@@ -264,13 +264,14 @@ class HumanPresenceDetector:
         
         weights_source = "runtime config" if weights is not None else "fallback"
         print(f"✓ HumanPresenceDetector initialized")
-        print(f"  - {len(self._class_names)} total classes")
+        print(f"  - {len(self._class_names)} total YAMNet classes")
         print(f"  - {len(self._class_weights)} weighted classes for human presence")
         print(f"  - Weights source: {weights_source}")
         print(f"  - Weight range: [{min_weight:.2f}, {max_weight:.2f}], avg: {avg_weight:.2f}")
-        print(f"  - Sum of weights: {self._sum_of_weights:.2f} (used for weighted mean)")
+        print(f"  - Sum of weights: {self._sum_of_weights:.2f} (max possible denominator)")
         print(f"  - Detection threshold: {self.threshold} (score will be 0.0-1.0)")
-        print(f"  - Scoring method: weighted mean = Σ(prob × weight) / Σ(weight)")
+        print(f"  - Confidence threshold: 0.1 (only events with >10% probability counted)")
+        print(f"  - Scoring: weighted_mean = Σ(prob × weight) / Σ(weight) for prob > 0.1")
     
     def start(self):
         """Start the background presence detection thread (audio comes from wake word detector)."""
@@ -411,28 +412,34 @@ class HumanPresenceDetector:
         
         # -------------------------------------------------------------------------
         # Calculate weighted mean for human presence
-        # weighted_mean = Σ(probability_i × weight_i) / Σ(weight_i)
+        # Only consider events with probability > 0.1 (10% confidence threshold)
+        # weighted_mean = Σ(prob_i × weight_i) / Σ(weight_i) for prob_i > 0.1
         # This gives a true weighted average probability (always 0-1)
         # -------------------------------------------------------------------------
+        CONFIDENCE_THRESHOLD = 0.1  # Only consider events with >10% probability
+        
         weighted_sum = 0.0
         total_weights = 0.0
         contributing_classes = []
         
         for class_idx, weight in self._class_weights.items():
             class_prob = float(scores[class_idx])
-            contribution = class_prob * weight
-            weighted_sum += contribution
-            total_weights += weight
             
-            # Track top contributing classes for logging
-            if class_prob > 0.1:  # Only track significant contributions
+            # Only include events with probability > threshold
+            if class_prob > CONFIDENCE_THRESHOLD:
+                contribution = class_prob * weight
+                weighted_sum += contribution
+                total_weights += weight
+                
+                # Track for logging
                 contributing_classes.append((
                     self._class_names[class_idx],
                     class_prob,
                     contribution
                 ))
         
-        # Calculate weighted mean (normalized by sum of weights)
+        # Calculate weighted mean (normalized by sum of weights of contributing events)
+        # If no events above threshold, score is 0
         weighted_score = weighted_sum / total_weights if total_weights > 0 else 0.0
         
         # Sort by contribution
@@ -451,15 +458,17 @@ class HumanPresenceDetector:
         # Diagnostic logging: Show score every cycle for threshold tuning
         # -------------------------------------------------------------------------
         timestamp = datetime.now().strftime('%H:%M:%S')
+        num_contributing = len(contributing_classes)
         
         if weighted_score >= self.threshold:
             # Human detected - show green indicator
             top_3 = [f"{name} ({prob:.2f})" for name, prob, _ in contributing_classes[:3]]
-            print(f"[{timestamp}] 🟢 Presence: {weighted_score:.3f} (DETECTED) | Top: {', '.join(top_3) if top_3 else 'none'}")
+            print(f"[{timestamp}] 🟢 Presence: {weighted_score:.3f} (DETECTED) | {num_contributing} events | Top: {', '.join(top_3) if top_3 else 'none'}")
         else:
             # Below threshold - show grey indicator with top classes for tuning
             top_3 = [f"{name} ({prob:.2f})" for name, prob, _ in contributing_classes[:3]]
-            print(f"[{timestamp}] ⚪ Presence: {weighted_score:.3f} | Top: {', '.join(top_3) if top_3 else 'silence'}")
+            status = f"{num_contributing} events" if num_contributing > 0 else "silence"
+            print(f"[{timestamp}] ⚪ Presence: {weighted_score:.3f} | {status} | Top: {', '.join(top_3) if top_3 else 'none'}")
         
         # -------------------------------------------------------------------------
         # Check if weighted score exceeds threshold
