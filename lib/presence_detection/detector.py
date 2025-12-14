@@ -175,7 +175,7 @@ class HumanPresenceDetector:
     human presence without blocking the main thread.
     """
     
-    def __init__(self, mic_device_index=None, threshold=DETECTION_THRESHOLD, weights=None, orchestrator_client=None, on_detection=None, on_cycle=None):
+    def __init__(self, mic_device_index=None, threshold=DETECTION_THRESHOLD, weights=None, orchestrator_client=None, on_detection=None, on_cycle=None, event_loop=None):
         """
         Initialize the human presence detector.
         
@@ -186,11 +186,13 @@ class HumanPresenceDetector:
             orchestrator_client: OrchestratorClient instance for sending detections.
             on_detection: Optional callback(weighted_score, top_classes) when humans detected.
             on_cycle: Optional callback(weighted_score) called every detection cycle.
+            event_loop: Main asyncio event loop for sending messages (required if orchestrator_client provided).
         """
         self.mic_device_index = mic_device_index
         self.threshold = threshold
         self.logger = Config.LOGGER
         self.orchestrator_client = orchestrator_client
+        self.event_loop = event_loop
         self.on_detection = on_detection
         self.on_cycle = on_cycle
         
@@ -507,27 +509,20 @@ class HumanPresenceDetector:
                 )
             
             # Send detection to orchestrator via WebSocket
-            if self.orchestrator_client:
+            if self.orchestrator_client and self.event_loop:
                 try:
                     # Convert weighted mean (0-1) to percentage (0-100)
                     # Since weighted_score is now a weighted mean, it's always 0-1
                     normalized_percent = float(weighted_score * 100)
                     
-                    # Get the event loop
-                    try:
-                        loop = asyncio.get_event_loop()
-                    except RuntimeError:
-                        # No event loop in current thread, try to get running loop
-                        loop = asyncio.get_running_loop()
-                    
-                    # Send asynchronously from background thread
+                    # Send asynchronously from background thread using stored event loop
                     asyncio.run_coroutine_threadsafe(
                         self.orchestrator_client.send_presence_detection(
                             probability=normalized_percent,
                             detected_at=datetime.now(timezone.utc).isoformat(),
                             top_events=top_events
                         ),
-                        loop
+                        self.event_loop
                     )
                 except Exception as e:
                     print(f"⚠ Failed to send detection to orchestrator: {e}")

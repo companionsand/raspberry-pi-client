@@ -534,7 +534,8 @@ class KinClient:
             mic_device_index=self.mic_device_index,
             threshold=Config.HUMAN_PRESENCE_DETECTION_SCORE_THRESHOLD,
             weights=Config.YAMNET_WEIGHTS,
-            orchestrator_client=self.orchestrator_client
+            orchestrator_client=self.orchestrator_client,
+            event_loop=asyncio.get_event_loop()  # Pass main event loop for async operations
         )
         
         # Initialize wake word detector with detected microphone
