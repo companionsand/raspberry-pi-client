@@ -163,7 +163,8 @@ FALLBACK_HUMAN_PRESENCE_WEIGHTS = {
 SAMPLE_RATE = 16000          # YAMNet expects 16kHz
 NUM_SAMPLES = 15600          # ~0.975 seconds of audio
 DUTY_CYCLE_SECONDS = 5       # Run detection every 5 seconds
-DETECTION_THRESHOLD = 0.3    # Weighted score threshold for human presence
+DETECTION_THRESHOLD = 0.3    # Weighted mean threshold for human presence (0.0-1.0)
+                             # Score = Σ(probability × weight) / Σ(weight)
 
 
 class HumanPresenceDetector:
@@ -252,12 +253,24 @@ class HumanPresenceDetector:
             if class_name in self.event_weights:
                 self._class_weights[class_idx] = self.event_weights[class_name]
         
+        # Calculate sum of weights (used for weighted mean calculation)
+        self._sum_of_weights = sum(self._class_weights.values())
+        
+        # Find weight statistics
+        weights_list = list(self._class_weights.values())
+        min_weight = min(weights_list) if weights_list else 0
+        max_weight = max(weights_list) if weights_list else 0
+        avg_weight = sum(weights_list) / len(weights_list) if weights_list else 0
+        
         weights_source = "runtime config" if weights is not None else "fallback"
         print(f"✓ HumanPresenceDetector initialized")
         print(f"  - {len(self._class_names)} total classes")
         print(f"  - {len(self._class_weights)} weighted classes for human presence")
         print(f"  - Weights source: {weights_source}")
-        print(f"  - Detection threshold: {self.threshold}")
+        print(f"  - Weight range: [{min_weight:.2f}, {max_weight:.2f}], avg: {avg_weight:.2f}")
+        print(f"  - Sum of weights: {self._sum_of_weights:.2f} (used for weighted mean)")
+        print(f"  - Detection threshold: {self.threshold} (score will be 0.0-1.0)")
+        print(f"  - Scoring method: weighted mean = Σ(prob × weight) / Σ(weight)")
     
     def start(self):
         """Start the background presence detection thread (audio comes from wake word detector)."""
@@ -397,15 +410,19 @@ class HumanPresenceDetector:
             scores = np.mean(scores, axis=0)
         
         # -------------------------------------------------------------------------
-        # Calculate weighted score for human presence
+        # Calculate weighted mean for human presence
+        # weighted_mean = Σ(probability_i × weight_i) / Σ(weight_i)
+        # This gives a true weighted average probability (always 0-1)
         # -------------------------------------------------------------------------
-        weighted_score = 0.0
+        weighted_sum = 0.0
+        total_weights = 0.0
         contributing_classes = []
         
         for class_idx, weight in self._class_weights.items():
             class_prob = float(scores[class_idx])
             contribution = class_prob * weight
-            weighted_score += contribution
+            weighted_sum += contribution
+            total_weights += weight
             
             # Track top contributing classes for logging
             if class_prob > 0.1:  # Only track significant contributions
@@ -414,6 +431,9 @@ class HumanPresenceDetector:
                     class_prob,
                     contribution
                 ))
+        
+        # Calculate weighted mean (normalized by sum of weights)
+        weighted_score = weighted_sum / total_weights if total_weights > 0 else 0.0
         
         # Sort by contribution
         contributing_classes.sort(key=lambda x: x[2], reverse=True)
@@ -428,16 +448,32 @@ class HumanPresenceDetector:
                 print(f"⚠ Cycle callback error: {e}")
         
         # -------------------------------------------------------------------------
+        # Diagnostic logging: Show score every cycle for threshold tuning
+        # -------------------------------------------------------------------------
+        timestamp = datetime.now().strftime('%H:%M:%S')
+        
+        if weighted_score >= self.threshold:
+            # Human detected - show green indicator
+            top_3 = [f"{name} ({prob:.2f})" for name, prob, _ in contributing_classes[:3]]
+            print(f"[{timestamp}] 🟢 Presence: {weighted_score:.3f} (DETECTED) | Top: {', '.join(top_3) if top_3 else 'none'}")
+        else:
+            # Below threshold - show grey indicator with top classes for tuning
+            top_3 = [f"{name} ({prob:.2f})" for name, prob, _ in contributing_classes[:3]]
+            print(f"[{timestamp}] ⚪ Presence: {weighted_score:.3f} | Top: {', '.join(top_3) if top_3 else 'silence'}")
+        
+        # -------------------------------------------------------------------------
         # Check if weighted score exceeds threshold
         # -------------------------------------------------------------------------
         if weighted_score >= self.threshold:
             self.last_detection_time = time.time()
             
             # Get top 5 contributing classes for sending to orchestrator
+            # contribution = probability × weight
             top_events = [
                 {
                     "event": name,
-                    "percent_contribution": float(contribution * 100)  # Convert to 0-100 scale
+                    "probability": float(prob),  # Raw YAMNet probability (0-1)
+                    "contribution": float(contribution)  # prob × weight (unnormalized)
                 }
                 for name, prob, contribution in contributing_classes[:5]
             ]
@@ -448,8 +484,8 @@ class HumanPresenceDetector:
                 for name, prob, _ in contributing_classes[:3]
             ]
             
-            print(f"[HUMAN DETECTED] Weighted score: {weighted_score:.3f}")
-            print(f"  Top contributors: {', '.join(top_classes)}")
+            # Additional detail logging (main cycle log is printed above)
+            print(f"  ↳ Sending to orchestrator: probability={weighted_score*100:.1f}%, top_events={len(top_events)}")
             
             if self.logger:
                 self.logger.info(
@@ -464,28 +500,26 @@ class HumanPresenceDetector:
             # Send detection to orchestrator via WebSocket
             if self.orchestrator_client:
                 try:
-                    # Prepare message
-                    message = {
-                        "type": "human_presence_detection",
-                        "probability": float(weighted_score * 100),  # Convert to 0-100 scale
-                        "detected_at": datetime.now(timezone.utc).isoformat(),
-                        "top_events": top_events
-                    }
+                    # Convert weighted mean (0-1) to percentage (0-100)
+                    # Since weighted_score is now a weighted mean, it's always 0-1
+                    normalized_percent = float(weighted_score * 100)
                     
-                    # Send asynchronously
+                    # Get the event loop
+                    try:
+                        loop = asyncio.get_event_loop()
+                    except RuntimeError:
+                        # No event loop in current thread, try to get running loop
+                        loop = asyncio.get_running_loop()
+                    
+                    # Send asynchronously from background thread
                     asyncio.run_coroutine_threadsafe(
-                        self.orchestrator_client.send_message(message),
-                        self.orchestrator_client.loop
+                        self.orchestrator_client.send_presence_detection(
+                            probability=normalized_percent,
+                            detected_at=datetime.now(timezone.utc).isoformat(),
+                            top_events=top_events
+                        ),
+                        loop
                     )
-                    
-                    if self.logger:
-                        self.logger.info(
-                            "presence_detection_sent",
-                            extra={
-                                "probability": message["probability"],
-                                "top_events_count": len(top_events),
-                            }
-                        )
                 except Exception as e:
                     print(f"⚠ Failed to send detection to orchestrator: {e}")
                     if self.logger:

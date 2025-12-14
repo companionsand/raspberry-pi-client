@@ -999,3 +999,69 @@ class OrchestratorClient:
                     "device_id": Config.DEVICE_ID
                 }
             )
+    
+    async def send_presence_detection(
+        self,
+        probability: float,
+        detected_at: str,
+        top_events: list
+    ) -> bool:
+        """Send human presence detection data to orchestrator (async).
+        
+        Args:
+            probability: Weighted probability score (0-100 scale)
+            detected_at: ISO timestamp when presence was detected
+            top_events: List of top contributing events with percent_contribution
+            
+        Returns:
+            True if sent successfully, False otherwise
+        """
+        if not self.is_connection_alive():
+            if self.logger:
+                self.logger.warning(
+                    "send_presence_detection_failed_disconnected",
+                    extra={
+                        "user_id": Config.USER_ID,
+                        "device_id": Config.DEVICE_ID
+                    }
+                )
+            return False
+        
+        message = {
+            "type": "human_presence_detection",
+            "probability": probability,
+            "detected_at": detected_at,
+            "top_events": top_events
+        }
+        
+        try:
+            # Inject telemetry context if available
+            if TELEMETRY_AVAILABLE:
+                inject_trace_context(message)
+            
+            await self.websocket.send(json.dumps(message))
+            
+            if self.logger:
+                self.logger.info(
+                    "presence_detection_sent",
+                    extra={
+                        "probability": probability,
+                        "top_events_count": len(top_events),
+                        "user_id": Config.USER_ID,
+                        "device_id": Config.DEVICE_ID
+                    }
+                )
+            return True
+            
+        except Exception as e:
+            if self.logger:
+                self.logger.warning(
+                    "send_presence_detection_failed",
+                    extra={
+                        "error": str(e),
+                        "user_id": Config.USER_ID,
+                        "device_id": Config.DEVICE_ID
+                    },
+                    exc_info=True
+                )
+            return False
