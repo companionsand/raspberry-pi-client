@@ -162,3 +162,4 @@ Any state → ERROR → (after timeout) → Previous state or IDLE
 - Update rate: 30-100ms for smooth visual experience
 - Uses pixel_ring library for ReSpeaker hardware control
 
+
