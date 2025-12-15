@@ -99,6 +99,11 @@ class WiFiSetupManager:
                     
                     # Update status: inform user they'll lose connection
                     self.http_server.set_status("connecting", "✓ Credentials received!\n\nDevice will now connect to your WiFi network.\n\nYou can disconnect from Kin_Setup.")
+                    
+                    # Play voice feedback
+                    if self.voice_feedback:
+                        self.voice_feedback.play("connecting_to_wifi")
+                    
                     await asyncio.sleep(5)  # Give user time to read before AP stops
                     
                     # Try to connect to configured WiFi (this will stop the AP)
@@ -108,6 +113,12 @@ class WiFiSetupManager:
                         if await self.connectivity_checker.check_internet():
                             self.http_server.set_status("connecting", "WiFi connected! Now ready for authentication...")
                             
+                            # Play voice feedback
+                            if self.voice_feedback:
+                                self.voice_feedback.play("wifi_connected")
+                            
+                            await asyncio.sleep(2)  # Give voice feedback time to complete
+                            
                             # Keep AP and HTTP server running so user can see auth status
                             # They will be stopped by main.py after showing final status
                             
@@ -115,10 +126,20 @@ class WiFiSetupManager:
                             return self._pairing_code, True
                         else:
                             logger.warning("Connected to WiFi but no internet access")
+                            
+                            # Play voice feedback
+                            if self.voice_feedback:
+                                self.voice_feedback.play("wifi_not_connected")
+                            
                             self.http_server.set_status("error", "Connected to WiFi but no internet access", "Please check your router's internet connection and try again")
                             await asyncio.sleep(8)  # Give user time to read
                     else:
                         logger.warning("Failed to connect to configured WiFi")
+                        
+                        # Play voice feedback
+                        if self.voice_feedback:
+                            self.voice_feedback.play("wifi_not_connected")
+                        
                         self.http_server.set_status("error", "Failed to connect to WiFi", "Please check your WiFi password and try again")
                         await asyncio.sleep(8)  # Give user time to read
                 
