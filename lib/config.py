@@ -159,18 +159,33 @@ class Config:
         cls.OTEL_EXPORTER_ENDPOINT = "http://localhost:4318"
         
         # Load ReSpeaker configuration (if provided by backend)
-        # agc_gain: 1.0 = minimum (no amplification), higher values amplify echo
-        # agc_on_off: 0 = AGC disabled (prevents echo amplification)
+        # Optimized settings based on December 2025 testing
         cls.RESPEAKER_CONFIG = system_config.get("respeaker_config", {
-            "agc_gain": 1.0,
-            "agc_on_off": 0,
-            "aec_freeze_on_off": 0,
-            "echo_on_off": 1,
-            "hpf_on_off": 1,
-            "stat_noise_on_off": 1,
-            "gamma_e": 2.0,
-            "gamma_enl": 3.0,
-            "gamma_etail": 2.0
+            # AGC Settings - Unity gain prevents artifacts
+            "agc_gain": 1.0,  # 0 dB - strictly unity gain
+            "agc_on_off": 0,  # Keep AGC disabled
+            
+            # AEC Settings - Prevent filter saturation
+            "aec_freeze_on_off": 0,  # Keep AEC adaptive
+            "aecnorm": 16.0,  # Essential to prevent filter saturation
+            
+            # Echo Suppression - Safety margin against echo leakage
+            "echo_on_off": 1,  # Enable echo suppression
+            "gamma_e": 2.5,  # Increased from 2.0 for safety margin
+            "gamma_enl": 3.0,  # Retain baseline
+            "gamma_etail": 2.0,  # Handle internal reverberation
+            
+            # Noise Suppression - Retain baseline
+            "stat_noise_on_off": 1,  # Enable stationary noise suppression
+            "gamma_ns": 1.0,  # Sufficient suppression without distortion
+            "min_ns": 0.15,  # -16 dB floor
+            
+            # Other Filters
+            "hpf_on_off": 1,  # Enable high-pass filter
+            "transientonoff": 1,  # Help with sudden noises
+            
+            # CRITICAL: NLAEC must remain disabled to prevent device failure
+            "nlaec_mode": 0  # MUST be OFF (0) - enabling causes device bricking
         })
         
         # Note: ReSpeaker config is now applied by the Python client on startup (main.py)

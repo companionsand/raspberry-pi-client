@@ -22,17 +22,34 @@ class ReSpeakerController:
         "tuning.py"
     )
     
-    # Default configuration (matches wrapper defaults)
+    # Default configuration - optimized based on testing
+    # See: Testing findings for rationale on each parameter
     DEFAULT_CONFIG = {
-        "agc_gain": 3.0,
-        "agc_on_off": 0,
-        "aec_freeze_on_off": 0,
-        "echo_on_off": 1,
-        "hpf_on_off": 1,
-        "stat_noise_on_off": 1,
-        "gamma_e": 2.0,
-        "gamma_enl": 3.0,
-        "gamma_etail": 2.0
+        # AGC Settings - Unity gain prevents artifacts
+        "agc_gain": 1.0,  # 0 dB - strictly unity gain
+        "agc_on_off": 0,  # Keep AGC disabled
+        
+        # AEC Settings - Prevent filter saturation
+        "aec_freeze_on_off": 0,  # Keep AEC adaptive
+        "aecnorm": 16.0,  # Essential to prevent filter saturation
+        
+        # Echo Suppression - Safety margin against echo leakage
+        "echo_on_off": 1,  # Enable echo suppression
+        "gamma_e": 2.5,  # Increased from 2.0 for safety margin
+        "gamma_enl": 3.0,  # Retain baseline
+        "gamma_etail": 2.0,  # Handle internal reverberation
+        
+        # Noise Suppression - Retain baseline
+        "stat_noise_on_off": 1,  # Enable stationary noise suppression
+        "gamma_ns": 1.0,  # Sufficient suppression without distortion
+        "min_ns": 0.15,  # -16 dB floor
+        
+        # Other Filters
+        "hpf_on_off": 1,  # Enable high-pass filter
+        "transientonoff": 1,  # Help with sudden noises
+        
+        # CRITICAL: NLAEC must remain disabled to prevent device failure
+        "nlaec_mode": 0  # MUST be OFF (0) - enabling causes device bricking
     }
     
     def __init__(self, config: Optional[Dict] = None, logger: Optional[logging.Logger] = None):
@@ -120,28 +137,31 @@ class ReSpeakerController:
         # Apply parameters in specific order for best results
         success = True
         
-        # 1. Freeze AGC first (prevent auto-adjustment)
+        # CRITICAL: Ensure NLAEC is disabled first (prevents device bricking)
+        success &= self._apply_parameter("NLAECMODE", self.config.get("nlaec_mode", 0))
+        
+        # 1. AGC Settings - Disable AGC and set unity gain
         success &= self._apply_parameter("AGCONOFF", self.config.get("agc_on_off", 0))
+        success &= self._apply_parameter("AGCGAIN", self.config.get("agc_gain", 1.0))
         
-        # 2. Set AGC gain
-        success &= self._apply_parameter("AGCGAIN", self.config.get("agc_gain", 3.0))
-        
-        # 3. Enable AEC adaptation
+        # 2. AEC Settings - Set normalization and enable adaptation
+        success &= self._apply_parameter("AECNORM", self.config.get("aecnorm", 16.0))
         success &= self._apply_parameter("AECFREEZEONOFF", self.config.get("aec_freeze_on_off", 0))
         
-        # 4. Enable echo suppression
+        # 3. Echo Suppression - Enable and configure gamma parameters
         success &= self._apply_parameter("ECHOONOFF", self.config.get("echo_on_off", 1))
-        
-        # 5. Enable high-pass filter
-        success &= self._apply_parameter("HPFONOFF", self.config.get("hpf_on_off", 1))
-        
-        # 6. Enable stationary noise suppression
-        success &= self._apply_parameter("STATNOISEONOFF", self.config.get("stat_noise_on_off", 1))
-        
-        # 7. Set echo suppression gamma parameters
-        success &= self._apply_parameter("GAMMA_E", self.config.get("gamma_e", 2.0))
+        success &= self._apply_parameter("GAMMA_E", self.config.get("gamma_e", 2.5))
         success &= self._apply_parameter("GAMMA_ENL", self.config.get("gamma_enl", 3.0))
         success &= self._apply_parameter("GAMMA_ETAIL", self.config.get("gamma_etail", 2.0))
+        
+        # 4. Noise Suppression - Enable and configure
+        success &= self._apply_parameter("STATNOISEONOFF", self.config.get("stat_noise_on_off", 1))
+        success &= self._apply_parameter("GAMMA_NS", self.config.get("gamma_ns", 1.0))
+        success &= self._apply_parameter("MIN_NS", self.config.get("min_ns", 0.15))
+        
+        # 5. Other Filters
+        success &= self._apply_parameter("HPFONOFF", self.config.get("hpf_on_off", 1))
+        success &= self._apply_parameter("TRANSIENTONOFF", self.config.get("transientonoff", 1))
         
         if success:
             self.logger.info("ReSpeaker initialization complete")
