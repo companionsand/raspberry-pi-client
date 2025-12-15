@@ -138,7 +138,7 @@ class ReSpeakerController:
         success = True
         
         # CRITICAL: Ensure NLAEC is disabled first (prevents device bricking)
-        success &= self._apply_parameter("NLAECMODE", self.config.get("nlaec_mode", 0))
+        success &= self._apply_parameter("NLAEC_MODE", self.config.get("nlaec_mode", 0))
         
         # 1. AGC Settings - Disable AGC and set unity gain
         success &= self._apply_parameter("AGCONOFF", self.config.get("agc_on_off", 0))
