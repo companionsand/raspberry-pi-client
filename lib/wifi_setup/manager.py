@@ -117,7 +117,7 @@ class WiFiSetupManager:
                             if self.voice_feedback:
                                 self.voice_feedback.play("wifi_connected")
                             
-                            await asyncio.sleep(2)  # Give voice feedback time to complete
+                            await asyncio.sleep(3)  # Give voice feedback time to complete
                             
                             # Keep AP and HTTP server running so user can see auth status
                             # They will be stopped by main.py after showing final status

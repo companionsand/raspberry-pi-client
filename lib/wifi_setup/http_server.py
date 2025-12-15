@@ -521,7 +521,9 @@ class SetupHTTPServer:
         if self._server:
             logger.info("[HTTP] Stopping HTTP server...")
             try:
-                self._server.shutdown()
+                # Run shutdown in executor to avoid blocking the event loop
+                loop = asyncio.get_event_loop()
+                await loop.run_in_executor(None, self._server.shutdown)
                 self._server.server_close()
                 self._server = None
                 self._server_thread = None
