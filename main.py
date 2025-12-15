@@ -199,8 +199,46 @@ class KinClient:
         self.led_controller = LEDController(enabled=led_enabled)
         self.led_controller.set_state(LEDController.STATE_BOOT)
         
-        # Check if WiFi setup should be skipped (default: no)
-        skip_wifi_setup = os.getenv('SKIP_WIFI_SETUP', 'false').lower() == 'true'
+        # Determine if WiFi setup should be skipped
+        # Priority: env var (for testing) → cached config → default (false = allow setup)
+        skip_wifi_setup = False  # Default: allow WiFi setup
+        config_source = "default"  # Track where the value came from
+        
+        # Check env var override first (for testing/debugging)
+        env_skip_wifi = os.getenv('SKIP_WIFI_SETUP')
+        if env_skip_wifi:
+            skip_wifi_setup = env_skip_wifi.lower() == 'true'
+            config_source = "env_var"
+            print(f"ℹ️  Using SKIP_WIFI_SETUP from environment: {skip_wifi_setup}")
+        else:
+            # Check cached config from last successful authentication
+            cached_config = Config.load_device_config_cache()
+            if cached_config and cached_config.get("device"):
+                cached_skip = cached_config["device"].get("skip_wifi_setup", "false")
+                skip_wifi_setup = cached_skip.lower() == 'true' if isinstance(cached_skip, str) else bool(cached_skip)
+                config_source = "cached_config"
+                print(f"ℹ️  Using skip_wifi_setup from cached config: {skip_wifi_setup}")
+            else:
+                print(f"ℹ️  No cached config found, using default: skip_wifi_setup={skip_wifi_setup}")
+        
+        # Log final skip_wifi_setup value for monitoring
+        print("=" * 60)
+        print(f"⚙️  SKIP_WIFI_SETUP: {skip_wifi_setup}")
+        print(f"   WiFi Setup Mode: {'DISABLED' if skip_wifi_setup else 'ENABLED'}")
+        print(f"   Config Source: {config_source}")
+        print("=" * 60)
+        
+        # Structured log for monitoring/alerting
+        if self.logger:
+            self.logger.info(
+                "skip_wifi_setup_config",
+                extra={
+                    "skip_wifi_setup": skip_wifi_setup,
+                    "wifi_setup_mode": "disabled" if skip_wifi_setup else "enabled",
+                    "config_source": config_source
+                }
+            )
+        
         pairing_code = None  # Will be set by WiFi setup if needed
         
         # WiFi Setup Mode - only if enabled and available

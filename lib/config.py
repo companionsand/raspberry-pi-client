@@ -226,3 +226,47 @@ class Config:
             print(f"✓ ReSpeaker config saved to {config_file} (will apply on next restart)")
         except Exception as e:
             print(f"⚠️  Could not save ReSpeaker config: {e}")
+    
+    @classmethod
+    def save_device_config_cache(cls, config_data: dict):
+        """
+        Save full device configuration to cache file.
+        
+        This allows the device to use cached config on boot if internet is unavailable.
+        Cache includes skip_wifi_setup and other critical settings.
+        
+        Args:
+            config_data: Full config dict from /auth/device/config endpoint
+        """
+        import json
+        
+        config_file = os.path.expanduser("~/.kin_config.json")
+        
+        try:
+            with open(config_file, 'w') as f:
+                json.dump(config_data, f, indent=2)
+            print(f"✓ Device config cached to {config_file}")
+        except Exception as e:
+            print(f"⚠️  Could not save device config cache: {e}")
+    
+    @classmethod
+    def load_device_config_cache(cls):
+        """
+        Load cached device configuration from file.
+        
+        Returns:
+            dict: Cached config data, or None if cache doesn't exist or is invalid
+        """
+        import json
+        
+        config_file = os.path.expanduser("~/.kin_config.json")
+        
+        if not os.path.exists(config_file):
+            return None
+        
+        try:
+            with open(config_file, 'r') as f:
+                return json.load(f)
+        except Exception as e:
+            print(f"⚠️  Could not load device config cache: {e}")
+            return None

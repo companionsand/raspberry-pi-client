@@ -149,6 +149,9 @@ def authenticate_device(pairing_code: Optional[str] = None) -> Optional[Dict[str
         
         print(f"✓ Configuration loaded")
         
+        # Cache the configuration for use on next boot (in case of no internet)
+        Config.save_device_config_cache(config_data)
+        
         return {
             "success": True,
             "jwt_token": jwt_token,
