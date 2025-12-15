@@ -467,10 +467,11 @@ class HumanPresenceDetector:
             top_3 = [f"{name} ({prob:.2f})" for name, prob, _ in contributing_classes[:3]]
             print(f"[{timestamp}] 🟢 Presence: {weighted_score:.3f} (DETECTED) | {num_contributing} events | Top: {', '.join(top_3) if top_3 else 'none'}")
         else:
-            # Below threshold - show grey indicator with top classes for tuning
-            top_3 = [f"{name} ({prob:.2f})" for name, prob, _ in contributing_classes[:3]]
-            status = f"{num_contributing} events" if num_contributing > 0 else "silence"
-            print(f"[{timestamp}] ⚪ Presence: {weighted_score:.3f} | {status} | Top: {', '.join(top_3) if top_3 else 'none'}")
+            # Below threshold - show grey indicator with top classes for tuning (if debug logs enabled)
+            if Config.SHOW_PRESENCE_DETECTION_DEBUG_LOGS:
+                top_3 = [f"{name} ({prob:.2f})" for name, prob, _ in contributing_classes[:3]]
+                status = f"{num_contributing} events" if num_contributing > 0 else "silence"
+                print(f"[PRESENCE_DEBUG] ⚪ Presence: {weighted_score:.3f} | {status} | Top: {', '.join(top_3) if top_3 else 'none'}")
         
         # -------------------------------------------------------------------------
         # Check if weighted score exceeds threshold

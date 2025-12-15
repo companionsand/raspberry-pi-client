@@ -56,6 +56,7 @@ class Config:
     SHOW_LED_STATE_LOGS = True
     SHOW_VAD_DIAGNOSTIC_LOGS = True
     SHOW_WAKE_WORD_DEBUG_LOGS = True
+    SHOW_PRESENCE_DETECTION_DEBUG_LOGS = False
     
     # API Keys (fetched from backend)
     ELEVENLABS_API_KEY = None
@@ -137,7 +138,7 @@ class Config:
         cls.YAMNET_WEIGHTS = system_config.get("yamnet_weights", {})
         cls.HUMAN_PRESENCE_DETECTION_SCORE_THRESHOLD = float(system_config.get("human_presence_detection_score_threshold", "0.3"))
         
-        # Set logging settings (default to True if not provided)
+        # Set logging settings (default to True if not provided, except presence debug logs)
         cls.SHOW_AEC_DEBUG_LOGS = str(logging_settings.get("show_aec_debug_logs", "true")).lower() == "true"
         cls.SHOW_ELEVENLABS_AUDIO_CHUNK_LOGS = str(logging_settings.get("show_elevenlabs_audio_chunk_logs", "true")).lower() == "true"
         cls.SHOW_CONVERSATION_STATUS_LOGS = str(logging_settings.get("show_conversation_status_logs", "true")).lower() == "true"
@@ -145,6 +146,7 @@ class Config:
         cls.SHOW_LED_STATE_LOGS = str(logging_settings.get("show_led_state_logs", "true")).lower() == "true"
         cls.SHOW_VAD_DIAGNOSTIC_LOGS = str(logging_settings.get("show_vad_diagnostic_logs", "true")).lower() == "true"
         cls.SHOW_WAKE_WORD_DEBUG_LOGS = str(logging_settings.get("show_wake_word_debug_logs", "true")).lower() == "true"
+        cls.SHOW_PRESENCE_DETECTION_DEBUG_LOGS = str(logging_settings.get("show_presence_detection_debug_logs", "false")).lower() == "true"
         
         # Set default reactive agent (for fast wake word response)
         if default_reactive_agent:
