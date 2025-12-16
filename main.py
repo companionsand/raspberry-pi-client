@@ -29,6 +29,7 @@ import signal
 import time
 import asyncio
 import logging
+from datetime import datetime
 
 # Configure logging BEFORE any other imports (critical for telemetry)
 # This ensures OTEL handler captures console output
@@ -563,8 +564,15 @@ class KinClient:
             self.voice_feedback.speaker_device_index = self.speaker_device_index
         
         # Play startup message now that speaker device is configured
+        # Skip during quiet hours (8pm-10am) to avoid noise
         if self.voice_feedback:
-            self.voice_feedback.play("startup")
+            current_hour = datetime.now().hour
+            is_quiet_hours = current_hour >= 20 or current_hour < 10
+            
+            if is_quiet_hours:
+                logger.info("[Main] Skipping startup voice feedback (quiet hours: 8pm-10am)")
+            else:
+                self.voice_feedback.play("startup")
         
         # Initialize human presence detector first (so we can pass it to wake word detector)
         print("\n📊 Initializing human presence detector...")
