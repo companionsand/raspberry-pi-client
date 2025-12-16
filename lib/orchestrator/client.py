@@ -27,7 +27,6 @@ class OrchestratorClient:
         self.running = False
         self.logger = Config.LOGGER
         self.reconnect_attempts = 0
-        self.max_reconnect_attempts = 10
         self.reconnect_base_delay = 1.0  # Base delay for exponential backoff
         self.context_manager = context_manager
         self.token_refresh_task = None  # Background task handle
@@ -76,7 +75,7 @@ class OrchestratorClient:
         logger = self.logger
         
         if is_reconnect:
-            print(f"\n🔄 Reconnecting to conversation-orchestrator (attempt {self.reconnect_attempts + 1}/{self.max_reconnect_attempts})...")
+            print(f"\n🔄 Reconnecting to conversation-orchestrator (attempt {self.reconnect_attempts + 1})...")
         else:
             print(f"\n🔌 Connecting to conversation-orchestrator...")
             print(f"   URL: {Config.ORCHESTRATOR_URL}")
@@ -191,19 +190,6 @@ class OrchestratorClient:
     
     async def reconnect(self):
         """Attempt to reconnect with exponential backoff and token refresh on auth failures"""
-        if self.reconnect_attempts >= self.max_reconnect_attempts:
-            print(f"✗ Max reconnection attempts ({self.max_reconnect_attempts}) reached")
-            if self.logger:
-                self.logger.error(
-                    "max_reconnection_attempts_reached",
-                    extra={
-                        "attempts": self.reconnect_attempts,
-                        "user_id": Config.USER_ID,
-                        "device_id": Config.DEVICE_ID
-                    }
-                )
-            return False
-        
         # Calculate exponential backoff delay
         delay = self.reconnect_base_delay * (2 ** self.reconnect_attempts)
         delay = min(delay, 60)  # Cap at 60 seconds
