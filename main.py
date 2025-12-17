@@ -570,7 +570,8 @@ class KinClient:
             is_quiet_hours = current_hour >= 20 or current_hour < 10
             
             if is_quiet_hours:
-                logger.info("[Main] Skipping startup voice feedback (quiet hours: 8pm-10am)")
+                if self.logger:
+                    self.logger.info("[Main] Skipping startup voice feedback (quiet hours: 8pm-10am)")
             else:
                 self.voice_feedback.play("startup")
         
