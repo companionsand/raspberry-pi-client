@@ -68,6 +68,8 @@ try:
         create_conversation_trace,
         inject_trace_context,
         extract_trace_context,
+        setup_stdout_redirect,
+        cleanup_stdout_redirect,
     )
     TELEMETRY_AVAILABLE = True
 except ImportError:
@@ -77,6 +79,15 @@ except ImportError:
     def get_otel_logger(name, device_id=None):
         import logging
         return logging.getLogger(name)
+    def setup_stdout_redirect():
+        return False
+    def cleanup_stdout_redirect():
+        pass
+
+# Setup stdout/stderr redirection EARLY (before any print statements)
+# This captures all print() output and sends it to OTEL/BetterStack
+if TELEMETRY_AVAILABLE:
+    setup_stdout_redirect("raspberry-pi-client")
 
 
 # =============================================================================
@@ -1028,6 +1039,10 @@ class KinClient:
         
         print("✓ Cleanup complete")
         print("👋 Goodbye!\n")
+        
+        # Cleanup stdout/stderr redirection (restore original streams)
+        if TELEMETRY_AVAILABLE:
+            cleanup_stdout_redirect()
 
 
 # =============================================================================

@@ -13,6 +13,11 @@ from .telemetry import (
     record_exception,
 )
 
+from .stdout_redirect import (
+    setup_stdout_redirect,
+    cleanup_stdout_redirect,
+)
+
 __all__ = [
     "setup_telemetry",
     "get_tracer",
@@ -24,5 +29,7 @@ __all__ = [
     "inject_trace_context",
     "extract_trace_context",
     "record_exception",
+    "setup_stdout_redirect",
+    "cleanup_stdout_redirect",
 ]
 
