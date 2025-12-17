@@ -111,8 +111,7 @@ class ElevenLabsConversationClient:
         self._last_status_log_time = 0.0
         self._status_log_interval = 10.0  # Log status every 10 seconds
         
-        # Max conversation duration failsafe (5 minutes)
-        self._max_conversation_duration = 300.0  # 5 minutes
+        # Track conversation start time for status logging
         self._conversation_start_time = None
         
         # ElevenLabs audio sample rate - detect from metadata or assume 16kHz (same as playback)
@@ -302,7 +301,7 @@ class ElevenLabsConversationClient:
                 self.websocket = websocket
                 self.running = True
                 self.last_audio_time = time.time()
-                self._conversation_start_time = time.time()  # For max duration failsafe
+                self._conversation_start_time = time.time()  # For status logging
                 
                 print("✓ Connected to ElevenLabs")
                 
@@ -592,26 +591,6 @@ class ElevenLabsConversationClient:
                     self.end_reason = "user_terminated"
                     self.running = False
                     break
-                
-                # Check for max conversation duration failsafe
-                if self._conversation_start_time:
-                    conversation_duration = time.time() - self._conversation_start_time
-                    if conversation_duration > self._max_conversation_duration:
-                        print(f"\n⏱️ Max conversation duration ({self._max_conversation_duration}s) reached - ending")
-                        if logger:
-                            logger.warning(
-                                "conversation_max_duration_reached",
-                                extra={
-                                    "conversation_id": self.conversation_id,
-                                    "duration_seconds": conversation_duration,
-                                    "max_duration": self._max_conversation_duration,
-                                    "user_id": Config.USER_ID,
-                                    "device_id": Config.DEVICE_ID
-                                }
-                            )
-                        self.end_reason = "max_duration"
-                        self.running = False
-                        break
                 
                 # Periodic status logging for debugging stuck conversations
                 now = time.time()
