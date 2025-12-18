@@ -305,11 +305,21 @@ def ensure_alsa_config(card_number: int):
                     print(f"⚠ /etc/asound.conf: Existing but missing softvol/AEC config")
                 print("  Creating backup and updating...")
                 
-                # Backup existing config
+                # Backup existing config using sudo
                 timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
                 backup_path = f"{asound_conf_path}.backup.{timestamp}"
-                shutil.copy2(asound_conf_path, backup_path)
-                print(f"  ✓ Backed up to: {backup_path}")
+                try:
+                    subprocess.run(
+                        ["sudo", "cp", asound_conf_path, backup_path],
+                        capture_output=True,
+                        timeout=5,
+                        check=True
+                    )
+                    print(f"  ✓ Backed up to: {backup_path}")
+                except subprocess.CalledProcessError as e:
+                    print(f"  ⚠ Could not backup config: {e}")
+                except Exception as e:
+                    print(f"  ⚠ Backup error: {e}")
                 
                 if logger:
                     logger.info(
@@ -338,9 +348,43 @@ def ensure_alsa_config(card_number: int):
                 )
         
         # Write the configuration with correct card number
+        # Use sudo since /etc/asound.conf requires root permissions
         asound_config = generate_asound_conf(card_number)
-        with open(asound_conf_path, 'w') as f:
-            f.write(asound_config)
+        
+        # Write config using sudo (service may not run as root)
+        try:
+            result = subprocess.run(
+                ["sudo", "tee", asound_conf_path],
+                input=asound_config,
+                text=True,
+                capture_output=True,
+                timeout=5
+            )
+            
+            if result.returncode != 0:
+                print(f"✗ Failed to write config: {result.stderr}")
+                if logger:
+                    logger.error(
+                        "alsa_config_write_failed",
+                        extra={
+                            "config_path": asound_conf_path,
+                            "error": result.stderr,
+                            "user_id": Config.USER_ID
+                        }
+                    )
+                return False
+        except Exception as e:
+            print(f"✗ Error writing config: {e}")
+            if logger:
+                logger.error(
+                    "alsa_config_write_error",
+                    extra={
+                        "config_path": asound_conf_path,
+                        "error": str(e),
+                        "user_id": Config.USER_ID
+                    }
+                )
+            return False
         
         print(f"✓ /etc/asound.conf: Created for card {card_number} with softvol control")
         print("  ReSpeaker audio routing: Ch0 (AEC) for input, softvol for output")
@@ -359,13 +403,14 @@ def ensure_alsa_config(card_number: int):
         return True
         
     except PermissionError:
-        print(f"✗ /etc/asound.conf: Permission denied (service must run as root)")
+        print(f"✗ /etc/asound.conf: Permission denied (sudo access required)")
         if logger:
             logger.error(
                 "alsa_config_permission_denied",
                 extra={
                     "config_path": asound_conf_path,
                     "error": "permission_denied",
+                    "note": "User must have sudo privileges",
                     "user_id": Config.USER_ID
                 }
             )

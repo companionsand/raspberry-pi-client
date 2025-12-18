@@ -35,6 +35,40 @@ sudo ./scripts/reset_audio_config.sh --keep-minimal
 
 ---
 
+### `setup_sudoers.sh`
+
+**Purpose:** Configure passwordless sudo for audio configuration commands
+
+**Usage:**
+
+```bash
+# For production (kin user)
+sudo ./scripts/setup_sudoers.sh kin
+
+# For development (aushim user)
+sudo ./scripts/setup_sudoers.sh aushim
+
+# Auto-detect (tries kin, falls back to aushim)
+sudo ./scripts/setup_sudoers.sh
+```
+
+**What it does:**
+
+- Creates `/etc/sudoers.d/raspberry-pi-client`
+- Allows service user to run audio commands without password:
+  - ReSpeaker tuning (python3 tuning.py)
+  - ALSA config (tee, cp, amixer, alsactl)
+  - Audio diagnostics (aplay, arecord)
+  - Time sync (timedatectl)
+
+**Use cases:**
+
+- Required for auto-configuration of `/etc/asound.conf`
+- Required for ReSpeaker tuning on startup
+- One-time setup during device provisioning
+
+---
+
 ### `generate_voice_messages.py`
 
 **Purpose:** Generate voice message WAV files for voice feedback system
@@ -86,6 +120,9 @@ python scripts/generate_voice_messages.py
 ## Quick Reference
 
 ```bash
+# Setup sudoers (one-time, required for auto-config)
+sudo ./scripts/setup_sudoers.sh
+
 # Audio reset (full)
 sudo ./scripts/reset_audio_config.sh
 
@@ -98,3 +135,11 @@ python scripts/generate_voice_messages.py
 # View backups
 ls -lh /root/audio_config_backups/
 ```
+
+## First-Time Setup Checklist
+
+1. ✅ Install dependencies (`sudo apt install alsa-utils python3-venv`)
+2. ✅ Configure sudoers: `sudo ./scripts/setup_sudoers.sh`
+3. ✅ Deploy code and create virtualenv
+4. ✅ Configure service (see RASPBERRY_PI_SETUP.md)
+5. ✅ Start service: `sudo systemctl start kin-client`

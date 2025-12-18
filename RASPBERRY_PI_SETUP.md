@@ -191,7 +191,27 @@ Expected logs: Device auth success → ALSA verification → “Ready! Say ‘po
 
 ---
 
-## 5. Deploy as Service (optional)
+## 5. Configure Sudoers (Required for Auto-Configuration)
+
+The service needs passwordless sudo for audio configuration (ALSA, ReSpeaker tuning).
+
+```bash
+# Run the setup script
+sudo ./scripts/setup_sudoers.sh kin  # or 'aushim' for development
+
+# Verify it worked
+sudo -l -U kin | grep tee  # Should show /usr/bin/tee /etc/asound.conf
+```
+
+This allows the service to:
+
+- Auto-configure `/etc/asound.conf`
+- Apply ReSpeaker tuning parameters
+- Set audio volume controls
+
+---
+
+## 6. Deploy as Service (optional)
 
 ```bash
 cat <<'EOF' | sudo tee /etc/systemd/system/kin-client.service
