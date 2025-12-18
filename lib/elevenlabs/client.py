@@ -158,9 +158,11 @@ class ElevenLabsConversationClient:
             input_channels = Config.CHANNELS  # Default to mono
             
             # Track device indices for duplex stream
-            # ReSpeaker may expose INPUT and OUTPUT as DIFFERENT device indices!
-            respeaker_input_idx = self.mic_device_index
-            respeaker_output_idx = output_device  # Start with configured output
+            # IMPORTANT: Use ALSA device names instead of numeric indices to route
+            # through /etc/asound.conf (which includes softvol control)
+            # When mic_device_index/speaker_device_index are None, use ALSA "default"
+            respeaker_input_device = self.mic_device_index  # Will be "default" if None
+            respeaker_output_device = output_device  # Will be "default" if None
             
             try:
                 devices = sd.query_devices()
@@ -168,7 +170,6 @@ class ElevenLabsConversationClient:
                 # Find ReSpeaker INPUT device (6+ input channels)
                 if self.mic_device_index is not None:
                     input_dev = devices[self.mic_device_index]
-                    respeaker_input_idx = self.mic_device_index
                 else:
                     # Scan for ReSpeaker input device
                     input_dev = None
@@ -176,7 +177,8 @@ class ElevenLabsConversationClient:
                         if any(kw in dev['name'].lower() for kw in ['respeaker', 'arrayuac10', 'uac1.0']):
                             if dev['max_input_channels'] >= Config.RESPEAKER_CHANNELS:
                                 input_dev = dev
-                                respeaker_input_idx = idx
+                                # Don't set respeaker_input_device to idx - keep it as None/"default"
+                                # This ensures we route through ALSA default (/etc/asound.conf)
                                 break
                 
                 # Check if ReSpeaker with 6 channels
@@ -184,16 +186,12 @@ class ElevenLabsConversationClient:
                     self._use_respeaker_aec = True
                     input_channels = Config.RESPEAKER_CHANNELS
                     
-                    # Find ReSpeaker OUTPUT device (may be same or different index)
-                    # Look for device with same name pattern that has output channels
-                    for idx, dev in enumerate(devices):
-                        if any(kw in dev['name'].lower() for kw in ['respeaker', 'arrayuac10', 'uac1.0']):
-                            if dev['max_output_channels'] >= 1:
-                                respeaker_output_idx = idx
-                                break
+                    # Keep respeaker_output_device as None to use ALSA default (softvol)
+                    # Don't scan for hardware output device index
                     
+                    device_name = "ALSA default" if respeaker_input_device is None else f"device {respeaker_input_device}"
                     print(f"   ✓ ReSpeaker AEC: Opening {input_channels} channels, extracting Ch{Config.RESPEAKER_AEC_CHANNEL} (AEC-processed)")
-                    print(f"   ✓ ReSpeaker input device: {respeaker_input_idx}, output device: {respeaker_output_idx}")
+                    print(f"   ✓ Using {device_name} (routes through /etc/asound.conf with softvol)")
             except Exception as e:
                 print(f"   ⚠ Could not detect ReSpeaker channels: {e}")
             
@@ -262,7 +260,7 @@ class ElevenLabsConversationClient:
                         if len(out_chunk) > frames_to_copy:
                             self._callback_remainder = out_chunk[frames_to_copy:]
                 self.stream = sd.Stream(
-                    device=(respeaker_input_idx, respeaker_output_idx),
+                    device=(respeaker_input_device, respeaker_output_device),
                     samplerate=Config.SAMPLE_RATE,
                     channels=(input_channels, Config.CHANNELS),
                     dtype='int16',
@@ -275,7 +273,8 @@ class ElevenLabsConversationClient:
                 # since ReSpeaker can only be opened once
                 self.input_stream = self.stream
                 self.output_stream = self.stream  # Same stream - duplex handles both
-                print(f"   ✓ ReSpeaker: Duplex stream (6ch in, 1ch out) on devices ({respeaker_input_idx}, {respeaker_output_idx}) [callback mode]")
+                device_label = f"ALSA default" if respeaker_input_device is None else f"devices ({respeaker_input_device}, {respeaker_output_device})"
+                print(f"   ✓ ReSpeaker: Duplex stream (6ch in, 1ch out) on {device_label} [callback mode]")
             else:
                 # Non-ReSpeaker: Use separate streams (original behavior)
                 self.input_stream = sd.InputStream(

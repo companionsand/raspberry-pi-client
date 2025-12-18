@@ -202,6 +202,7 @@ class Config:
         print(f"   Sample Rate: {cls.SAMPLE_RATE} Hz")
         print(f"   OTEL Enabled: {cls.OTEL_ENABLED}")
         print(f"   LED Enabled: {cls.LED_ENABLED}")
+        print(f"   Speaker Volume: {cls.SPEAKER_VOLUME_PERCENT}%")
         print(f"   Wake Word ASR Similarity Threshold: {cls.WAKE_WORD_ASR_SIMILARITY_THRESHOLD}")
         print(f"   Presence Detection Threshold: {cls.HUMAN_PRESENCE_DETECTION_SCORE_THRESHOLD}")
         print(f"   YAMNet Weights Loaded: {len(cls.YAMNET_WEIGHTS)} events")
