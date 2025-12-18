@@ -44,16 +44,68 @@ systemctl --user mask pipewire pipewire-pulse wireplumber
 
 ## 3. Audio (ALSA‑only, ReSpeaker as default)
 
+**Note:** Audio configuration is now **automatic**! The raspberry-pi-client service will:
+
+- Auto-detect ReSpeaker and its ALSA card number (may be card 1, 2, 3, etc.)
+- Configure `/etc/asound.conf` with the correct card number, AEC channel routing, and software volume control
+- Set initial volume from backend configuration (`speaker_volume_percent`, default 50%)
+
+Verify ReSpeaker is detected:
+
 ```bash
 arecord -l   # confirm ReSpeaker (usually card 2)
 aplay -l
+```
 
+**Manual configuration (optional):** If you need to manually configure before running the service:
+
+First, find your ReSpeaker card number:
+
+```bash
+aplay -l  # Look for ReSpeaker/ArrayUAC10 - note the card number
+```
+
+Then create the config (replace `2` with your card number if different):
+
+```bash
 cat <<'EOF' | sudo tee /etc/asound.conf
+# ALSA Configuration - ReSpeaker with Software Volume
+pcm.respeaker_aec {
+    type route
+    slave {
+        pcm "hw:2,0"
+        channels 6
+    }
+    ttable.0.0 1
+}
+
+pcm.respeaker_mono {
+    type plug
+    slave.pcm "respeaker_aec"
+}
+
+pcm.respeaker_out_raw {
+    type plug
+    slave.pcm "hw:2,0"
+}
+
+pcm.respeaker_out {
+    type softvol
+    slave.pcm "respeaker_out_raw"
+    control {
+        name "Softvol"
+        card 2
+    }
+    min_dB -30.0
+    max_dB 0.0
+}
+
 pcm.!default {
     type asym
-    playback.pcm "plughw:2,0"
-    capture.pcm  "plughw:2,0"
+    playback.pcm "respeaker_out"
+    capture.pcm "respeaker_mono"
 }
+
 ctl.!default {
     type hw
     card 2
@@ -61,7 +113,7 @@ ctl.!default {
 EOF
 ```
 
-Test:
+Test audio:
 
 ```bash
 arecord -d 3 -f S16_LE -r 16000 -c 1 test.wav
@@ -69,6 +121,27 @@ aplay test.wav
 ```
 
 You should hear yourself from the speaker plugged into the ReSpeaker.
+
+**Volume Control:**
+
+```bash
+# Find your ReSpeaker card number first:
+aplay -l  # Look for ReSpeaker card number (e.g., card 2)
+
+# Temporary adjustment (resets on next service start):
+alsamixer -c <card_number>  # Adjust 'Softvol' control (0-100)
+
+# Or via command line:
+amixer -c <card_number> set Softvol 75%
+
+# Example for card 2:
+alsamixer -c 2
+amixer -c 2 set Softvol 75%
+
+# Persistent (survives restarts):
+# Update speaker_volume_percent in device settings via admin portal
+# Volume will be applied automatically on next service start
+```
 
 ---
 

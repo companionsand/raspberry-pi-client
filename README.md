@@ -9,9 +9,12 @@
 ### 1. **ALSA-Only Audio Architecture**
 
 - Prioritizes ReSpeaker 4 Mic Array with hardware echo cancellation
+- **Auto-detects ReSpeaker ALSA card number** (works with card 1, 2, 3, etc.)
+- **Auto-configures `/etc/asound.conf`** with correct card number, softvol control, and AEC channel routing
+- **Auto-sets volume** from backend configuration (`speaker_volume_percent`, 0-100)
 - Automatically falls back to best available mic/speaker if ReSpeaker not found
 - Warns user when hardware AEC is unavailable
-- No PipeWire/PulseAudio dependencies
+- No PipeWire/Pulseaudio dependencies
 
 ### 2. **Full Telemetry (No Metrics)**
 
