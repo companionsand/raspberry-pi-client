@@ -205,6 +205,7 @@ class ElevenLabsConversationClient:
                 # Find ReSpeaker INPUT device (6+ input channels)
                 if self.mic_device_index is not None:
                     input_dev = devices[self.mic_device_index]
+                    respeaker_input_device = self.mic_device_index
                 else:
                     # Scan for ReSpeaker input device
                     input_dev = None
@@ -212,8 +213,12 @@ class ElevenLabsConversationClient:
                         if any(kw in dev['name'].lower() for kw in ['respeaker', 'arrayuac10', 'uac1.0']):
                             if dev['max_input_channels'] >= Config.RESPEAKER_CHANNELS:
                                 input_dev = dev
-                                # Don't set respeaker_input_device to idx - keep it as None/"default"
-                                # This ensures we route through ALSA default (/etc/asound.conf)
+                                # CRITICAL: WebRTC AEC needs all 6 channels (Ch0 mic + Ch5 ref)
+                                # ALSA default only provides Ch0, so we must bypass ALSA when WebRTC is enabled
+                                if Config.USE_WEBRTC_AEC and WEBRTC_AEC_AVAILABLE:
+                                    respeaker_input_device = idx  # Use hardware device directly to get all 6 channels
+                                else:
+                                    respeaker_input_device = None  # Use ALSA default (only Ch0 needed for hardware AEC)
                                 break
                 
                 # Check if ReSpeaker with 6 channels
@@ -224,9 +229,12 @@ class ElevenLabsConversationClient:
                     # Keep respeaker_output_device as None to use ALSA default (softvol)
                     # Don't scan for hardware output device index
                     
-                    device_name = "ALSA default" if respeaker_input_device is None else f"device {respeaker_input_device}"
-                    print(f"   ✓ ReSpeaker detected: Opening {input_channels} channels")
-                    print(f"   ✓ Using {device_name} (routes through /etc/asound.conf with softvol)")
+                    if respeaker_input_device is not None:
+                        print(f"   ✓ ReSpeaker detected: Opening {input_channels} channels")
+                        print(f"   ✓ Using hardware device {respeaker_input_device} (bypasses ALSA to access all channels for WebRTC AEC)")
+                    else:
+                        print(f"   ✓ ReSpeaker detected: Opening {input_channels} channels")
+                        print(f"   ✓ Using ALSA default (routes through /etc/asound.conf with softvol)")
             except Exception as e:
                 print(f"   ⚠ Could not detect ReSpeaker channels: {e}")
             
