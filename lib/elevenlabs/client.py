@@ -569,42 +569,34 @@ class ElevenLabsConversationClient:
                     mic_channel = audio_data[:, Config.RESPEAKER_AEC_CHANNEL].copy()
                     ref_channel = audio_data[:, Config.RESPEAKER_REFERENCE_CHANNEL].copy()
                     
-                    # WebRTC AEC Processing (only when agent is speaking)
+                    # WebRTC AEC Processing - ALWAYS process when enabled
+                    # The reference signal (Ch5) will be ~0 when nothing is playing,
+                    # which WebRTC AEC handles correctly (nothing to cancel).
+                    # We must NOT skip processing based on playback_active because:
+                    # 1. Echo persists after playback ends (~300ms room reverb)
+                    # 2. AEC needs continuous stream to maintain filter adaptation
                     if self._use_webrtc_aec and self.webrtc_aec_processor:
-                        # Only process during playback to save CPU and avoid over-processing
-                        is_agent_active = self.playback_active or self.audio_queue.qsize() > 0
-                        
-                        if is_agent_active:
-                            # Agent is speaking - apply WebRTC AEC to cancel echo
-                            try:
-                                # Process chunk through WebRTC AEC (320 samples)
-                                processed_mic = self.webrtc_aec_processor.process_chunk(
-                                    mic_channel, ref_channel
-                                )
-                                audio_data = processed_mic.reshape(-1, 1)
-                                
-                                # Debug logging (every 3 seconds)
-                                now = time.time()
-                                if now - self._webrtc_debug_last_log >= 3.0:
-                                    self._webrtc_debug_last_log = now
-                                    mic_rms = np.sqrt(np.mean(mic_channel.astype(float) ** 2)) / 32768.0
-                                    ref_rms = np.sqrt(np.mean(ref_channel.astype(float) ** 2)) / 32768.0
-                                    out_rms = np.sqrt(np.mean(processed_mic.astype(float) ** 2)) / 32768.0
-                                    print(f"🎙️  [WebRTC AEC] Mic={mic_rms:.4f}, Ref={ref_rms:.4f}, Out={out_rms:.4f} [ACTIVE]")
-                            except Exception as e:
-                                print(f"⚠️  WebRTC AEC processing error: {e}")
-                                # Fallback to raw mic on error
-                                audio_data = mic_channel.reshape(-1, 1)
-                        else:
-                            # User speaking or silence - pass through (no echo to cancel)
-                            audio_data = mic_channel.reshape(-1, 1)
+                        try:
+                            # Always process through AEC - ref_channel naturally zeros when silent
+                            processed_mic = self.webrtc_aec_processor.process_chunk(
+                                mic_channel, ref_channel
+                            )
+                            audio_data = processed_mic.reshape(-1, 1)
                             
-                            # Sparse debug logging during passthrough (every 10 seconds)
+                            # Debug logging (every 3 seconds)
                             now = time.time()
-                            if now - self._webrtc_debug_last_log >= 10.0:
+                            if now - self._webrtc_debug_last_log >= 3.0:
                                 self._webrtc_debug_last_log = now
                                 mic_rms = np.sqrt(np.mean(mic_channel.astype(float) ** 2)) / 32768.0
-                                print(f"🎙️  [WebRTC AEC] Mic={mic_rms:.4f} [PASSTHROUGH - no agent speech]")
+                                ref_rms = np.sqrt(np.mean(ref_channel.astype(float) ** 2)) / 32768.0
+                                out_rms = np.sqrt(np.mean(processed_mic.astype(float) ** 2)) / 32768.0
+                                is_playing = self.playback_active or self.audio_queue.qsize() > 0
+                                status = "PLAYING" if is_playing else "IDLE"
+                                print(f"🎙️  [WebRTC AEC] [{status}] Mic={mic_rms:.4f}, Ref={ref_rms:.4f}, Out={out_rms:.4f}")
+                        except Exception as e:
+                            print(f"⚠️  WebRTC AEC processing error: {e}")
+                            # Fallback to raw mic on error
+                            audio_data = mic_channel.reshape(-1, 1)
                     else:
                         # WebRTC AEC not enabled - use Ch0 only (beamformed, no software AEC)
                         audio_data = mic_channel.reshape(-1, 1)
