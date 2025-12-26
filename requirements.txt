@@ -12,6 +12,9 @@ scipy>=1.11.0
 # Enable via USE_WEBRTC_AEC=true environment variable
 aec-audio-processing>=0.1.0
 
+# ReSpeaker USB Tuning
+pyusb>=1.2.1
+
 # WebSocket communication
 websockets>=12.0
 certifi>=2023.0.0

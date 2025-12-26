@@ -259,14 +259,7 @@ class ElevenLabsConversationClient:
                     # Apply ReSpeaker tuning: Disable hardware AEC/AGC/NS to avoid conflicts with WebRTC
                     # Keep beamforming active (FREEZEONOFF=0) for directional audio
                     try:
-                        import sys
-                        # Add pipipi directory to path to access utils_respeaker
-                        project_root = os.path.dirname(os.path.dirname(os.path.dirname(__file__)))
-                        pipipi_path = os.path.join(project_root, 'pipipi')
-                        if pipipi_path not in sys.path:
-                            sys.path.insert(0, pipipi_path)
-                        
-                        from utils_respeaker import find as find_respeaker
+                        from lib.audio.respeaker import find as find_respeaker
                         respeaker_dev = find_respeaker()
                         if respeaker_dev:
                             print(f"\n📊 Applying ReSpeaker tuning for WebRTC AEC...")
