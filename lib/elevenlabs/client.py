@@ -19,16 +19,15 @@ from lib.config import Config
 from lib.orchestrator.client import OrchestratorClient
 from lib.local_storage import ContextManager
 
-# WebRTC AEC (optional, only loaded if enabled in config)
-if Config.USE_WEBRTC_AEC:
-    try:
-        from lib.audio.webrtc_aec import WebRTCAECProcessor
-        WEBRTC_AEC_AVAILABLE = True
-    except ImportError as e:
-        print(f"⚠️  WebRTC AEC enabled but not available: {e}")
-        WEBRTC_AEC_AVAILABLE = False
-else:
+# WebRTC AEC (optional feature; we still try to import so logs can say "available" vs "missing")
+WEBRTC_AEC_IMPORT_ERROR = None
+try:
+    from lib.audio.webrtc_aec import WebRTCAECProcessor
+    WEBRTC_AEC_AVAILABLE = True
+except Exception as e:
+    WebRTCAECProcessor = None  # type: ignore
     WEBRTC_AEC_AVAILABLE = False
+    WEBRTC_AEC_IMPORT_ERROR = str(e)
 
 
 class ElevenLabsConversationClient:
@@ -147,6 +146,22 @@ class ElevenLabsConversationClient:
         print(f"\n💬 Starting conversation...")
         print(f"   Agent ID: {self.agent_id}")
         print(f"   Conversation ID: {self.conversation_id}")
+        # -------------------------------------------------------------------------
+        # AEC mode banner (VERY IMPORTANT for debugging deployments)
+        # -------------------------------------------------------------------------
+        # NOTE: When running under systemd, `export USE_WEBRTC_AEC=true` in an SSH shell
+        # will NOT affect the service unless it's set in the unit/env file. We print both
+        # the raw env var and Config-parsed boolean so it's obvious what the process sees.
+        raw_use_webrtc = os.getenv("USE_WEBRTC_AEC")
+        raw_delay = os.getenv("WEBRTC_AEC_STREAM_DELAY_MS")
+        raw_ns = os.getenv("WEBRTC_AEC_NS_LEVEL")
+        raw_agc = os.getenv("WEBRTC_AEC_AGC_MODE")
+        print("   🔧 AEC CONFIG:")
+        print(f"      - USE_WEBRTC_AEC env: {raw_use_webrtc!r} -> Config.USE_WEBRTC_AEC={Config.USE_WEBRTC_AEC}")
+        print(f"      - WebRTC library available: {WEBRTC_AEC_AVAILABLE} (import_error={WEBRTC_AEC_IMPORT_ERROR!r})")
+        print(f"      - WEBRTC_AEC_STREAM_DELAY_MS env: {raw_delay!r} -> {Config.WEBRTC_AEC_STREAM_DELAY_MS}ms")
+        print(f"      - WEBRTC_AEC_NS_LEVEL env: {raw_ns!r} -> {Config.WEBRTC_AEC_NS_LEVEL}")
+        print(f"      - WEBRTC_AEC_AGC_MODE env: {raw_agc!r} -> {Config.WEBRTC_AEC_AGC_MODE}")
         
         # Add API key to WebSocket URL
         ws_url = f"{self.web_socket_url}&api_key={Config.ELEVENLABS_API_KEY}"
@@ -209,7 +224,7 @@ class ElevenLabsConversationClient:
                     # Keep respeaker_output_device as None to use ALSA default (softvol)
                     # Don't scan for hardware output device index
                     
-                    device_name = "ALSA default" if respeaker_input_idx is None else f"device {respeaker_input_idx}"
+                    device_name = "ALSA default" if respeaker_input_device is None else f"device {respeaker_input_device}"
                     print(f"   ✓ ReSpeaker detected: Opening {input_channels} channels")
                     print(f"   ✓ Using {device_name} (routes through /etc/asound.conf with softvol)")
             except Exception as e:
@@ -286,11 +301,25 @@ class ElevenLabsConversationClient:
                     print(f"   Falling back to hardware AEC (Ch{Config.RESPEAKER_AEC_CHANNEL} only)")
                     self._use_webrtc_aec = False
                     self.webrtc_aec_processor = None
-            elif Config.USE_WEBRTC_AEC and not self._use_respeaker_aec:
-                print(f"⚠️  WebRTC AEC enabled but ReSpeaker not detected - cannot use WebRTC AEC")
-            elif Config.USE_WEBRTC_AEC and not WEBRTC_AEC_AVAILABLE:
-                print(f"⚠️  WebRTC AEC enabled but aec-audio-processing not installed")
-                print(f"   Install with: pip install aec-audio-processing")
+            else:
+                # Be explicit about why WebRTC isn't active (this is the #1 field-debug issue)
+                if not Config.USE_WEBRTC_AEC:
+                    print("ℹ️  WebRTC AEC: DISABLED (set USE_WEBRTC_AEC=true to enable)")
+                elif not WEBRTC_AEC_AVAILABLE:
+                    print("⚠️  WebRTC AEC: REQUESTED but NOT AVAILABLE (library import failed)")
+                    print(f"   import_error={WEBRTC_AEC_IMPORT_ERROR!r}")
+                    print("   Fix: install into the same venv/runtime as agent-launcher, then restart")
+                elif not self._use_respeaker_aec:
+                    print("⚠️  WebRTC AEC: REQUESTED but ReSpeaker 6ch capture is NOT active")
+                    print("   Fix: ensure ReSpeaker is detected with 6 input channels")
+            
+            # Final mode line for the logs (so you can grep 1 line)
+            if self._use_webrtc_aec:
+                print("   ✅ AEC MODE: WEBRTC_AEC3 (Ch0 mic + Ch5 ref)")
+            elif self._use_respeaker_aec:
+                print("   ✅ AEC MODE: RESPEAKER_HW (Ch0 mic only)")
+            else:
+                print("   ⚠️  AEC MODE: NONE")
             
             # -------------------------------------------------------------------------
             # Open audio streams: Duplex for ReSpeaker, separate for other devices
