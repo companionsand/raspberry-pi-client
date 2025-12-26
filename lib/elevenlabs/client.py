@@ -260,7 +260,6 @@ class ElevenLabsConversationClient:
                     # Keep beamforming active (FREEZEONOFF=0) for directional audio
                     try:
                         import sys
-                        import os
                         # Add pipipi directory to path to access utils_respeaker
                         project_root = os.path.dirname(os.path.dirname(os.path.dirname(__file__)))
                         pipipi_path = os.path.join(project_root, 'pipipi')
