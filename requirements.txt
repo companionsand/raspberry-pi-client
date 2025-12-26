@@ -7,6 +7,11 @@ sounddevice>=0.4.6
 numpy>=1.24.0
 scipy>=1.11.0
 
+# WebRTC AEC3 (Acoustic Echo Cancellation) - Optional
+# Provides superior echo cancellation beyond ReSpeaker hardware AEC
+# Enable via USE_WEBRTC_AEC=true environment variable
+aec-audio-processing>=0.1.0
+
 # WebSocket communication
 websockets>=12.0
 certifi>=2023.0.0

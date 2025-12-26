@@ -29,13 +29,21 @@ class Config:
     # Audio settings (ALSA-only, single ReSpeaker device for both capture and playback)
     SAMPLE_RATE = 16000  # 16kHz for both capture and playback (hardcoded)
     CHANNELS = 1  # Mono output (ReSpeaker AEC expects mono reference)
-    CHUNK_SIZE = 512  # ~32ms frames for low latency
+    CHUNK_SIZE = 320  # ~20ms frames (multiple of 160 for WebRTC AEC, was 512/32ms)
     
     # ReSpeaker 4-Mic Array channel configuration
     # The ReSpeaker outputs 6 channels: Ch0 = AEC-processed, Ch1-4 = raw mics, Ch5 = reference
     # We open all 6 channels and extract Ch0 (AEC-processed) in Python code
     RESPEAKER_CHANNELS = 6  # ReSpeaker 4-Mic Array outputs 6 channels
     RESPEAKER_AEC_CHANNEL = 0  # Channel 0 is AEC-processed (echo-cancelled)
+    RESPEAKER_REFERENCE_CHANNEL = 5  # Channel 5 is playback loopback (for WebRTC AEC)
+    
+    # WebRTC AEC Configuration (Software AEC on top of hardware beamforming)
+    # Enable this to use WebRTC AEC3 for superior echo cancellation beyond hardware AEC
+    USE_WEBRTC_AEC = os.getenv("USE_WEBRTC_AEC", "false").lower() == "true"  # Default: False (opt-in)
+    WEBRTC_AEC_STREAM_DELAY_MS = int(os.getenv("WEBRTC_AEC_STREAM_DELAY_MS", "100"))  # USB audio delay (50-200ms typical)
+    WEBRTC_AEC_NS_LEVEL = int(os.getenv("WEBRTC_AEC_NS_LEVEL", "1"))  # Noise suppression: 0-3 (0=off, 1=moderate, 3=max)
+    WEBRTC_AEC_AGC_MODE = int(os.getenv("WEBRTC_AEC_AGC_MODE", "2"))  # AGC mode: 1=adaptive, 2=fixed digital
     
     # =========================================================================
     # RUNTIME CONFIGURATION (fetched from backend after authentication)
