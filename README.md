@@ -207,14 +207,91 @@ raspberry-pi-client/
         └── stdout_redirect.py   # Stdout/stderr redirection to OTEL
 ```
 
+## Installation
+
+### Prerequisites
+
+- Python 3.8 or higher
+- `uv` package manager (see installation instructions below)
+
+### Installing uv
+
+Install `uv` using one of the following methods:
+
+**On Linux/macOS:**
+```bash
+curl -LsSf https://astral.sh/uv/install.sh | sh
+```
+
+**On Windows:**
+```powershell
+powershell -ExecutionPolicy ByPass -c "irm https://astral.sh/uv/install.ps1 | iex"
+```
+
+**Or via pip:**
+```bash
+pip install uv
+```
+
+**Or via Homebrew (macOS):**
+```bash
+brew install uv
+```
+
+For more installation options, see the [official uv documentation](https://github.com/astral-sh/uv).
+
+### Setting Up the Project
+
+1. Clone the repository:
+```bash
+git clone https://github.com/companionsand/raspberry-pi-client
+cd raspberry-pi-client
+```
+
+2. Install dependencies using `uv`:
+```bash
+uv sync
+```
+
+Or use the Makefile:
+```bash
+make install
+```
+
+This will create a virtual environment and install all dependencies from `requirements.txt`.
+
 ## Usage
 
-```bash
-# Run the client
-python main.py
+### Using Make Commands
 
-# Or if executable:
-./main.py
+The project includes a Makefile with convenient commands for common tasks:
+
+```bash
+# Show all available commands
+make help
+
+# Install dependencies
+make install
+# or
+make setup
+
+# Run the main client application
+make run
+
+# Generate voice message files (requires ELEVENLABS_API_KEY)
+ELEVENLABS_API_KEY=your-key make generate-voice-messages
+
+# Test voice message files (shows file information)
+make test-voice-messages
+```
+
+### Direct Usage
+
+You can also run commands directly:
+
+```bash
+# Run the client using uv
+uv run main.py
 
 # Send signals
 kill -SIGINT <pid>   # Full shutdown (or Ctrl+C)
@@ -277,11 +354,14 @@ Use the provided script to generate all voice message files using ElevenLabs API
 # Set your ElevenLabs API key
 export ELEVENLABS_API_KEY="your-api-key-here"
 
-# Generate voice message files
-python scripts/generate_voice_messages.py
+# Generate voice message files using Makefile
+make generate-voice-messages
+
+# Or run directly with uv:
+uv run scripts/generate_voice_messages.py
 
 # Or specify a custom voice:
-python scripts/generate_voice_messages.py --voice your-voice-id
+uv run scripts/generate_voice_messages.py --voice your-voice-id
 ```
 
 ### Option 2: Manual Recording
@@ -303,7 +383,10 @@ ffmpeg -i input.mp3 -ar 16000 -ac 1 -sample_fmt s16 lib/voice_feedback/voice_mes
 ### Testing Voice Message Files
 
 ```bash
-# Verify audio format
+# Test all voice message files (shows file information)
+make test-voice-messages
+
+# Or verify audio format manually
 file lib/voice_feedback/voice_messages/startup.wav
 
 # Play voice message file
