@@ -5,3 +5,8 @@
 - Module-specific README files should be moved to `docs/` with descriptive names (e.g., `lib/module/README.md` → `docs/module_name.md`)
 - The root `README.md` should remain in the project root as the main project documentation
 
+# Pull Request Rules
+
+- When asked to create a pull request, always generate a diff with the main branch to create the pull request message/description
+- The diff should show the changes between the current branch and the main branch to provide context for reviewers
+
