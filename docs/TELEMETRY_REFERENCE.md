@@ -2,39 +2,40 @@
 
 Quick reference for all telemetry tracked in the Raspberry Pi Client.
 
-## Metrics
+## Current Telemetry Implementation
 
-### Counters
+The Raspberry Pi Client currently implements **traces, spans, and logs** via OpenTelemetry. Metrics infrastructure exists but is **not actively used** except for limited wake word detector metrics.
 
-| Metric Name | Description | Attributes |
-|-------------|-------------|------------|
-| `wake_word_detections_total` | Number of wake word detections | `device_id`, `wake_word` |
-| `conversations_started_total` | Number of conversations started | `device_id`, `user_id`, `agent_id` |
-| `conversations_completed_total` | Number of conversations completed | `device_id`, `user_id`, `agent_id` |
-| `errors_total` | Number of errors occurred | `device_id`, `error_type`, `error_message` |
+### Active Telemetry
 
-### Histograms
+- **Traces**: Conversation-level root traces with distributed tracing support
+- **Spans**: Detailed spans for operations (conversation handling, audio processing, etc.)
+- **Logs**: Structured logging with OTEL logger, stdout/stderr redirection
+- **Span Events**: Event annotations on spans (e.g., `orchestrator_connected`, `wake_word_detected`)
 
-| Metric Name | Description | Unit | Attributes |
-|-------------|-------------|------|------------|
-| `conversation_duration_seconds` | Duration of conversations | seconds | `device_id`, `user_id` |
+### Metrics (Limited Implementation)
 
-### UpDownCounters
+Metrics infrastructure is set up but only partially used:
 
-| Metric Name | Description | Values | Attributes |
-|-------------|-------------|--------|------------|
-| `connection_status` | Connection status | 1=connected, 0/−1=disconnected | `device_id` |
+- **Wake Word Detector**: Uses `scribe_verifications_total` counter for Scribe v2 verification attempts
+- **Other Metrics**: Not currently implemented (planned for future)
 
-## Events
+**Note**: The README states "no metrics" to reflect that comprehensive metrics are not yet implemented. The metrics infrastructure exists for future expansion.
+
+## Span Events
+
+Span events are used to annotate traces with important occurrences:
 
 | Event Name | When Triggered | Attributes |
 |------------|----------------|------------|
-| `wake_word_detected` | Wake word is detected | `device_id`, `wake_word` |
-| `conversation_started` | Conversation begins | `device_id`, `user_id`, `agent_id` |
-| `conversation_completed` | Conversation ends | `device_id`, `user_id`, `duration` |
 | `orchestrator_connected` | Connected to orchestrator | `device_id` |
 | `orchestrator_disconnected` | Disconnected from orchestrator | `device_id` |
-| `error_occurred` | Error happens | `device_id`, `error_type`, `error_message` |
+| `wake_word_detected` | Wake word is detected | `device_id`, `wake_word` (via structured logging) |
+| `conversation_started` | Conversation begins | `device_id`, `user_id`, `agent_id` (via structured logging) |
+| `conversation_completed` | Conversation ends | `device_id`, `user_id`, `duration` (via structured logging) |
+| `error_occurred` | Error happens | `device_id`, `error_type`, `error_message` (via structured logging) |
+
+**Note**: Most events are tracked via structured logging rather than explicit span events. The telemetry system captures these through the OTEL logger.
 
 ## Configuration
 
@@ -47,25 +48,6 @@ ENV=production
 ```
 
 ## API Usage
-
-### Recording Metrics
-
-```python
-# Counter
-self.metrics["wake_word_detections"].add(1, {
-    "device_id": Config.DEVICE_ID
-})
-
-# Histogram
-self.metrics["conversation_duration"].record(duration, {
-    "device_id": Config.DEVICE_ID
-})
-
-# UpDownCounter  
-self.metrics["connection_status"].add(1, {  # +1 for connect, -1 for disconnect
-    "device_id": Config.DEVICE_ID
-})
-```
 
 ### Adding Span Events
 
@@ -90,5 +72,19 @@ sudo journalctl -u otelcol -f
 sudo journalctl -u agent-launcher -f | grep -i "telemetry\|otel"
 ```
 
-See `OTEL_SETUP.md` for complete setup and troubleshooting guide.
+## Trace Context Propagation
+
+The telemetry system supports distributed tracing:
+
+- **Reactive conversations**: Trace context is created locally and propagated to orchestrator via WebSocket messages
+- **Proactive conversations**: Trace context is extracted from `start_conversation` message and used for the conversation
+- This enables end-to-end distributed tracing across services
+
+## Future Enhancements
+
+Comprehensive metrics are planned for future implementation:
+- Wake word detection counters
+- Conversation duration histograms
+- Connection status up/down counters
+- Error rate tracking
 

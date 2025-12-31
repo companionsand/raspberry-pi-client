@@ -1,0 +1,7 @@
+# Documentation Rules
+
+- All documentation files (except README.md in the project root) must be placed in the `docs/` directory
+- When creating new documentation, use descriptive filenames in `docs/` (e.g., `docs/feature_name.md`, `docs/module_name.md`)
+- Module-specific README files should be moved to `docs/` with descriptive names (e.g., `lib/module/README.md` → `docs/module_name.md`)
+- The root `README.md` should remain in the project root as the main project documentation
+
