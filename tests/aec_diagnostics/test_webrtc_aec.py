@@ -11,11 +11,11 @@ Prerequisites:
 - Run 'pulseaudio --start' before running this script
 
 Usage:
-    1. First run: python inspect_channels.py
+    1. First run: python tests/aec_diagnostics/inspect_channels.py
     2. Configure PulseAudio: Edit /etc/pulse/default.pa
        Add: load-module module-echo-cancel aec_method=webrtc
     3. Restart: pulseaudio -k && pulseaudio --start
-    4. Then run: python test_webrtc_aec.py
+    4. Then run: python tests/aec_diagnostics/test_webrtc_aec.py
 """
 
 import numpy as np
@@ -127,7 +127,7 @@ def test_pulseaudio_realtime():
     ch5_file = os.path.join(OUTPUT_DIR, "ch5_reference_signal.wav")
     if not os.path.exists(ch5_file):
         print(f"❌ {ch5_file} not found!")
-        print("   Run 'python inspect_channels.py' first.")
+        print("   Run 'python tests/aec_diagnostics/inspect_channels.py' first.")
         return
     
     sr, playback_audio = wav.read(ch5_file)
@@ -256,7 +256,7 @@ def run_test():
     
     if not os.path.exists(OUTPUT_DIR):
         print(f"❌ Directory {OUTPUT_DIR} not found!")
-        print("   Run 'python inspect_channels.py' first to create recordings.")
+        print("   Run 'python tests/aec_diagnostics/inspect_channels.py' first to create recordings.")
         return
     
     # Show PulseAudio configuration
