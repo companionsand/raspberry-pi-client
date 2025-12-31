@@ -1,4 +1,4 @@
-.PHONY: help install setup run generate-voice-messages test-voice-messages
+.PHONY: help install setup run generate-voice-messages test-voice-messages check-uv
 
 # Default target
 help:
@@ -15,6 +15,14 @@ help:
 	@echo "  Optional: SKIP_WIFI_SETUP, OTEL_ENABLED, USE_WEBRTC_AEC, etc."
 	@echo ""
 	@echo "See README.md for detailed documentation."
+
+# Check if uv is installed
+check-uv:
+	@command -v uv >/dev/null 2>&1 || { \
+		echo "Error: uv is not installed or not in PATH"; \
+		echo "Please install uv from https://github.com/astral-sh/uv"; \
+		exit 1; \
+	}
 
 # Install dependencies
 install: check-uv

@@ -211,7 +211,7 @@ raspberry-pi-client/
 
 ### Prerequisites
 
-- Python 3.8 or higher
+- Python 3.11 or higher
 - `uv` package manager (see installation instructions below)
 
 ### Installing uv
@@ -258,7 +258,7 @@ Or use the Makefile:
 make install
 ```
 
-This will create a virtual environment and install all dependencies from `requirements.txt`.
+This will create a virtual environment and install all dependencies from `pyproject.toml`.
 
 ## Usage
 
