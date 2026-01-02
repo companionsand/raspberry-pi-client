@@ -1,0 +1,53 @@
+graph TB
+    %% Audio Processing Components
+    Mic["Microphone<br/>(Audio Input)"]
+    WakeWordDetector["WakeWordDetector<br/>(Porcupine + Silero VAD)"]
+    HumanPresenceDetector["HumanPresenceDetector<br/>(YAMNet)"]
+    
+    %% Communication Components
+    OrchestratorClient["OrchestratorClient<br/>(WebSocket)"]
+    ElevenLabsClient["ElevenLabsConversationClient<br/>(WebSocket)"]
+    
+    %% External Services
+    OrchestratorService["Orchestrator Service<br/>(Backend)"]
+    ElevenLabsService["ElevenLabs Service<br/>(Conversation API)"]
+    
+    %% Supporting Components
+    LEDController["LEDController<br/>(Visual Feedback)"]
+    ContextManager["ContextManager<br/>(Location/Weather)"]
+    Speaker["Speaker<br/>(Audio Output)"]
+    
+    %% Audio Flow
+    Mic -->|"Audio Stream<br/>(16kHz)"| WakeWordDetector
+    WakeWordDetector -->|"feed_audio()<br/>(Shared Audio)"| HumanPresenceDetector
+    
+    %% Detection Flow
+    WakeWordDetector -->|"Wake Word Detected<br/>(HTTP/WebSocket)"| OrchestratorClient
+    HumanPresenceDetector -->|"Presence Detected<br/>(WebSocket)"| OrchestratorClient
+    
+    %% Orchestrator Communication
+    OrchestratorClient <-->|"WebSocket<br/>(Messages)"| OrchestratorService
+    OrchestratorClient -->|"Agent Details<br/>(WebSocket URL)"| ElevenLabsClient
+    
+    %% ElevenLabs Communication
+    ElevenLabsClient <-->|"WebSocket<br/>(Audio + Events)"| ElevenLabsService
+    ElevenLabsClient -->|"Audio Chunks"| Speaker
+    
+    %% Context Manager Usage
+    ContextManager -->|"Location/Weather Data"| ElevenLabsClient
+    
+    %% LED Feedback
+    WakeWordDetector -.->|"State Changes"| LEDController
+    ElevenLabsClient -.->|"State Changes<br/>(Listening/Thinking/Speaking)"| LEDController
+    
+    %% Styling
+    classDef audioComponent fill:#fff3e0,stroke:#e65100,stroke-width:2px
+    classDef commComponent fill:#f3e5f5,stroke:#4a148c,stroke-width:2px
+    classDef externalService fill:#e8f5e9,stroke:#1b5e20,stroke-width:2px
+    classDef supportComponent fill:#fce4ec,stroke:#880e4f,stroke-width:2px
+    
+    class WakeWordDetector,HumanPresenceDetector,Mic,Speaker audioComponent
+    class OrchestratorClient,ElevenLabsClient commComponent
+    class OrchestratorService,ElevenLabsService externalService
+    class LEDController,ContextManager supportComponent
+
