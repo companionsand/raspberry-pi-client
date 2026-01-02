@@ -97,18 +97,36 @@ The Kin AI Raspberry Pi Client is a comprehensive voice assistant client that co
   - Supports trace context propagation for distributed tracing
   - Can interrupt idle state to start conversation
 
-### 9. **WiFi Setup & Device Pairing**
+### 9. **WiFi Setup**
 
 - Automatic WiFi setup mode when internet unavailable
+- Creates "Kin_Setup" WiFi access point (password: `kinsetup123`)
+- Web interface at `http://192.168.4.1:8080` for configuration
 - Retry logic with up to 3 attempts
-- Pairing code collection via web interface
 - Automatic WiFi connection deletion on failure (prevents deadlock)
 - Configurable via `SKIP_WIFI_SETUP` env var or cached config
 - Graceful fallback if WiFi setup module unavailable
+- **Note**: WiFi setup requires sudo privileges for network management. If prompted for a password, enter your Raspberry Pi user password (the password for the user account running the script). For production deployments, consider configuring passwordless sudo for `nmcli` commands.
 
 - See [Raspberry Pi Setup Guide](docs/RASPBERRY_PI_SETUP.md#6-wifi-setup-mode-optional---for-devices-without-initial-network-access) for WiFi setup instructions
 
-### 10. **Authentication & Configuration**
+### 10. **Device Pairing**
+
+- Links device to a user account in the backend system
+- Requires 4-digit pairing code from admin portal
+- Pairing code is collected via WiFi setup web interface (when device has no internet) or can be provided when device has internet but is unpaired
+- Device must be paired before it can:
+  - Start conversations
+  - Access user-specific settings
+  - Receive proactive conversations
+  - Function as a personal assistant
+- Pairing is separate from WiFi connectivity - a device can have internet but still need pairing
+
+**Note**: Currently, pairing code collection is combined with WiFi setup in the same web interface for convenience. However, pairing and WiFi are conceptually separate:
+- **WiFi Setup**: Provides network connectivity (only needed when device has no internet)
+- **Device Pairing**: Links device to user account (always needed if device is unpaired)
+
+### 11. **Authentication & Configuration**
 
 - Ed25519 device authentication
 - JWT token management with automatic refresh
@@ -116,20 +134,20 @@ The Kin AI Raspberry Pi Client is a comprehensive voice assistant client that co
 - Configuration caching for offline boot capability
 - Token refresh monitoring in background
 
-### 11. **Activity Tracking**
+### 12. **Activity Tracking**
 
 - Updates `.last_activity` file timestamp for wrapper idle monitoring
 - Tracks wake word detections and conversation activity
 - Enables wrapper to detect device activity for power management
 
-### 12. **Signal Handling**
+### 13. **Signal Handling**
 
 - `SIGINT/SIGTERM`: Full shutdown (graceful if not in conversation)
   - If in conversation: Ends current conversation, then shuts down
   - If idle: Shuts down immediately
 - Proper cleanup in all cases (LEDs, audio streams, WebSocket connections)
 
-### 13. **Modular Architecture**
+### 14. **Modular Architecture**
 
 - Clean separation of concerns
 - Easy to test and maintain
@@ -309,7 +327,8 @@ kill -SIGINT <pid>   # Full shutdown (or Ctrl+C)
 
 - `SKIP_WIFI_SETUP` - Enable/disable WiFi setup mode (default: `false` = allow setup)
   - When `false`, device creates "Kin_Setup" WiFi network (password: `kinsetup123`) if no internet
-  - Connect to it and visit http://192.168.4.1:8080 to configure
+  - Connect to it and visit http://192.168.4.1:8080 to configure WiFi credentials
+  - **Note**: The WiFi setup interface also collects pairing code, but pairing and WiFi are separate concepts
   - Can also be set via cached config from backend
 - `OTEL_ENABLED` - Enable OpenTelemetry (default: `true`)
 - `OTEL_EXPORTER_ENDPOINT` - OTEL collector endpoint (default: `http://localhost:4318`)

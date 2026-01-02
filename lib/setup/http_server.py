@@ -1,304 +1,36 @@
 """
 Setup HTTP Server
 
-Provides web interface for WiFi configuration using asyncio HTTP server.
+Provides web interface for device setup using asyncio HTTP server.
+
+The interface collects:
+- WiFi credentials (SSID, password) - for network connectivity when device has no internet
+- Pairing code (4 digits) - for linking device to user account when device is unpaired
+
+Note: WiFi setup and device pairing are conceptually separate, but currently
+combined in the same interface for user convenience.
 """
 
 import asyncio
 import json
 import logging
+import os
 import subprocess
 from http.server import BaseHTTPRequestHandler
+from pathlib import Path
 from socketserver import TCPServer
 from threading import Thread
 from typing import Callable, Optional
 
 logger = logging.getLogger(__name__)
 
-
-HTML_TEMPLATE = '''<!DOCTYPE html>
-<html>
-<head>
-    <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Kin Device Setup</title>
-    <link rel="preconnect" href="https://fonts.googleapis.com">
-    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-    <link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:wght@400;500&family=Instrument+Serif:ital,wght@0,400;1,400&family=Limelight&display=swap" rel="stylesheet">
-    <style>
-        * { margin: 0; padding: 0; box-sizing: border-box; }
-        
-        :root {
-            --color-primary: #ed572d;
-            --color-success: #04602B;
-            --color-black: #111111;
-            --color-white: #FFFFFF;
-            --color-warm-white: #FFF8F3;
-        }
-        
-        body {
-            font-family: 'IBM Plex Sans', -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
-            background-color: var(--color-warm-white);
-            color: var(--color-black);
-            min-height: 100vh;
-            display: flex;
-            align-items: center;
-            justify-content: center;
-            padding: 20px;
-            font-size: 18px;
-            line-height: 1.5;
-            filter: contrast(1.02) saturate(1.1);
-            -webkit-font-smoothing: antialiased;
-            -moz-osx-font-smoothing: grayscale;
-        }
-        
-        /* Grainy overlay effect for nostalgic texture */
-        body::before {
-            content: "";
-            position: fixed;
-            inset: 0;
-            background:
-                radial-gradient(circle at 20% 20%, rgba(255,255,255,0.03) 0%, transparent 100%),
-                url("https://grainy-gradients.vercel.app/noise.svg");
-            mix-blend-mode: overlay;
-            opacity: 0.35;
-            pointer-events: none;
-            z-index: 9999;
-        }
-        
-        .container {
-            background: var(--color-white);
-            border-radius: 12px;
-            border: 1px solid rgba(17, 17, 17, 0.1);
-            padding: 40px;
-            max-width: 500px;
-            width: 100%;
-            box-shadow: 0 1px 3px rgba(0,0,0,0.05);
-            position: relative;
-            z-index: 1;
-        }
-        
-        h1 { 
-            font-family: 'Instrument Serif', serif;
-            color: var(--color-black);
-            margin-bottom: 8px;
-            font-size: 28px;
-            line-height: 1.2;
-            text-transform: uppercase;
-            letter-spacing: 0.02em;
-            font-weight: 400;
-        }
-        
-        .subtitle { 
-            font-family: 'IBM Plex Sans', sans-serif;
-            color: var(--color-black);
-            opacity: 0.7;
-            margin-bottom: 32px;
-            font-size: 18px;
-            line-height: 1.5;
-        }
-        
-        .form-group { margin-bottom: 20px; }
-        
-        label { 
-            display: block;
-            margin-bottom: 8px;
-            color: var(--color-black);
-            font-weight: 500;
-            font-size: 14px;
-        }
-        
-        select, input {
-            width: 100%;
-            padding: 10px 12px;
-            border: 1px solid rgba(17, 17, 17, 0.1);
-            border-radius: 8px;
-            font-size: 18px;
-            font-family: 'IBM Plex Sans', sans-serif;
-            background-color: var(--color-white);
-            color: var(--color-black);
-            transition: all 150ms ease;
-        }
-        
-        select:focus, input:focus {
-            outline: none;
-            border-color: var(--color-primary);
-            box-shadow: 0 0 0 3px rgba(237, 87, 45, 0.15);
-        }
-        
-        button {
-            width: 100%;
-            padding: 12px 20px;
-            background: var(--color-primary);
-            color: var(--color-white);
-            border: none;
-            border-radius: 12px;
-            font-size: 18px;
-            font-weight: 500;
-            font-family: 'IBM Plex Sans', sans-serif;
-            cursor: pointer;
-            transition: all 150ms ease;
-        }
-        
-        button:hover:not(:disabled) {
-            transform: translateY(-2px);
-            box-shadow: 0 4px 12px rgba(237, 87, 45, 0.3);
-        }
-        
-        button:active:not(:disabled) {
-            transform: translateY(0);
-        }
-        
-        button:disabled { 
-            opacity: 0.5;
-            cursor: not-allowed;
-        }
-        
-        .message { 
-            padding: 12px 16px;
-            border-radius: 8px;
-            margin-bottom: 20px;
-            white-space: pre-line;
-            font-size: 16px;
-        }
-        
-        .success { 
-            background-color: rgba(4, 96, 43, 0.1);
-            color: var(--color-success);
-            border: 1px solid rgba(4, 96, 43, 0.2);
-        }
-        
-        .error { 
-            background-color: rgba(237, 87, 45, 0.1);
-            color: var(--color-primary);
-            border: 1px solid rgba(237, 87, 45, 0.2);
-        }
-        
-        .info { 
-            background-color: rgba(17, 17, 17, 0.05);
-            color: var(--color-black);
-            border: 1px solid rgba(17, 17, 17, 0.1);
-        }
-    </style>
-</head>
-<body>
-    <div class="container">
-        <h1>Kin Device Setup</h1>
-        <p class="subtitle">Configure your WiFi network to get started</p>
-        <div id="message"></div>
-        <form id="setupForm">
-            <div class="form-group">
-                <label for="ssid">WiFi Network</label>
-                <select id="ssid" name="ssid" required>
-                    <option value="">Scanning...</option>
-                </select>
-            </div>
-            <div class="form-group">
-                <label for="password">WiFi Password</label>
-                <input type="password" id="password" name="password" placeholder="Leave blank if open">
-            </div>
-            <div class="form-group">
-                <label for="pairingCode">Pairing Code (4 digits)</label>
-                <input type="text" id="pairingCode" name="pairingCode" pattern="[0-9]{4}" maxlength="4" placeholder="1234" required>
-            </div>
-            <button type="submit" id="submitBtn">Connect</button>
-        </form>
-    </div>
-    <script>
-        const form = document.getElementById('setupForm');
-        const ssidSelect = document.getElementById('ssid');
-        const messageDiv = document.getElementById('message');
-        const submitBtn = document.getElementById('submitBtn');
-        
-        function showMessage(text, type) {
-            messageDiv.innerHTML = '<div class="message ' + type + '">' + text + '</div>';
-        }
-        
-        function clearMessage() {
-            messageDiv.innerHTML = '';
-        }
-        
-        fetch('/networks')
-            .then(r => r.json())
-            .then(data => {
-                ssidSelect.innerHTML = '<option value="">Select network...</option>';
-                data.networks.forEach(n => {
-                    const opt = document.createElement('option');
-                    opt.value = n.ssid;
-                    opt.textContent = n.ssid + (n.encrypted ? ' 🔒' : '');
-                    ssidSelect.appendChild(opt);
-                });
-            })
-            .catch(e => showMessage('Failed to load networks: ' + e.message, 'error'));
-        
-        let statusPollInterval = null;
-        
-        function pollStatus() {
-            fetch('/status')
-                .then(r => r.json())
-                .then(data => {
-                    if (data.status === 'waiting') {
-                        showMessage(data.message, 'info');
-                    } else if (data.status === 'connecting') {
-                        showMessage('📶 ' + data.message, 'info');
-                    } else if (data.status === 'authenticating') {
-                        showMessage('🔐 ' + data.message, 'info');
-                    } else if (data.status === 'success') {
-                        showMessage('✓ ' + data.message, 'success');
-                        clearInterval(statusPollInterval);
-                        submitBtn.disabled = true;
-                        submitBtn.textContent = 'Setup Complete!';
-                    } else if (data.status === 'error') {
-                        showMessage('✗ ' + data.message + (data.error ? '\\n' + data.error : ''), 'error');
-                        clearInterval(statusPollInterval);
-                        submitBtn.disabled = false;
-                        submitBtn.textContent = 'Connect';
-                    }
-                })
-                .catch(e => console.error('Status poll failed:', e));
-        }
-        
-        form.onsubmit = async (e) => {
-            e.preventDefault();
-            clearMessage();  // Clear any old error messages
-            submitBtn.disabled = true;
-            submitBtn.textContent = 'Submitting...';
-            
-            try {
-                const r = await fetch('/configure', {
-                    method: 'POST',
-                    headers: {'Content-Type': 'application/json'},
-                    body: JSON.stringify({
-                        ssid: form.ssid.value,
-                        password: form.password.value,
-                        pairing_code: form.pairingCode.value
-                    })
-                });
-                const result = await r.json();
-                if (result.success) {
-                    showMessage('Configuration received. Connecting to WiFi...', 'success');
-                    // Start polling for status updates
-                    statusPollInterval = setInterval(pollStatus, 2000);
-                    pollStatus(); // Poll immediately
-                } else {
-                    showMessage('Error: ' + (result.error || 'Failed'), 'error');
-                    submitBtn.disabled = false;
-                    submitBtn.textContent = 'Connect';
-                }
-            } catch(e) {
-                showMessage('Error: ' + e.message, 'error');
-                submitBtn.disabled = false;
-                submitBtn.textContent = 'Connect';
-            }
-        };
-    </script>
-</body>
-</html>
-'''
+# Path to HTML template file
+TEMPLATE_DIR = Path(__file__).parent / "templates"
+TEMPLATE_FILE = TEMPLATE_DIR / "setup.html"
 
 
 class SetupHTTPServer:
-    """HTTP server for WiFi setup interface"""
+    """HTTP server for device setup interface"""
     
     def __init__(self, port: int = 8080, wifi_interface: str = "wlan0", ap_ssid: str = "Kin_Setup", ap_password: str = "kinsetup123"):
         self.port = port
@@ -311,16 +43,24 @@ class SetupHTTPServer:
         self._status = "waiting"  # waiting, connecting, authenticating, success, error
         self._status_message = "Waiting for WiFi configuration..."
         self._error_details = None
+        self._pairing_only = False  # If True, only collect pairing code (no WiFi setup)
+        self._device_ip: Optional[str] = None  # Device IP address (for pairing-only mode)
     
-    async def start(self, config_callback: Callable[[str, str, str], bool]):
+    async def start(self, config_callback: Callable[[str, str, str], bool], pairing_only: bool = False, device_ip: Optional[str] = None):
         """
         Start the HTTP server.
         
         Args:
             config_callback: Callback function to call when user submits configuration.
                            Should accept (ssid, password, pairing_code) and return bool.
+            pairing_only: If True, only collect pairing code (hide WiFi fields, no sudo needed)
+            device_ip: Device IP address (for pairing-only mode to show correct URL in logs)
         """
         self._config_callback = config_callback
+        self._pairing_only = pairing_only
+        self._device_ip = device_ip
+        if pairing_only:
+            self._status_message = "Waiting for pairing code..."
         
         # Create request handler class with reference to this instance
         setup_server = self
@@ -339,13 +79,20 @@ class SetupHTTPServer:
                     self.send_response(200)
                     self.send_header('Content-type', 'text/html')
                     self.end_headers()
-                    self.wfile.write(HTML_TEMPLATE.encode())
+                    # Generate HTML based on pairing_only mode
+                    html = setup_server._generate_html()
+                    self.wfile.write(html.encode())
                 elif self.path == '/ap-info':
                     logger.debug(f"[HTTP] Serving AP info to {client_ip}")
                     self._handle_ap_info()
                 elif self.path == '/networks':
-                    logger.debug(f"[HTTP] Network scan requested by {client_ip}")
-                    self._handle_networks()
+                    if setup_server._pairing_only:
+                        # In pairing-only mode, return empty networks list
+                        logger.debug(f"[HTTP] Network scan requested but pairing-only mode - returning empty list")
+                        self._send_json(200, {'networks': []})
+                    else:
+                        logger.debug(f"[HTTP] Network scan requested by {client_ip}")
+                        self._handle_networks()
                 elif self.path == '/status':
                     logger.debug(f"[HTTP] Status check from {client_ip}")
                     self._handle_status()
@@ -450,8 +197,8 @@ class SetupHTTPServer:
                     logger.info(f"[HTTP]   Password: {'*' * len(password) if password else '(empty)'}")
                     logger.info(f"[HTTP]   Pairing Code: {pairing_code}")
                     
-                    # Validate
-                    if not ssid:
+                    # Validate (skip SSID check in pairing-only mode)
+                    if not setup_server._pairing_only and not ssid:
                         logger.warning("[HTTP] Validation failed: SSID is required")
                         self._send_json(400, {'success': False, 'error': 'SSID is required'})
                         return
@@ -488,7 +235,11 @@ class SetupHTTPServer:
             self._server_thread = Thread(target=self._server.serve_forever, daemon=True)
             self._server_thread.start()
             logger.info(f"[HTTP] ✓ HTTP server listening on port {self.port}")
-            logger.info(f"[HTTP] Access the setup page at: http://192.168.4.1:{self.port}")
+            # Show correct IP based on mode
+            if self._pairing_only and self._device_ip:
+                logger.info(f"[HTTP] Access the setup page at: http://{self._device_ip}:{self.port}")
+            else:
+                logger.info(f"[HTTP] Access the setup page at: http://192.168.4.1:{self.port}")
         except OSError as e:
             if e.errno == 98:  # Address already in use
                 logger.error(f"[HTTP] ✗ Port {self.port} is already in use!")
@@ -515,6 +266,133 @@ class SetupHTTPServer:
             logger.warning(f"[HTTP] Status update: {status} - {message} (Error: {error})")
         else:
             logger.info(f"[HTTP] Status update: {status} - {message}")
+    
+    def _get_wifi_fields_html(self) -> str:
+        """Get WiFi form fields HTML."""
+        if self._pairing_only:
+            return ''
+        return '''
+            <div class="form-group">
+                <label for="ssid">WiFi Network</label>
+                <select id="ssid" name="ssid" required>
+                    <option value="">Scanning...</option>
+                </select>
+            </div>
+            <div class="form-group">
+                <label for="password">WiFi Password</label>
+                <input type="password" id="password" name="password" placeholder="Leave blank if open">
+            </div>
+            '''
+    
+    def _get_network_scan_script(self) -> str:
+        """Get JavaScript for network scanning."""
+        if self._pairing_only:
+            return ''
+        return '''
+        fetch('/networks')
+            .then(r => r.json())
+            .then(data => {
+                ssidSelect.innerHTML = '<option value="">Select network...</option>';
+                data.networks.forEach(n => {
+                    const opt = document.createElement('option');
+                    opt.value = n.ssid;
+                    opt.textContent = n.ssid + (n.encrypted ? ' 🔒' : '');
+                    ssidSelect.appendChild(opt);
+                });
+            })
+            .catch(e => showMessage('Failed to load networks: ' + e.message, 'error'));
+            '''
+    
+    def _get_form_validation_script(self, button_text: str) -> str:
+        """Get JavaScript for form validation."""
+        if self._pairing_only:
+            return f'''
+                if (!form.pairingCode.value || form.pairingCode.value.length !== 4 || !/^[0-9]{{4}}$/.test(form.pairingCode.value)) {{
+                    showMessage('Error: Valid 4-digit pairing code is required', 'error');
+                    submitBtn.disabled = false;
+                    submitBtn.textContent = '{button_text}';
+                    return;
+                }}
+            '''
+        return f'''
+                if (!form.ssid.value) {{
+                    showMessage('Error: WiFi network is required', 'error');
+                    submitBtn.disabled = false;
+                    submitBtn.textContent = '{button_text}';
+                    return;
+                }}
+            '''
+    
+    def _get_html_template_vars(self) -> dict:
+        """Get template variables based on pairing_only mode."""
+        if self._pairing_only:
+            return {
+                'wifi_fields_html': self._get_wifi_fields_html(),
+                'subtitle': "Enter your pairing code to link this device to your account",
+                'button_text': "Pair Device",
+                'network_scan_script': self._get_network_scan_script(),
+                'form_validation': self._get_form_validation_script("Pair Device"),
+                'submit_message': 'Pairing code received. Pairing device...'
+            }
+        else:
+            return {
+                'wifi_fields_html': self._get_wifi_fields_html(),
+                'subtitle': "Configure your WiFi network to get started",
+                'button_text': "Connect",
+                'network_scan_script': self._get_network_scan_script(),
+                'form_validation': self._get_form_validation_script("Connect"),
+                'submit_message': 'Configuration received. Connecting to WiFi...'
+            }
+    
+    def _load_template(self) -> str:
+        """Load HTML template from file."""
+        try:
+            with open(TEMPLATE_FILE, 'r', encoding='utf-8') as f:
+                content = f.read()
+                # Escape CSS braces that aren't template variables
+                # Template variables that should NOT be escaped: subtitle, wifi_fields_html, button_text, 
+                # button_text_js, network_scan_script, form_validation, submit_message_js
+                import re
+                template_vars = ['subtitle', 'wifi_fields_html', 'button_text', 'button_text_js', 
+                               'network_scan_script', 'form_validation', 'submit_message_js']
+                
+                # Strategy: escape all braces, then restore template variables
+                # After escaping, {var} becomes {{var}}, so we restore {{var}} back to {var}
+                escaped = content.replace('{', '{{').replace('}', '}}')
+                # Restore template variables: {{var}} -> {var}
+                for var in template_vars:
+                    # Match {{var}} (4 braces total) and replace with {var} (2 braces)
+                    pattern = '{{' + var + '}}'
+                    replacement = '{' + var + '}'
+                    escaped = escaped.replace(pattern, replacement)
+                
+                return escaped
+        except FileNotFoundError:
+            logger.error(f"Template file not found: {TEMPLATE_FILE}")
+            raise
+        except Exception as e:
+            logger.error(f"Error loading template: {e}")
+            raise
+    
+    def _generate_html(self) -> str:
+        """Generate HTML template based on pairing_only mode"""
+        vars = self._get_html_template_vars()
+        template = self._load_template()
+        
+        # Replace template variables
+        # Escape strings used in JavaScript to prevent injection
+        button_text_js = vars['button_text'].replace("'", "\\'").replace('\n', '\\n')
+        submit_message_js = vars['submit_message'].replace("'", "\\'").replace('\n', '\\n')
+        
+        return template.format(
+            subtitle=vars['subtitle'],
+            wifi_fields_html=vars['wifi_fields_html'],
+            button_text=vars['button_text'],
+            button_text_js=button_text_js,
+            network_scan_script=vars['network_scan_script'],
+            form_validation=vars['form_validation'],
+            submit_message_js=submit_message_js
+        )
     
     async def stop(self):
         """Stop the HTTP server"""

@@ -1,7 +1,6 @@
 """Configuration management from environment variables"""
 
 import os
-import sys
 from dotenv import load_dotenv
 
 # Load environment variables
@@ -96,9 +95,17 @@ class Config:
     # Environment
     ENV = os.getenv("ENV", "production")
     
+    # Development mode flag (set to True when running without full configuration)
+    DEV_MODE = False
+    
     @classmethod
     def validate(cls):
-        """Validate required configuration"""
+        """Validate required configuration.
+        
+        Returns:
+            bool: True if configuration is valid, False if missing required credentials.
+                 When False, DEV_MODE is set to True.
+        """
         missing = []
         
         # Only DEVICE_ID and DEVICE_PRIVATE_KEY are required
@@ -108,10 +115,11 @@ class Config:
             missing.append("DEVICE_PRIVATE_KEY")
             
         if missing:
-            print(f"✗ Missing required environment variables: {', '.join(missing)}")
-            print("   This device needs to be provisioned through the admin portal.")
-            print("   Download the installer package and run ./install.sh")
-            sys.exit(1)
+            cls.DEV_MODE = True
+            return False
+        
+        cls.DEV_MODE = False
+        return True
     
     @classmethod
     def load_runtime_config(cls, config_data: dict):
