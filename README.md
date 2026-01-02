@@ -181,10 +181,9 @@ raspberry-pi-client/
     │       └── usb_4_mic_array/
     │           ├── __init__.py
     │           └── tuning.py     # ReSpeaker hardware tuning
-    ├── voice_feedback/
-    │   ├── __init__.py
-    │   ├── voice_feedback.py    # Voice feedback system
-    │   └── voice_messages/      # Pre-recorded voice message files
+    ├── audio/
+    │   ├── ...
+    │   └── voice_messages/      # Pre-recorded voice message files (voice feedback)
     │       ├── startup.wav
     │       ├── no_internet.wav
     │       ├── device_not_paired.wav
@@ -205,13 +204,15 @@ raspberry-pi-client/
     ├── orchestrator/
     │   ├── __init__.py
     │   └── client.py           # Orchestrator WebSocket client
-    ├── local_storage/
-    │   ├── __init__.py
-    │   └── context_manager.py  # Location/context data manager
-    ├── location/
-    │   ├── __init__.py
-    │   ├── fetcher.py           # Location fetching (WiFi triangulation)
-    │   └── wifi_location.py    # WiFi location helpers
+    ├── agent/
+    │   ├── orchestrator.py      # Orchestrator WebSocket client
+    │   ├── context.py           # Location/context data manager
+    │   ├── elevenlabs.py        # ElevenLabs conversation client
+    │   └── tools/
+    │       └── location/        # WiFi geolocation for agent context
+    │           ├── __init__.py
+    │           ├── fetcher.py   # Location fetching (WiFi triangulation)
+    │           └── wifi_location.py  # WiFi location helpers
     ├── wifi_setup/
     │   ├── __init__.py
     │   ├── manager.py           # WiFi setup orchestration
@@ -389,7 +390,7 @@ Record your own voice messages and convert them to the required format:
 
 ```bash
 # Required format: 16kHz, mono, 16-bit PCM WAV
-ffmpeg -i input.mp3 -ar 16000 -ac 1 -sample_fmt s16 lib/voice_feedback/voice_messages/startup.wav
+ffmpeg -i input.mp3 -ar 16000 -ac 1 -sample_fmt s16 lib/audio/voice_messages/startup.wav
 ```
 
 ### Required Voice Message Files
@@ -406,10 +407,10 @@ ffmpeg -i input.mp3 -ar 16000 -ac 1 -sample_fmt s16 lib/voice_feedback/voice_mes
 make test-voice-messages
 
 # Or verify audio format manually
-file lib/voice_feedback/voice_messages/startup.wav
+file lib/audio/voice_messages/startup.wav
 
 # Play voice message file
-aplay lib/voice_feedback/voice_messages/startup.wav
+aplay lib/audio/voice_messages/startup.wav
 ```
 
 **Note**: If voice message files are missing, the system will continue to work normally but without voice guidance. Warnings will be logged for each missing file.

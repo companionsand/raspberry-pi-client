@@ -205,9 +205,9 @@ def main():
     if args.output_dir:
         output_dir = Path(args.output_dir)
     else:
-        # Default to lib/voice_feedback/voice_messages directory
+        # Default to lib/audio/voice_messages directory
         script_dir = Path(__file__).parent
-        output_dir = script_dir.parent / "lib" / "voice_feedback" / "voice_messages"
+        output_dir = script_dir.parent / "lib" / "audio" / "voice_messages"
     
     # Create output directory if it doesn't exist
     output_dir.mkdir(parents=True, exist_ok=True)

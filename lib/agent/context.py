@@ -3,7 +3,7 @@
 import asyncio
 from datetime import datetime
 from typing import Optional, Dict
-from lib.location import fetch_location
+from lib.agent.tools.location import fetch_location
 from lib.config import Config
 
 

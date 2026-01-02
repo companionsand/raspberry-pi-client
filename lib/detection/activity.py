@@ -1,6 +1,10 @@
 """
 Activity detection using YAMNet for human presence awareness.
 
+⚠️  LEGACY CODE - NOT CURRENTLY USED ⚠️
+This module is kept for reference only. It has been replaced by HumanPresenceDetector
+which uses a more sophisticated weighted scoring approach.
+
 Runs on a background thread with a 5-second duty cycle to detect
 sounds like footsteps, doors, coughs, etc.
 """

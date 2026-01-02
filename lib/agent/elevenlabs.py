@@ -16,8 +16,8 @@ import queue
 from scipy import signal
 from typing import Optional
 from lib.config import Config
-from lib.orchestrator.client import OrchestratorClient
-from lib.local_storage import ContextManager
+from lib.agent.orchestrator import OrchestratorClient
+from lib.agent.context import ContextManager
 
 # WebRTC AEC (optional feature; we still try to import so logs can say "available" vs "missing")
 WEBRTC_AEC_IMPORT_ERROR = None

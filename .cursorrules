@@ -17,3 +17,6 @@
 - Use `uv sync` to install dependencies
 - Never use bare `python` or `pip` commands - always use `uv` for Python execution and package management
 
+# Versioning Rules
+
+- Never run commands `git add` or `git commit` yourself. I'll take care of that.

@@ -40,14 +40,10 @@ logging.basicConfig(
 
 # Import local modules
 from lib.config import Config
-from lib.auth import authenticate
-from lib.audio import get_audio_devices, LEDController
-from lib.voice_feedback import VoiceFeedback
-from lib.wake_word import WakeWordDetector
-from lib.orchestrator import OrchestratorClient
-from lib.elevenlabs import ElevenLabsConversationClient
-from lib.local_storage import ContextManager
-from lib.presence_detection import HumanPresenceDetector
+from lib.device_auth import authenticate
+from lib.audio import get_audio_devices, LEDController, VoiceFeedback
+from lib.detection import WakeWordDetector, HumanPresenceDetector
+from lib.agent import OrchestratorClient, ElevenLabsConversationClient, ContextManager
 
 # Import setup module (optional - graceful degradation)
 try:

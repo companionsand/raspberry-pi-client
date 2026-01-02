@@ -1,12 +1,20 @@
 graph TB
-    %% Audio Processing Components
+    %% Audio Input/Output
     Mic["Microphone<br/>(Audio Input)"]
-    WakeWordDetector["WakeWordDetector<br/>(Porcupine + Silero VAD)"]
-    HumanPresenceDetector["HumanPresenceDetector<br/>(YAMNet)"]
+    Speaker["Speaker<br/>(Audio Output)"]
     
-    %% Communication Components
-    OrchestratorClient["OrchestratorClient<br/>(WebSocket)"]
-    ElevenLabsClient["ElevenLabsConversationClient<br/>(WebSocket)"]
+    %% Detection Module
+    subgraph detection ["Detection Module"]
+        WakeWordDetector["WakeWordDetector<br/>(Porcupine + Silero VAD)"]
+        HumanPresenceDetector["HumanPresenceDetector<br/>(YAMNet)"]
+    end
+    
+    %% Agent Module
+    subgraph agent ["Agent Module"]
+        OrchestratorClient["OrchestratorClient<br/>(WebSocket)"]
+        ContextManager["ContextManager<br/>(Location/Weather)"]
+        ElevenLabsClient["ElevenLabsConversationClient<br/>(WebSocket + WebRTC AEC)"]
+    end
     
     %% External Services
     OrchestratorService["Orchestrator Service<br/>(Backend)"]
@@ -14,8 +22,6 @@ graph TB
     
     %% Supporting Components
     LEDController["LEDController<br/>(Visual Feedback)"]
-    ContextManager["ContextManager<br/>(Location/Weather)"]
-    Speaker["Speaker<br/>(Audio Output)"]
     
     %% Audio Flow
     Mic -->|"Audio Stream<br/>(16kHz)"| WakeWordDetector
@@ -33,6 +39,10 @@ graph TB
     ElevenLabsClient <-->|"WebSocket<br/>(Audio + Events)"| ElevenLabsService
     ElevenLabsClient -->|"Audio Chunks"| Speaker
     
+    %% Echo Cancellation Flow
+    %% Agent output → Speaker → ReSpeaker Ch5 (hardware loopback) → WebRTC AEC in ElevenLabsClient
+    Speaker -.->|"Playback Loopback<br/>(ReSpeaker Ch5)"| ElevenLabsClient
+    
     %% Context Manager Usage
     ContextManager -->|"Location/Weather Data"| ElevenLabsClient
     
@@ -45,9 +55,13 @@ graph TB
     classDef commComponent fill:#f3e5f5,stroke:#4a148c,stroke-width:2px
     classDef externalService fill:#e8f5e9,stroke:#1b5e20,stroke-width:2px
     classDef supportComponent fill:#fce4ec,stroke:#880e4f,stroke-width:2px
+    classDef detectionModule fill:#e3f2fd,stroke:#1976d2,stroke-width:3px
+    classDef agentModule fill:#f1f8e9,stroke:#558b2f,stroke-width:3px
     
     class WakeWordDetector,HumanPresenceDetector,Mic,Speaker audioComponent
     class OrchestratorClient,ElevenLabsClient commComponent
     class OrchestratorService,ElevenLabsService externalService
-    class LEDController,ContextManager supportComponent
+    class LEDController supportComponent
+    class detection detectionModule
+    class agent agentModule
 
