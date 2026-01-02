@@ -30,8 +30,8 @@ class AccessPoint:
             # Clean up any existing hotspot connection
             await self._cleanup_existing()
             
-            # Unblock WiFi
-            await self._run_sudo_cmd(['rfkill', 'unblock', 'wifi'])
+            # Unblock WiFi (optional - rfkill is Linux-specific, skip on macOS)
+            await self._run_sudo_cmd(['rfkill', 'unblock', 'wifi'], check=False)
             
             # Ensure the interface is fully down and clean
             logger.debug(f"Ensuring {self.interface} is clean...")

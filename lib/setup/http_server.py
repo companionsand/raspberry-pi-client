@@ -15,6 +15,7 @@ import asyncio
 import json
 import logging
 import os
+import socket
 import subprocess
 from http.server import BaseHTTPRequestHandler
 from pathlib import Path
@@ -23,6 +24,16 @@ from threading import Thread
 from typing import Callable, Optional
 
 logger = logging.getLogger(__name__)
+
+
+class ReuseAddressTCPServer(TCPServer):
+    """TCPServer that sets SO_REUSEADDR before binding"""
+    allow_reuse_address = True
+    
+    def server_bind(self):
+        """Override to set SO_REUSEADDR before binding"""
+        self.socket.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+        super().server_bind()
 
 # Path to HTML template file
 TEMPLATE_DIR = Path(__file__).parent / "templates"
@@ -225,28 +236,137 @@ class SetupHTTPServer:
                     logger.error(f"[HTTP] Error handling configuration: {e}", exc_info=True)
                     self._send_json(500, {'success': False, 'error': str(e)})
         
+        # Ensure any existing server is stopped first
+        if self._server:
+            logger.info("[HTTP] Stopping existing server instance...")
+            try:
+                await self.stop()
+                import time
+                time.sleep(0.5)  # Wait for port to be released
+            except Exception as e:
+                logger.debug(f"[HTTP] Error stopping existing server: {e}")
+        
         # Start server in thread
         logger.info(f"[HTTP] Starting HTTP server on 0.0.0.0:{self.port}")
         logger.info(f"[HTTP] AP SSID: {self.ap_ssid}, Password: {self.ap_password}")
         logger.info(f"[HTTP] WiFi Interface: {self.wifi_interface}")
         
         try:
-            self._server = TCPServer(('', self.port), SetupHandler)
+            # Use SO_REUSEADDR to allow port reuse if previous server didn't clean up properly
+            self._server = ReuseAddressTCPServer(('', self.port), SetupHandler)
             self._server_thread = Thread(target=self._server.serve_forever, daemon=True)
             self._server_thread.start()
             logger.info(f"[HTTP] ✓ HTTP server listening on port {self.port}")
             # Show correct IP based on mode
             if self._pairing_only and self._device_ip:
+                # Fallback: pairing-only mode without AP (e.g., on macOS)
                 logger.info(f"[HTTP] Access the setup page at: http://{self._device_ip}:{self.port}")
             else:
+                # Normal case: AP created (192.168.4.1)
                 logger.info(f"[HTTP] Access the setup page at: http://192.168.4.1:{self.port}")
         except OSError as e:
-            if e.errno == 98:  # Address already in use
+            # Handle "Address already in use" error (errno 48 on macOS, 98 on Linux)
+            if e.errno == 48 or e.errno == 98:  # EADDRINUSE
                 logger.error(f"[HTTP] ✗ Port {self.port} is already in use!")
-                logger.error(f"[HTTP] Try: sudo lsof -ti :{self.port} | xargs kill")
+                logger.error(f"[HTTP] Attempting to clean up port {self.port}...")
+                
+                # First, try to stop our own server instance if it exists
+                if self._server:
+                    try:
+                        await self.stop()
+                        import time
+                        time.sleep(1)
+                    except Exception:
+                        pass
+                
+                # Try to kill any process using the port
+                try:
+                    import subprocess
+                    import time
+                    
+                    # Get detailed info about what's using the port
+                    info_result = subprocess.run(
+                        ['lsof', '-i', f':{self.port}'],
+                        capture_output=True,
+                        timeout=5,
+                        text=True
+                    )
+                    if info_result.stdout:
+                        logger.info(f"[HTTP] Port {self.port} is being used by:\n{info_result.stdout}")
+                    
+                    # Try lsof to find PIDs
+                    result = subprocess.run(
+                        ['lsof', '-ti', f':{self.port}'],
+                        capture_output=True,
+                        timeout=5,
+                        text=True
+                    )
+                    if result.returncode == 0 and result.stdout:
+                        pids = [pid.strip() for pid in result.stdout.strip().split('\n') if pid.strip()]
+                        logger.info(f"[HTTP] Found {len(pids)} process(es) using port {self.port}: {pids}")
+                        
+                        for pid in pids:
+                            try:
+                                # Try graceful kill first
+                                kill_result = subprocess.run(
+                                    ['kill', pid],
+                                    timeout=5,
+                                    capture_output=True
+                                )
+                                if kill_result.returncode == 0:
+                                    logger.info(f"[HTTP] Sent SIGTERM to process {pid}")
+                                else:
+                                    # Try force kill
+                                    kill9_result = subprocess.run(
+                                        ['kill', '-9', pid],
+                                        timeout=5,
+                                        capture_output=True
+                                    )
+                                    if kill9_result.returncode == 0:
+                                        logger.info(f"[HTTP] Force killed process {pid}")
+                            except Exception as kill_error:
+                                logger.debug(f"[HTTP] Could not kill process {pid}: {kill_error}")
+                        
+                        # Wait longer for port to be released (especially important on macOS)
+                        time.sleep(2)
+                    else:
+                        logger.warning(f"[HTTP] No processes found using port {self.port} (might be in TIME_WAIT state)")
+                        # On macOS, ports can stay in TIME_WAIT for up to 15 seconds
+                        # Wait a bit and try again
+                        time.sleep(2)
+                        
+                except (FileNotFoundError, subprocess.TimeoutExpired, Exception) as cleanup_error:
+                    logger.warning(f"[HTTP] Could not clean up port: {cleanup_error}")
+                    # Still wait a bit in case it's just TIME_WAIT
+                    import time
+                    time.sleep(2)
+                
+                # Try one more time after cleanup
+                try:
+                    self._server = ReuseAddressTCPServer(('', self.port), SetupHandler)
+                    self._server_thread = Thread(target=self._server.serve_forever, daemon=True)
+                    self._server_thread.start()
+                    logger.info(f"[HTTP] ✓ HTTP server listening on port {self.port} (after cleanup)")
+                    # Show correct IP based on mode
+                    if self._pairing_only and self._device_ip:
+                        # Fallback: pairing-only mode without AP (e.g., on macOS)
+                        logger.info(f"[HTTP] Access the setup page at: http://{self._device_ip}:{self.port}")
+                    else:
+                        # Normal case: AP created (192.168.4.1)
+                        logger.info(f"[HTTP] Access the setup page at: http://192.168.4.1:{self.port}")
+                except OSError as retry_error:
+                    logger.error(f"[HTTP] ✗ Still cannot bind to port {self.port} after cleanup")
+                    logger.error(f"[HTTP] Diagnostic commands:")
+                    logger.error(f"[HTTP]   lsof -i :{self.port}")
+                    logger.error(f"[HTTP]   lsof -ti :{self.port} | xargs kill -9")
+                    logger.error(f"[HTTP]   netstat -an | grep {self.port}")
+                    # Ensure _server is None on failure
+                    self._server = None
                 raise
             else:
                 logger.error(f"[HTTP] ✗ Failed to start HTTP server: {e}")
+                # Ensure _server is None on failure
+                self._server = None
                 raise
     
     def set_status(self, status: str, message: str, error: str = None):
@@ -403,11 +523,21 @@ class SetupHTTPServer:
                 loop = asyncio.get_event_loop()
                 await loop.run_in_executor(None, self._server.shutdown)
                 self._server.server_close()
+                
+                # Wait for thread to finish (with timeout)
+                if self._server_thread and self._server_thread.is_alive():
+                    self._server_thread.join(timeout=2.0)
+                    if self._server_thread.is_alive():
+                        logger.warning("[HTTP] Server thread did not stop within timeout")
+                
                 self._server = None
                 self._server_thread = None
                 logger.info("[HTTP] ✓ HTTP server stopped successfully")
             except Exception as e:
                 logger.error(f"[HTTP] Error stopping server: {e}")
+                # Ensure cleanup even on error
+                self._server = None
+                self._server_thread = None
         else:
             logger.debug("[HTTP] Server already stopped")
 

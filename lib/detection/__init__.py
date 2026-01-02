@@ -2,7 +2,7 @@
 
 from .wake_word import WakeWordDetector
 from .presence import HumanPresenceDetector
-from .activity import ActivityMonitor  # Legacy - not currently used, kept for reference
+# ActivityMonitor is legacy/unused - kept in .activity.py for reference only
 
-__all__ = ["WakeWordDetector", "HumanPresenceDetector", "ActivityMonitor"]
+__all__ = ["WakeWordDetector", "HumanPresenceDetector"]
 

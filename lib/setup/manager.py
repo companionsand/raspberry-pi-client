@@ -180,7 +180,7 @@ class SetupManager:
     async def _start_pairing_only_mode(self) -> Tuple[str, bool]:
         """
         Start pairing-only mode (device has internet, no WiFi setup needed).
-        Uses existing network connection - no sudo required.
+        Creates access point so users can connect to pair the device.
         
         Returns:
             Tuple of (pairing_code, success)
@@ -188,25 +188,41 @@ class SetupManager:
         logger.info("Starting pairing-only mode...")
         
         async def pairing_operation():
-            # Get device IP address on existing network
-            device_ip = await self.network_connector.get_device_ip()
-            if not device_ip:
-                logger.error("Could not determine device IP address")
-                return None, False
+            # Try to create access point so users can connect (even though device already has internet)
+            # This provides a consistent setup experience - users always connect to Kin_Setup
+            # If AP creation fails (e.g., on macOS), fall back to using existing network IP
+            ap_created = False
+            device_ip = None
             
-            # Start HTTP server for pairing code collection (no AP needed)
-            logger.info(f"Starting HTTP server on port {self.http_port} (no access point needed)")
+            try:
+                logger.info(f"Creating access point: {self.ap_ssid}")
+                await self.access_point.start()
+                ap_created = True
+            except Exception as e:
+                logger.warning(f"Could not create access point: {e}")
+                logger.info("Falling back to using existing network connection...")
+                # Get device IP address on existing network
+                device_ip = await self.network_connector.get_device_ip()
+                if not device_ip:
+                    logger.error("Could not determine device IP address")
+                    return None, False
+            
+            # Start HTTP server for pairing code collection
+            logger.info(f"Starting HTTP server on port {self.http_port}")
             await self.http_server.start(self._handle_pairing_only_config, pairing_only=True, device_ip=device_ip)
             
             # Set LED state to WIFI_SETUP (ready for configuration)
             if self._LEDController:
                 self._set_led_state(self._LEDController.STATE_WIFI_SETUP)
             
-            logger.info(f"Pairing mode active. Open http://{device_ip}:{self.http_port} in your browser")
+            if ap_created:
+                logger.info(f"Pairing mode active. Connect to '{self.ap_ssid}' (password: {self.ap_password}) and go to http://192.168.4.1:{self.http_port}")
+            else:
+                logger.info(f"Pairing mode active. Open http://{device_ip}:{self.http_port} in your browser (on same network)")
             logger.info("Note: No WiFi setup needed - device already has internet connection")
             
-            # Don't play WiFi setup message in pairing-only mode (no WiFi setup needed)
-            # Voice feedback already played earlier (device_not_paired)
+            # Play voice feedback to guide user
+            self._play_voice_feedback("wifi_setup_ready")
             
             # Wait for user to submit pairing code
             success = await self._wait_for_pairing_code()
@@ -552,10 +568,17 @@ class SetupManager:
                 for pid in pids:
                     if pid.strip():
                         try:
-                            await asyncio.create_subprocess_exec('kill', pid.strip())
+                            kill_result = await asyncio.create_subprocess_exec(
+                                'kill', pid.strip(),
+                                stdout=asyncio.subprocess.DEVNULL,
+                                stderr=asyncio.subprocess.DEVNULL
+                            )
+                            await kill_result.wait()
                             logger.info(f"Killed old HTTP server process (PID: {pid.strip()})")
-                        except:
-                            pass
+                            # Wait a bit for port to be released
+                            await asyncio.sleep(1)
+                        except Exception as e:
+                            logger.debug(f"Could not kill process {pid.strip()}: {e}")
         except FileNotFoundError:
             # lsof not available, try alternative
             logger.debug("lsof not available, skipping process cleanup")
@@ -568,6 +591,8 @@ class SetupManager:
         
         try:
             await self.http_server.stop()
+            # Give a moment for port to be fully released
+            await asyncio.sleep(0.5)
         except Exception as e:
             logger.debug(f"Error stopping HTTP server: {e}")
         
