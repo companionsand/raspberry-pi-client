@@ -14,10 +14,11 @@ import numpy as np
 import onnxruntime as ort
 import queue
 from scipy import signal
-from typing import Optional
+from typing import Optional, Dict, Any
 from lib.config import Config
 from lib.orchestrator.client import OrchestratorClient
 from lib.local_storage import ContextManager
+from lib.music import MusicPlayer, StopDetector
 
 # WebRTC AEC (optional feature; we still try to import so logs can say "available" vs "missing")
 WEBRTC_AEC_IMPORT_ERROR = None
@@ -138,6 +139,14 @@ class ElevenLabsConversationClient:
         # Uses Ch0 (beamformed mic) + Ch5 (playback loopback) for adaptive filtering
         self.webrtc_aec_processor = None  # Initialized in start() if enabled
         self._use_webrtc_aec = False  # Set to True in start() if WebRTC AEC is enabled and available
+        
+        # -------------------------------------------------------------------------
+        # Client Tools - Music playback and other client-side operations
+        # -------------------------------------------------------------------------
+        self._music_player: Optional[MusicPlayer] = None
+        self._stop_detector: Optional[StopDetector] = None
+        self._music_mode_active = False  # True when music is playing and conversation is paused
+        self._pending_tool_call_id: Optional[str] = None  # Tool call ID to respond to after music stops
         
         
     async def start(self, orchestrator_client: OrchestratorClient):
@@ -517,6 +526,12 @@ class ElevenLabsConversationClient:
         logger = self.logger
         try:
             while self.running:
+                # Skip sending audio when in music mode
+                # (stop detector handles audio capture instead)
+                if self._music_mode_active:
+                    await asyncio.sleep(0.1)
+                    continue
+                
                 # Read audio from microphone
                 if self._use_respeaker_aec:
                     # Callback mode: grab frames from PortAudio callback queue
@@ -1080,6 +1095,10 @@ class ElevenLabsConversationClient:
                         await self.audio_queue.put(audio_array)
                         self.last_audio_time = time.time()  # Reset silence timer
                 
+                elif data.get('type') == 'client_tool_call' or 'client_tool_call' in data:
+                    # Handle client-side tool calls from ElevenLabs agent
+                    await self._handle_client_tool_call(data, orchestrator_client)
+                
                 elif data.get('type') == 'interruption' or 'interruption' in data:
                     # ElevenLabs detected user interruption - stop playback immediately
                     interruption_event = data.get('interruption', data)
@@ -1249,9 +1268,236 @@ class ElevenLabsConversationClient:
             self.end_reason = "network_failure"
             self.running = False
     
+    async def _handle_client_tool_call(self, data: Dict[str, Any], orchestrator_client: OrchestratorClient):
+        """
+        Handle client-side tool calls from ElevenLabs agent.
+        
+        Supported tools:
+        - play_music: Play BBC Radio 6 Music, with VAD+Scribe stop detection
+        """
+        logger = self.logger
+        
+        # Extract tool call details
+        tool_call = data.get('client_tool_call', data)
+        tool_name = tool_call.get('tool_name', '')
+        tool_call_id = tool_call.get('tool_call_id', '')
+        parameters = tool_call.get('parameters', {})
+        
+        print(f"\n🔧 Client tool call: {tool_name}")
+        print(f"   Tool call ID: {tool_call_id}")
+        print(f"   Parameters: {parameters}")
+        
+        if logger:
+            logger.info(
+                "client_tool_call_received",
+                extra={
+                    "tool_name": tool_name,
+                    "tool_call_id": tool_call_id,
+                    "parameters": parameters,
+                    "conversation_id": self.conversation_id,
+                    "device_id": Config.DEVICE_ID
+                }
+            )
+        
+        if tool_name == "play_music":
+            await self._handle_play_music_tool(tool_call_id, parameters)
+        else:
+            # Unknown tool - send error response
+            print(f"   ⚠️  Unknown client tool: {tool_name}")
+            await self._send_client_tool_result(
+                tool_call_id=tool_call_id,
+                result=f"Error: Unknown tool '{tool_name}'",
+                is_error=True
+            )
+    
+    async def _handle_play_music_tool(self, tool_call_id: str, parameters: Dict[str, Any]):
+        """
+        Handle the play_music client tool.
+        
+        This method:
+        1. Pauses the conversation (stops sending mic audio, clears playback queue)
+        2. Starts BBC Radio 6 Music stream
+        3. Runs VAD + Scribe stop detection
+        4. When "Stop" is detected, stops music and resumes conversation
+        """
+        logger = self.logger
+        
+        print("\n🎵 Starting music playback mode...")
+        
+        # Mark music mode as active
+        self._music_mode_active = True
+        self._pending_tool_call_id = tool_call_id
+        
+        # Stop current audio playback
+        self.playback_active = False
+        
+        # Clear audio queue
+        cleared_count = 0
+        while not self.audio_queue.empty():
+            try:
+                self.audio_queue.get_nowait()
+                cleared_count += 1
+            except asyncio.QueueEmpty:
+                break
+        
+        # Clear callback queue if using ReSpeaker
+        if self._use_respeaker_aec and self._output_queue:
+            while not self._output_queue.empty():
+                try:
+                    self._output_queue.get_nowait()
+                except queue.Empty:
+                    break
+            self._callback_remainder = None
+        
+        if cleared_count > 0:
+            print(f"   ✓ Cleared {cleared_count} audio chunks from queue")
+        
+        # Initialize and start music player
+        self._music_player = MusicPlayer(speaker_device_index=self.speaker_device_index)
+        
+        if not self._music_player.start():
+            print("   ✗ Failed to start music player")
+            self._music_mode_active = False
+            await self._send_client_tool_result(
+                tool_call_id=tool_call_id,
+                result="Failed to start music playback - mpv may not be installed",
+                is_error=True
+            )
+            return
+        
+        if logger:
+            logger.info(
+                "music_playback_mode_started",
+                extra={
+                    "tool_call_id": tool_call_id,
+                    "conversation_id": self.conversation_id,
+                    "device_id": Config.DEVICE_ID
+                }
+            )
+        
+        # Initialize and start stop detector
+        self._stop_detector = StopDetector(
+            mic_device_index=self.mic_device_index,
+            on_stop_detected=None  # We'll handle it via the return value
+        )
+        
+        # Run stop detection in a separate task so we don't block message receiving
+        asyncio.create_task(self._run_stop_detection(tool_call_id))
+    
+    async def _run_stop_detection(self, tool_call_id: str):
+        """Run stop detection loop until "Stop" is detected or music stops."""
+        logger = self.logger
+        
+        try:
+            # Wait for stop keyword
+            stop_detected = await self._stop_detector.start()
+            
+            if stop_detected:
+                print("\n🛑 Stop keyword detected - ending music playback")
+            else:
+                print("\n📻 Music playback ended externally")
+            
+        except Exception as e:
+            print(f"\n⚠️  Stop detection error: {e}")
+            if logger:
+                logger.error(
+                    "stop_detection_error",
+                    extra={
+                        "error": str(e),
+                        "device_id": Config.DEVICE_ID
+                    }
+                )
+        
+        finally:
+            # Stop music if still playing
+            if self._music_player and self._music_player.is_active():
+                self._music_player.stop()
+            
+            # Clean up
+            if self._stop_detector:
+                self._stop_detector.stop()
+            
+            self._music_mode_active = False
+            self._music_player = None
+            self._stop_detector = None
+            
+            if logger:
+                logger.info(
+                    "music_playback_mode_ended",
+                    extra={
+                        "tool_call_id": tool_call_id,
+                        "conversation_id": self.conversation_id,
+                        "device_id": Config.DEVICE_ID
+                    }
+                )
+            
+            # Send tool result to resume conversation
+            await self._send_client_tool_result(
+                tool_call_id=tool_call_id,
+                result="Music playback stopped. The user said 'Stop' to end the music.",
+                is_error=False
+            )
+            
+            print("✓ Conversation resumed")
+    
+    async def _send_client_tool_result(self, tool_call_id: str, result: str, is_error: bool = False):
+        """
+        Send client tool result back to ElevenLabs.
+        
+        Args:
+            tool_call_id: The tool call ID from the original request
+            result: Result message to send back
+            is_error: Whether this is an error response
+        """
+        if not self.websocket or not self.running:
+            print("⚠️  Cannot send tool result - WebSocket not connected")
+            return
+        
+        message = {
+            "type": "client_tool_result",
+            "tool_call_id": tool_call_id,
+            "result": result,
+            "is_error": is_error
+        }
+        
+        print(f"📤 Sending client tool result: {result[:50]}{'...' if len(result) > 50 else ''}")
+        
+        try:
+            await self.websocket.send(json.dumps(message))
+            
+            if self.logger:
+                self.logger.info(
+                    "client_tool_result_sent",
+                    extra={
+                        "tool_call_id": tool_call_id,
+                        "is_error": is_error,
+                        "conversation_id": self.conversation_id,
+                        "device_id": Config.DEVICE_ID
+                    }
+                )
+        except Exception as e:
+            print(f"✗ Failed to send tool result: {e}")
+            if self.logger:
+                self.logger.error(
+                    "client_tool_result_send_failed",
+                    extra={
+                        "error": str(e),
+                        "tool_call_id": tool_call_id,
+                        "device_id": Config.DEVICE_ID
+                    }
+                )
+
     async def stop(self, orchestrator_client: OrchestratorClient):
         """Stop the conversation"""
         self.running = False
+        
+        # Stop music if playing
+        if self._music_player and self._music_player.is_active():
+            self._music_player.stop()
+        
+        # Stop stop detector if running
+        if self._stop_detector:
+            self._stop_detector.stop()
         
         # Stop WebRTC AEC processor if running
         if self._use_webrtc_aec and self.webrtc_aec_processor:
