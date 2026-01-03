@@ -96,6 +96,17 @@ class Config:
     # Environment
     ENV = os.getenv("ENV", "production")
     
+    # =========================================================================
+    # MAC DEVELOPMENT MODE
+    # =========================================================================
+    # When enabled, skips Raspberry Pi-specific features:
+    # - OpenTelemetry setup (OTEL)
+    # - WiFi setup mode
+    # - LED controller
+    # - Location fetching (WiFi triangulation)
+    # - ReSpeaker tuning
+    MAC_MODE = os.getenv("MAC_MODE", "false").lower() == "true"
+    
     @classmethod
     def validate(cls):
         """Validate required configuration"""
