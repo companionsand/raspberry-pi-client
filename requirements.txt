@@ -32,8 +32,8 @@ PyJWT>=2.8.0
 # Async HTTP client for WiFi-based geolocation
 aiohttp>=3.9.0
 
-# LED control for ReSpeaker (optional)
-pixel-ring>=0.1.0
+# LED control for ReSpeaker (Linux/Raspberry Pi only - requires SPI hardware)
+pixel-ring>=0.1.0; sys_platform == 'linux'
 
 # UUID generation
 # (built-in, no package needed)

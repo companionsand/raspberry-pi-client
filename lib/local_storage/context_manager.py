@@ -141,16 +141,45 @@ class ContextManager:
             with open('/etc/timezone', 'r') as f:
                 variables['timezone'] = f.read().strip()
         except (FileNotFoundError, IOError):
-            # Fallback to UTC if /etc/timezone doesn't exist
-            variables['timezone'] = 'UTC'
+            # Fallback: Try to get timezone from Python (works on Mac/Windows)
+            try:
+                import subprocess
+                # On Mac, use systemsetup or read from /etc/localtime symlink
+                result = subprocess.run(
+                    ['readlink', '/etc/localtime'],
+                    capture_output=True,
+                    text=True,
+                    timeout=2
+                )
+                if result.returncode == 0:
+                    # Output is like /var/db/timezone/zoneinfo/Asia/Kolkata
+                    tz_path = result.stdout.strip()
+                    # Extract timezone from path (last two components for region/city)
+                    parts = tz_path.split('/')
+                    if len(parts) >= 2:
+                        variables['timezone'] = '/'.join(parts[-2:])
+                    else:
+                        variables['timezone'] = 'UTC'
+                else:
+                    variables['timezone'] = 'UTC'
+            except Exception:
+                variables['timezone'] = 'UTC'
         
-        # Add location variables if available
+        # Always include location variables (required by ElevenLabs agent tools)
+        # Use actual values if available, otherwise empty strings
         if self._location_data:
             variables['latitude'] = str(self._location_data.get('latitude', ''))
             variables['longitude'] = str(self._location_data.get('longitude', ''))
             variables['city'] = self._location_data.get('city', '')
             variables['state'] = self._location_data.get('state', '')
             variables['country'] = self._location_data.get('country', '')
+        else:
+            # Provide empty values to satisfy required dynamic variables
+            variables['latitude'] = ''
+            variables['longitude'] = ''
+            variables['city'] = ''
+            variables['state'] = ''
+            variables['country'] = ''
         
         return variables
     
