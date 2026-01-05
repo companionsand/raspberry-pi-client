@@ -18,8 +18,6 @@ from typing import Optional, Dict, Any
 from lib.config import Config
 from lib.orchestrator.client import OrchestratorClient
 from lib.local_storage import ContextManager
-from lib.music import MusicPlayer
-from lib.music.stop_detector import StopDetector
 
 # WebRTC AEC (optional feature; we still try to import so logs can say "available" vs "missing")
 WEBRTC_AEC_IMPORT_ERROR = None
@@ -142,12 +140,16 @@ class ElevenLabsConversationClient:
         self._use_webrtc_aec = False  # Set to True in start() if WebRTC AEC is enabled and available
         
         # -------------------------------------------------------------------------
-        # Client Tools - Music playback and other client-side operations
+        # Client Tools - Music playback triggers conversation end
         # -------------------------------------------------------------------------
-        self._music_player: Optional[MusicPlayer] = None
-        self._stop_detector: Optional[StopDetector] = None
-        self._music_mode_active = False  # True when music is playing and conversation is paused
-        self._pending_tool_call_id: Optional[str] = None  # Tool call ID to respond to after music stops
+        # When play_music is called, we end the conversation so main.py can start music mode
+        # This is simpler than trying to share audio devices during conversation
+        self._music_mode_requested = False  # Set True when play_music tool is called
+        
+        # Agent speech monitoring for Ch5 RMS (detect when agent stops speaking)
+        self._agent_speaking = False
+        self._agent_silence_start = None
+        self._agent_silence_threshold_ms = 500  # Wait 500ms of silence before ending
         
         
     async def start(self, orchestrator_client: OrchestratorClient):
@@ -518,7 +520,8 @@ class ElevenLabsConversationClient:
                     },
                     exc_info=True
                 )
-            self.end_reason = "network_failure"
+            if self.end_reason not in ("music_mode",):
+                self.end_reason = "network_failure"
         finally:
             await self.stop(orchestrator_client)
     
@@ -527,12 +530,6 @@ class ElevenLabsConversationClient:
         logger = self.logger
         try:
             while self.running:
-                # Skip sending audio when in music mode
-                # (stop detector handles audio capture instead)
-                if self._music_mode_active:
-                    await asyncio.sleep(0.1)
-                    continue
-                
                 # Read audio from microphone
                 if self._use_respeaker_aec:
                     # Callback mode: grab frames from PortAudio callback queue
@@ -788,10 +785,12 @@ class ElevenLabsConversationClient:
                         "user_id": Config.USER_ID
                     }
                 )
-            self.end_reason = "network_failure"
+            if self.end_reason not in ("music_mode",):
+                self.end_reason = "network_failure"
             self.running = False
         except asyncio.CancelledError:
-            self.end_reason = "user_terminated"
+            if self.end_reason not in ("music_mode",):
+                self.end_reason = "user_terminated"
             self.running = False
         except Exception as e:
             print(f"✗ Send error: {e}")
@@ -804,7 +803,8 @@ class ElevenLabsConversationClient:
                         "user_id": Config.USER_ID
                     }
                 )
-            self.end_reason = "network_failure"
+            if self.end_reason not in ("music_mode",):
+                self.end_reason = "network_failure"
             self.running = False
     
     async def _play_audio(self):
@@ -1239,7 +1239,8 @@ class ElevenLabsConversationClient:
             print("\n✓ Conversation ended (connection closed)")
             if self.user_terminate_flag and self.user_terminate_flag[0]:
                 self.end_reason = "user_terminated"
-            else:
+            elif self.end_reason not in ("music_mode",):
+                # Don't overwrite specific end reasons like music_mode
                 self.end_reason = "normal"
             if logger:
                 logger.info(
@@ -1253,7 +1254,8 @@ class ElevenLabsConversationClient:
                 )
             self.running = False
         except asyncio.CancelledError:
-            self.end_reason = "user_terminated"
+            if self.end_reason not in ("music_mode",):
+                self.end_reason = "user_terminated"
             self.running = False
         except Exception as e:
             print(f"✗ Receive error: {e}")
@@ -1266,7 +1268,8 @@ class ElevenLabsConversationClient:
                         "user_id": Config.USER_ID
                     }
                 )
-            self.end_reason = "network_failure"
+            if self.end_reason not in ("music_mode",):
+                self.end_reason = "network_failure"
             self.running = False
     
     async def _handle_client_tool_call(self, data: Dict[str, Any], orchestrator_client: OrchestratorClient):
@@ -1315,78 +1318,23 @@ class ElevenLabsConversationClient:
         """
         Handle the play_music client tool.
         
-        This method:
-        1. Pauses the conversation (stops sending mic audio, clears playback queue)
-        2. Stops the duplex stream so mpv can access the speaker
-        3. Starts internet radio stream via mpv
-        4. Runs VAD + Scribe stop detection (opens its own input stream)
-        5. When "Stop" is detected, stops music, restarts duplex stream, resumes conversation
+        Simpler approach:
+        1. Wait for agent to finish speaking (monitor Ch5 RMS for 500ms silence)
+        2. End the conversation (frees up audio device)
+        3. main.py will detect end_reason="music_mode" and start music playback
+        
+        This avoids complex audio device sharing - conversation and music are separate modes.
         """
         logger = self.logger
         
-        print("\n🎵 Starting music playback mode...")
+        print("\n🎵 Music requested - waiting for agent to finish speaking...")
         
-        # Mark music mode as active
-        self._music_mode_active = True
-        self._pending_tool_call_id = tool_call_id
-        
-        # Stop current audio playback
-        self.playback_active = False
-        
-        # Clear audio queue
-        cleared_count = 0
-        while not self.audio_queue.empty():
-            try:
-                self.audio_queue.get_nowait()
-                cleared_count += 1
-            except asyncio.QueueEmpty:
-                break
-        
-        # Clear callback queue if using ReSpeaker
-        if self._use_respeaker_aec and self._output_queue:
-            while not self._output_queue.empty():
-                try:
-                    self._output_queue.get_nowait()
-                except queue.Empty:
-                    break
-            self._callback_remainder = None
-        
-        if cleared_count > 0:
-            print(f"   ✓ Cleared {cleared_count} audio chunks from queue")
-        
-        # IMPORTANT: Stop the duplex stream before starting mpv
-        # ReSpeaker doesn't support multiple simultaneous streams - if we keep the
-        # duplex stream open, mpv can't access the speaker for audio output.
-        # The stop detector will open its own input-only stream for voice detection.
-        if self._use_respeaker_aec and self.stream:
-            print("   ✓ Pausing duplex stream for music playback")
-            try:
-                self.stream.stop()
-            except Exception as e:
-                print(f"   ⚠️  Error stopping stream: {e}")
-        
-        # Initialize and start music player
-        self._music_player = MusicPlayer(speaker_device_index=self.speaker_device_index)
-        
-        if not self._music_player.play_default():
-            print("   ✗ Failed to start music player")
-            self._music_mode_active = False
-            # Restart stream on failure
-            if self._use_respeaker_aec and self.stream:
-                try:
-                    self.stream.start()
-                except Exception as e:
-                    print(f"   ⚠️  Error restarting stream: {e}")
-            await self._send_client_tool_result(
-                tool_call_id=tool_call_id,
-                result="Failed to start music playback - mpv may not be installed",
-                is_error=True
-            )
-            return
+        # Mark that music mode was requested
+        self._music_mode_requested = True
         
         if logger:
             logger.info(
-                "music_playback_mode_started",
+                "music_mode_requested",
                 extra={
                     "tool_call_id": tool_call_id,
                     "conversation_id": self.conversation_id,
@@ -1394,91 +1342,61 @@ class ElevenLabsConversationClient:
                 }
             )
         
-        # Initialize and start stop detector
-        # Now that the duplex stream is stopped, the stop detector can open its own
-        # input stream without "Device unavailable" errors
-        self._stop_detector = StopDetector(
-            mic_device_index=self.mic_device_index,
-            on_stop_detected=None,  # We'll handle it via the return value
-            shared_input_queue=None,  # Don't use shared queue - stream is stopped
-            use_respeaker_aec=self._use_respeaker_aec
-        )
+        # Wait for agent to stop speaking by monitoring Ch5 RMS
+        # The audio callback will set _agent_speaking based on Ch5 levels
+        # We wait until 500ms of silence
+        await self._wait_for_agent_silence()
         
-        # Run stop detection in a separate task so we don't block message receiving
-        asyncio.create_task(self._run_stop_detection(tool_call_id))
+        print("   ✓ Agent finished speaking")
+        print("   ✓ Ending conversation to start music mode...")
+        
+        # Set end reason so main.py knows to start music
+        self.end_reason = "music_mode"
+        
+        # End the conversation
+        self.running = False
     
-    async def _run_stop_detection(self, tool_call_id: str):
-        """Run stop detection loop until "Stop" is detected or music stops."""
-        logger = self.logger
+    async def _wait_for_agent_silence(self):
+        """
+        Wait for agent to stop speaking by monitoring Ch5 (playback reference) RMS.
         
-        try:
-            # Wait for stop keyword
-            stop_detected = await self._stop_detector.start()
-            
-            if stop_detected:
-                print("\n🛑 Stop keyword detected - ending music playback")
+        Returns when 500ms of silence is detected on Ch5.
+        """
+        # Give agent time to start speaking (the "Let me play some music" response)
+        await asyncio.sleep(0.2)
+        
+        silence_start = None
+        
+        while self.running:
+            # Check if agent is currently speaking (based on recent audio output)
+            # playback_active is True when we're outputting agent audio
+            if self.playback_active:
+                # Agent is speaking, reset silence counter
+                silence_start = None
+                self._agent_speaking = True
             else:
-                print("\n📻 Music playback ended externally")
+                # No audio being played
+                if self._agent_speaking:
+                    # Transition from speaking to silence
+                    if silence_start is None:
+                        silence_start = time.time()
+                    
+                    # Check if we've had 500ms of silence
+                    silence_duration_ms = (time.time() - silence_start) * 1000
+                    if silence_duration_ms >= self._agent_silence_threshold_ms:
+                        self._agent_speaking = False
+                        return
+                else:
+                    # Already in silence mode
+                    if silence_start is None:
+                        silence_start = time.time()
+                    
+                    silence_duration_ms = (time.time() - silence_start) * 1000
+                    if silence_duration_ms >= self._agent_silence_threshold_ms:
+                        return
             
-        except Exception as e:
-            print(f"\n⚠️  Stop detection error: {e}")
-            if logger:
-                logger.error(
-                    "stop_detection_error",
-                    extra={
-                        "error": str(e),
-                        "device_id": Config.DEVICE_ID
-                    }
-                )
-        
-        finally:
-            # Stop music if still playing
-            if self._music_player and self._music_player.is_active():
-                self._music_player.stop()
-            
-            # Clean up stop detector
-            if self._stop_detector:
-                self._stop_detector.stop()
-            
-            self._music_mode_active = False
-            self._music_player = None
-            self._stop_detector = None
-            
-            # Restart the duplex stream for conversation to resume
-            # (was stopped to allow mpv to access the speaker)
-            if self._use_respeaker_aec and self.stream:
-                print("   ✓ Restarting duplex stream for conversation")
-                try:
-                    self.stream.start()
-                except Exception as e:
-                    print(f"   ⚠️  Error restarting stream: {e}")
-                    if logger:
-                        logger.error(
-                            "stream_restart_error",
-                            extra={
-                                "error": str(e),
-                                "device_id": Config.DEVICE_ID
-                            }
-                        )
-            
-            if logger:
-                logger.info(
-                    "music_playback_mode_ended",
-                    extra={
-                        "tool_call_id": tool_call_id,
-                        "conversation_id": self.conversation_id,
-                        "device_id": Config.DEVICE_ID
-                    }
-                )
-            
-            # Send tool result to resume conversation
-            await self._send_client_tool_result(
-                tool_call_id=tool_call_id,
-                result="Music playback stopped. The user said 'Stop' to end the music.",
-                is_error=False
-            )
-            
-            print("✓ Conversation resumed")
+            # Small delay to avoid busy loop
+            await asyncio.sleep(0.05)
     
     async def _send_client_tool_result(self, tool_call_id: str, result: str, is_error: bool = False):
         """
@@ -1530,14 +1448,6 @@ class ElevenLabsConversationClient:
     async def stop(self, orchestrator_client: OrchestratorClient):
         """Stop the conversation"""
         self.running = False
-        
-        # Stop music if playing
-        if self._music_player and self._music_player.is_active():
-            self._music_player.stop()
-        
-        # Stop stop detector if running
-        if self._stop_detector:
-            self._stop_detector.stop()
         
         # Stop WebRTC AEC processor if running
         if self._use_webrtc_aec and self.webrtc_aec_processor:

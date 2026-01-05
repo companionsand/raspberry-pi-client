@@ -49,6 +49,8 @@ from lib.orchestrator import OrchestratorClient
 from lib.elevenlabs import ElevenLabsConversationClient
 from lib.local_storage import ContextManager
 from lib.presence_detection import HumanPresenceDetector
+from lib.music import MusicPlayer
+from lib.music.command_detector import VoiceCommandDetector, MusicCommand
 
 # Import WiFi setup module (optional - graceful degradation)
 try:
@@ -912,6 +914,12 @@ class KinClient:
             if self.user_terminate[0]:
                 print("✓ User terminated conversation")
             
+            # Check if music mode was requested
+            if client.end_reason == "music_mode":
+                print("\n🎵 Entering music mode...")
+                self.conversation_active = False
+                await self._run_music_mode()
+            
             # Resume wake word detection
             self._resume_wake_word_detection()
             
@@ -942,6 +950,106 @@ class KinClient:
         else:
             # For reactive conversations, we're already in the trace context from _handle_conversation
             await _execute_conversation()
+    
+    async def _run_music_mode(self):
+        """
+        Run music playback mode with voice command control.
+        
+        This method:
+        1. Starts the music player (mpv)
+        2. Starts voice command detector
+        3. Handles commands: stop, pause, resume, volume up, volume down
+        4. Returns to wake word mode when "stop" is detected
+        """
+        music_player = None
+        voice_detector = None
+        
+        try:
+            # Set LED to indicate music mode (could add a music-specific state)
+            self.led_controller.set_state(LEDController.STATE_IDLE)
+            
+            # Start music player
+            music_player = MusicPlayer(speaker_device_index=self.speaker_device_index)
+            
+            if not music_player.play_default():
+                print("✗ Failed to start music player")
+                if self.logger:
+                    self.logger.error(
+                        "music_player_start_failed",
+                        extra={
+                            "user_id": Config.USER_ID,
+                            "device_id": Config.DEVICE_ID
+                        }
+                    )
+                return
+            
+            if self.logger:
+                self.logger.info(
+                    "music_mode_started",
+                    extra={
+                        "user_id": Config.USER_ID,
+                        "device_id": Config.DEVICE_ID
+                    }
+                )
+            
+            # Define command handler
+            def handle_command(command: MusicCommand):
+                """Handle voice commands for music control."""
+                if command == MusicCommand.PAUSE:
+                    music_player.pause()
+                elif command == MusicCommand.RESUME:
+                    music_player.resume()
+                elif command == MusicCommand.VOLUME_UP:
+                    music_player.volume_up()
+                elif command == MusicCommand.VOLUME_DOWN:
+                    music_player.volume_down()
+                # STOP is handled by detector returning
+            
+            # Start voice command detector
+            voice_detector = VoiceCommandDetector(
+                mic_device_index=self.mic_device_index,
+                on_command=handle_command
+            )
+            
+            # Run detector until STOP command
+            # The detector blocks until "stop" is detected or an error occurs
+            final_command = await voice_detector.start()
+            
+            if final_command == MusicCommand.STOP:
+                print("\n🛑 Stop command detected - exiting music mode")
+            else:
+                print("\n📻 Music mode ended")
+            
+        except Exception as e:
+            print(f"⚠️  Music mode error: {e}")
+            if self.logger:
+                self.logger.error(
+                    "music_mode_error",
+                    extra={
+                        "error": str(e),
+                        "user_id": Config.USER_ID,
+                        "device_id": Config.DEVICE_ID
+                    }
+                )
+        
+        finally:
+            # Clean up
+            if music_player:
+                music_player.stop()
+            
+            if voice_detector:
+                voice_detector.stop()
+            
+            if self.logger:
+                self.logger.info(
+                    "music_mode_ended",
+                    extra={
+                        "user_id": Config.USER_ID,
+                        "device_id": Config.DEVICE_ID
+                    }
+                )
+            
+            print("✓ Returning to wake word mode")
     
     async def _handle_orchestrator_message(self, message: dict):
         """Handle messages from conversation-orchestrator"""

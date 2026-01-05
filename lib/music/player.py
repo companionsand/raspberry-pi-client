@@ -10,6 +10,9 @@ Usage:
     player.play_query("BBC Radio") # Search for station
     player.play_default()          # Play any station
     player.stop()
+    player.pause()
+    player.resume()
+    player.set_volume(50)
 """
 
 import subprocess
@@ -45,9 +48,11 @@ class MusicPlayer:
         self.speaker_device_index = speaker_device_index
         self.process: Optional[subprocess.Popen] = None
         self.is_playing = False
+        self.is_paused = False
         self.current_station: Optional[Station] = None
         self.logger = Config.LOGGER
         self._registry = StationRegistry()
+        self._volume = 100  # Current volume level (0-100)
     
     # =========================================================================
     # HIGH-LEVEL PLAYBACK METHODS (use these)
@@ -120,18 +125,19 @@ class MusicPlayer:
             return True
         
         try:
-            # Build mpv command
+            # Build mpv command with IPC socket for control
             cmd = [
                 "mpv",
                 "--no-video",       # Audio only
                 "--really-quiet",   # Suppress output
                 "--no-terminal",    # No terminal input
-                "--volume=100",     # Full volume (system controls level)
+                f"--volume={self._volume}",
+                "--input-ipc-server=/tmp/mpv-music-socket",  # IPC for pause/resume/volume
                 stream_url
             ]
             
             # ALSA device selection (Linux only)
-            if sys.platform == "linux" and self.speaker_device_index is not None:
+            if sys.platform == "linux":
                 cmd.insert(-1, "--audio-device=alsa")
             
             print(f"   Stream: {stream_url}")
@@ -157,6 +163,7 @@ class MusicPlayer:
                 return False
             
             self.is_playing = True
+            self.is_paused = False
             
             if self.logger:
                 self.logger.info(
@@ -225,17 +232,129 @@ class MusicPlayer:
         finally:
             self.process = None
             self.is_playing = False
+            self.is_paused = False
             self.current_station = None
+            # Clean up IPC socket
+            try:
+                os.remove("/tmp/mpv-music-socket")
+            except:
+                pass
         
         return True
     
+    def pause(self) -> bool:
+        """
+        Pause music playback.
+        
+        Returns:
+            True if paused, False if not playing or already paused
+        """
+        if not self.is_playing or self.is_paused:
+            return False
+        
+        try:
+            self._send_mpv_command('{"command": ["set_property", "pause", true]}')
+            self.is_paused = True
+            print("⏸️  Paused")
+            if self.logger:
+                self.logger.info("music_playback_paused", extra={"device_id": Config.DEVICE_ID})
+            return True
+        except Exception as e:
+            print(f"⚠️  Error pausing: {e}")
+            return False
+    
+    def resume(self) -> bool:
+        """
+        Resume paused music playback.
+        
+        Returns:
+            True if resumed, False if not paused
+        """
+        if not self.is_playing or not self.is_paused:
+            return False
+        
+        try:
+            self._send_mpv_command('{"command": ["set_property", "pause", false]}')
+            self.is_paused = False
+            print("▶️  Resumed")
+            if self.logger:
+                self.logger.info("music_playback_resumed", extra={"device_id": Config.DEVICE_ID})
+            return True
+        except Exception as e:
+            print(f"⚠️  Error resuming: {e}")
+            return False
+    
+    def volume_up(self, step: int = 10) -> bool:
+        """
+        Increase volume by step amount.
+        
+        Args:
+            step: Volume increase amount (default 10)
+            
+        Returns:
+            True if volume changed, False otherwise
+        """
+        new_volume = min(100, self._volume + step)
+        return self.set_volume(new_volume)
+    
+    def volume_down(self, step: int = 10) -> bool:
+        """
+        Decrease volume by step amount.
+        
+        Args:
+            step: Volume decrease amount (default 10)
+            
+        Returns:
+            True if volume changed, False otherwise
+        """
+        new_volume = max(0, self._volume - step)
+        return self.set_volume(new_volume)
+    
+    def set_volume(self, volume: int) -> bool:
+        """
+        Set volume level.
+        
+        Args:
+            volume: Volume level (0-100)
+            
+        Returns:
+            True if volume set, False otherwise
+        """
+        if not self.is_playing:
+            self._volume = max(0, min(100, volume))
+            return True
+        
+        try:
+            volume = max(0, min(100, volume))
+            self._send_mpv_command(f'{{"command": ["set_property", "volume", {volume}]}}')
+            self._volume = volume
+            print(f"🔊 Volume: {volume}%")
+            if self.logger:
+                self.logger.info("music_volume_changed", extra={"volume": volume, "device_id": Config.DEVICE_ID})
+            return True
+        except Exception as e:
+            print(f"⚠️  Error setting volume: {e}")
+            return False
+    
+    def _send_mpv_command(self, command: str):
+        """Send command to mpv via IPC socket."""
+        import socket
+        
+        sock = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+        try:
+            sock.connect("/tmp/mpv-music-socket")
+            sock.sendall((command + "\n").encode())
+        finally:
+            sock.close()
+    
     def is_active(self) -> bool:
-        """Check if music is currently playing"""
+        """Check if music is currently playing (not stopped)"""
         if not self.is_playing or self.process is None:
             return False
         
         if self.process.poll() is not None:
             self.is_playing = False
+            self.is_paused = False
             self.process = None
             self.current_station = None
             return False

@@ -1,4 +1,11 @@
-"""Stop keyword detector using VAD + Scribe for music playback control"""
+"""
+Voice Command Detector for Music Playback Control
+
+Detects voice commands using VAD + Scribe ASR + fuzzy matching.
+Supports: stop, pause, resume, volume up, volume down
+
+Uses a rolling buffer to capture trailing audio for better transcription.
+"""
 
 import os
 import time
@@ -6,6 +13,7 @@ import asyncio
 import base64
 from collections import deque
 from typing import Optional, Callable
+from enum import Enum
 import numpy as np
 import onnxruntime as ort
 import sounddevice as sd
@@ -18,44 +26,71 @@ from elevenlabs import (
 from elevenlabs.realtime.connection import RealtimeEvents
 from lib.config import Config
 
+# Try to import rapidfuzz, fall back to fuzzywuzzy
+try:
+    from rapidfuzz import fuzz, process
+    FUZZY_LIB = "rapidfuzz"
+except ImportError:
+    try:
+        from fuzzywuzzy import fuzz, process
+        FUZZY_LIB = "fuzzywuzzy"
+    except ImportError:
+        fuzz = None
+        process = None
+        FUZZY_LIB = None
 
-class StopDetector:
+
+class MusicCommand(Enum):
+    """Voice commands for music control"""
+    STOP = "stop"
+    PAUSE = "pause"
+    RESUME = "resume"
+    VOLUME_UP = "volume_up"
+    VOLUME_DOWN = "volume_down"
+    NONE = "none"
+
+
+# Command patterns for fuzzy matching
+# Each command has multiple phrases that map to it
+COMMAND_PATTERNS = {
+    MusicCommand.STOP: ["stop", "stop music", "stop the music", "stop playing", "turn it off", "off"],
+    MusicCommand.PAUSE: ["pause", "pause music", "pause the music", "hold", "wait"],
+    MusicCommand.RESUME: ["resume", "play", "continue", "unpause", "keep playing", "go on"],
+    MusicCommand.VOLUME_UP: ["volume up", "louder", "turn it up", "raise volume", "increase volume", "more volume"],
+    MusicCommand.VOLUME_DOWN: ["volume down", "quieter", "turn it down", "lower volume", "decrease volume", "less volume"],
+}
+
+# Minimum fuzzy match score to accept (0-100)
+FUZZY_THRESHOLD = 60
+
+
+class VoiceCommandDetector:
     """
-    Detects "stop" keyword using VAD-gated Scribe transcription.
+    Detects voice commands for music control using VAD-gated Scribe transcription.
     
     This detector:
-    1. Continuously monitors audio via VAD (Voice Activity Detection)
-    2. When speech is detected, buffers the audio
-    3. When speech ends, transcribes using Scribe v2
-    4. Checks transcript for "stop" keyword
+    1. Maintains a rolling 2s audio buffer
+    2. Uses VAD to detect speech
+    3. When speech ends, sends trailing 2s to Scribe
+    4. Fuzzy matches transcript against command patterns
     """
-    
-    # Keywords that trigger stop (case-insensitive)
-    STOP_KEYWORDS = ["stop"]
     
     def __init__(
         self,
         mic_device_index: Optional[int] = None,
-        on_stop_detected: Optional[Callable[[], None]] = None,
-        shared_input_queue=None,
-        use_respeaker_aec: bool = False
+        on_command: Optional[Callable[[MusicCommand], None]] = None
     ):
         """
-        Initialize stop detector.
+        Initialize voice command detector.
         
         Args:
             mic_device_index: Microphone device index (None for default)
-            on_stop_detected: Callback function when stop is detected
-            shared_input_queue: Optional queue to read audio from (for ReSpeaker mode)
-                               When provided, won't open a new audio stream
-            use_respeaker_aec: Whether ReSpeaker AEC mode is active (for channel extraction)
+            on_command: Callback function when command is detected
         """
         self.mic_device_index = mic_device_index
-        self.on_stop_detected = on_stop_detected
-        self._shared_input_queue = shared_input_queue
-        self._shared_respeaker_aec = use_respeaker_aec
+        self.on_command = on_command
         self.running = False
-        self.stop_detected = False
+        self.last_command = MusicCommand.NONE
         self.audio_stream = None
         self.logger = Config.LOGGER
         
@@ -65,6 +100,16 @@ class StopDetector:
         
         # ReSpeaker AEC detection
         self._use_respeaker_aec = False
+        
+        # -------------------------------------------------------------------------
+        # Rolling buffer: 2s of audio (for trailing context)
+        # At 16kHz, 2s = 32000 samples
+        # With 512 samples/chunk, that's ~63 chunks
+        # -------------------------------------------------------------------------
+        self._rolling_buffer_seconds = 2.0
+        self._rolling_buffer_samples = int(self.sample_rate * self._rolling_buffer_seconds)
+        self._rolling_buffer_chunks = self._rolling_buffer_samples // self.chunk_size + 1
+        self._rolling_buffer = deque(maxlen=self._rolling_buffer_chunks)
         
         # -------------------------------------------------------------------------
         # Silero VAD initialization
@@ -84,97 +129,76 @@ class StopDetector:
         
         # VAD state (Silero VAD v5)
         self._vad_state = np.zeros((2, 1, 128), dtype=np.float32)
-        self._vad_threshold = 0.4  # Slightly higher threshold for noisy environment with music
+        self._vad_threshold = 0.4  # Slightly higher for noisy music environment
         
-        # Speech buffering
-        self._speech_buffer = deque(maxlen=100)  # ~3 seconds at 32ms/frame
+        # Speech state tracking
         self._is_speaking = False
         self._silence_frames = 0
         self._silence_threshold_frames = 15  # ~500ms of silence ends speech
-        self._min_speech_frames = 12  # Minimum frames (~384ms) - Scribe requires at least 0.3s
+        self._min_speech_frames = 6  # Minimum frames before processing (~200ms)
         self._speech_frame_count = 0
         
         # Scribe configuration
-        self._scribe_timeout = 3.0  # Timeout for Scribe transcription
-        
-    async def start(self) -> bool:
+        self._scribe_timeout = 3.0
+    
+    async def start(self) -> MusicCommand:
         """
-        Start the stop detector.
+        Start the voice command detector.
         
-        This method blocks until stop is detected or stop() is called.
+        This method blocks until a "stop" command is detected or stop() is called.
+        Other commands (pause, resume, volume) are handled via callback and continue listening.
         
         Returns:
-            True if stop was detected, False if stopped externally
+            The command that caused the detector to stop (usually STOP or NONE if stopped externally)
         """
         if self.running:
-            return False
+            return MusicCommand.NONE
         
         self.running = True
-        self.stop_detected = False
+        self.last_command = MusicCommand.NONE
         
-        print("🎤 Stop detector started - say 'Stop' to stop music")
+        print("🎤 Voice command detector started")
+        print("   Commands: stop, pause, resume, volume up, volume down")
         
         if self.logger:
             self.logger.info(
-                "stop_detector_started",
+                "voice_command_detector_started",
                 extra={"device_id": Config.DEVICE_ID}
             )
         
         try:
-            # Check if we're using a shared input queue (ReSpeaker mode)
-            # This avoids "Device unavailable" errors on devices that don't support
-            # multiple simultaneous audio streams (like ReSpeaker with ALSA)
-            using_shared_queue = self._shared_input_queue is not None
-            
-            if using_shared_queue:
-                # Using shared queue from main conversation client
-                self._use_respeaker_aec = self._shared_respeaker_aec
-                print(f"   ✓ Using shared audio queue for stop detection (ReSpeaker mode)")
-            else:
-                # Fallback: Open our own audio stream (works on Mac, may fail on Pi)
-                input_channels = Config.CHANNELS
-                try:
-                    devices = sd.query_devices()
-                    if self.mic_device_index is not None:
-                        input_dev = devices[self.mic_device_index]
-                    else:
-                        input_dev = None
-                        for dev in devices:
-                            if any(kw in dev['name'].lower() for kw in ['respeaker', 'arrayuac10', 'uac1.0']):
-                                if dev['max_input_channels'] >= Config.RESPEAKER_CHANNELS:
-                                    input_dev = dev
-                                    break
-                    
-                    if input_dev and input_dev['max_input_channels'] >= Config.RESPEAKER_CHANNELS:
-                        self._use_respeaker_aec = True
-                        input_channels = Config.RESPEAKER_CHANNELS
-                        print(f"   ✓ Using ReSpeaker Ch{Config.RESPEAKER_AEC_CHANNEL} for stop detection")
-                except Exception as e:
-                    print(f"   ⚠️  Device detection error: {e}")
+            # Detect ReSpeaker for AEC channel extraction
+            input_channels = Config.CHANNELS
+            try:
+                devices = sd.query_devices()
+                input_dev = None
+                for dev in devices:
+                    if any(kw in dev['name'].lower() for kw in ['respeaker', 'arrayuac10', 'uac1.0']):
+                        if dev['max_input_channels'] >= Config.RESPEAKER_CHANNELS:
+                            input_dev = dev
+                            break
                 
-                # Start audio stream
-                self.audio_stream = sd.InputStream(
-                    device=self.mic_device_index,
-                    channels=input_channels,
-                    samplerate=self.sample_rate,
-                    blocksize=self.chunk_size,
-                    dtype='int16'
-                )
-                self.audio_stream.start()
+                if input_dev and input_dev['max_input_channels'] >= Config.RESPEAKER_CHANNELS:
+                    self._use_respeaker_aec = True
+                    input_channels = Config.RESPEAKER_CHANNELS
+                    print(f"   ✓ Using ReSpeaker Ch{Config.RESPEAKER_AEC_CHANNEL} for voice detection")
+            except Exception as e:
+                print(f"   ⚠️  Device detection error: {e}")
+            
+            # Start audio stream
+            self.audio_stream = sd.InputStream(
+                device=self.mic_device_index,
+                channels=input_channels,
+                samplerate=self.sample_rate,
+                blocksize=self.chunk_size,
+                dtype='int16'
+            )
+            self.audio_stream.start()
             
             # Main detection loop
-            while self.running and not self.stop_detected:
-                # Read audio frame (from shared queue or own stream)
-                if using_shared_queue:
-                    try:
-                        # Non-blocking get with timeout to allow checking self.running
-                        audio_data = self._shared_input_queue.get(timeout=0.1)
-                    except:
-                        # Queue empty or timeout - continue loop
-                        await asyncio.sleep(0.01)
-                        continue
-                else:
-                    audio_data, _ = self.audio_stream.read(self.chunk_size)
+            while self.running:
+                # Read audio frame
+                audio_data, _ = self.audio_stream.read(self.chunk_size)
                 
                 # Extract channel for ReSpeaker
                 if self._use_respeaker_aec and audio_data.ndim == 2 and audio_data.shape[1] >= Config.RESPEAKER_CHANNELS:
@@ -182,12 +206,13 @@ class StopDetector:
                 else:
                     audio_frame = audio_data[:, 0].astype(np.int16) if audio_data.ndim == 2 else audio_data.astype(np.int16)
                 
+                # Always add to rolling buffer
+                self._rolling_buffer.append(audio_frame.copy())
+                
                 # Run VAD
                 speech_detected = await self._process_vad(audio_frame)
                 
                 if speech_detected:
-                    # Add frame to buffer
-                    self._speech_buffer.append(audio_frame.copy())
                     self._speech_frame_count += 1
                     self._silence_frames = 0
                     
@@ -198,38 +223,45 @@ class StopDetector:
                     if self._is_speaking:
                         self._silence_frames += 1
                         
-                        # Still add a few silence frames to buffer for clean audio end
-                        if self._silence_frames <= 5:
-                            self._speech_buffer.append(audio_frame.copy())
-                        
                         # Check if speech segment ended
                         if self._silence_frames >= self._silence_threshold_frames:
                             if self._speech_frame_count >= self._min_speech_frames:
-                                # Process the speech segment
-                                print(f"   📝 Processing speech ({self._speech_frame_count} frames)...")
-                                await self._process_speech_segment()
+                                # Process the trailing audio from rolling buffer
+                                print(f"   📝 Processing speech...")
+                                command = await self._process_command()
+                                
+                                if command != MusicCommand.NONE:
+                                    self.last_command = command
+                                    
+                                    # Call callback
+                                    if self.on_command:
+                                        self.on_command(command)
+                                    
+                                    # Stop detector on STOP command
+                                    if command == MusicCommand.STOP:
+                                        self.running = False
+                                        return command
                             
                             # Reset state
                             self._is_speaking = False
                             self._speech_frame_count = 0
-                            self._speech_buffer.clear()
                 
                 # Small delay to prevent busy loop
                 await asyncio.sleep(0.001)
             
-            return self.stop_detected
+            return self.last_command
             
         except Exception as e:
-            print(f"✗ Stop detector error: {e}")
+            print(f"✗ Voice command detector error: {e}")
             if self.logger:
                 self.logger.error(
-                    "stop_detector_error",
+                    "voice_command_detector_error",
                     extra={
                         "error": str(e),
                         "device_id": Config.DEVICE_ID
                     }
                 )
-            return False
+            return MusicCommand.NONE
             
         finally:
             self._cleanup_stream()
@@ -265,18 +297,18 @@ class StopDetector:
             # Fallback on error
             return np.abs(audio_frame).mean() > 500
     
-    async def _process_speech_segment(self):
-        """Transcribe buffered speech and check for stop keyword."""
+    async def _process_command(self) -> MusicCommand:
+        """Transcribe rolling buffer audio and match to command."""
         if not Config.ELEVENLABS_API_KEY:
             print("   ⚠️  No ElevenLabs API key - cannot transcribe")
-            return
+            return MusicCommand.NONE
         
-        if len(self._speech_buffer) == 0:
-            return
+        if len(self._rolling_buffer) == 0:
+            return MusicCommand.NONE
         
         try:
-            # Concatenate audio frames
-            audio_data = np.concatenate(list(self._speech_buffer))
+            # Concatenate rolling buffer (trailing 2s of audio)
+            audio_data = np.concatenate(list(self._rolling_buffer))
             audio_bytes = audio_data.tobytes()
             audio_base64 = base64.b64encode(audio_bytes).decode('utf-8')
             
@@ -340,42 +372,81 @@ class StopDetector:
             await asyncio.wait_for(transcribe(), timeout=self._scribe_timeout + 1.0)
             
             if transcript_text:
-                print(f"   📝 Transcript: '{transcript_text}'")
+                print(f"   📝 Heard: '{transcript_text}'")
                 
-                # Check for stop keyword
-                transcript_lower = transcript_text.lower().strip()
-                for keyword in self.STOP_KEYWORDS:
-                    if keyword in transcript_lower:
-                        print(f"   🛑 Stop keyword detected!")
-                        self.stop_detected = True
-                        
-                        if self.logger:
-                            self.logger.info(
-                                "stop_keyword_detected",
-                                extra={
-                                    "transcript": transcript_text,
-                                    "device_id": Config.DEVICE_ID
-                                }
-                            )
-                        
-                        # Call callback if provided
-                        if self.on_stop_detected:
-                            self.on_stop_detected()
-                        
-                        return
+                # Match transcript to command using fuzzy matching
+                command = self._match_command(transcript_text)
+                
+                if command != MusicCommand.NONE:
+                    print(f"   ✓ Command: {command.value}")
+                    
+                    if self.logger:
+                        self.logger.info(
+                            "voice_command_detected",
+                            extra={
+                                "transcript": transcript_text,
+                                "command": command.value,
+                                "device_id": Config.DEVICE_ID
+                            }
+                        )
+                
+                return command
             else:
                 print("   ⚠️  Empty transcript")
+                return MusicCommand.NONE
                 
         except Exception as e:
             print(f"   ⚠️  Transcription error: {e}")
             if self.logger:
                 self.logger.error(
-                    "stop_detector_transcription_error",
+                    "voice_command_transcription_error",
                     extra={
                         "error": str(e),
                         "device_id": Config.DEVICE_ID
                     }
                 )
+            return MusicCommand.NONE
+    
+    def _match_command(self, transcript: str) -> MusicCommand:
+        """
+        Match transcript to command using fuzzy matching.
+        
+        Args:
+            transcript: The transcribed text
+            
+        Returns:
+            Matched MusicCommand or NONE if no match
+        """
+        if not transcript:
+            return MusicCommand.NONE
+        
+        transcript_lower = transcript.lower().strip()
+        
+        # First try exact/substring match
+        for command, patterns in COMMAND_PATTERNS.items():
+            for pattern in patterns:
+                if pattern in transcript_lower or transcript_lower in pattern:
+                    return command
+        
+        # Fall back to fuzzy matching if available
+        if fuzz is not None and process is not None:
+            # Build flat list of (pattern, command) pairs
+            all_patterns = []
+            pattern_to_command = {}
+            for command, patterns in COMMAND_PATTERNS.items():
+                for pattern in patterns:
+                    all_patterns.append(pattern)
+                    pattern_to_command[pattern] = command
+            
+            # Find best fuzzy match
+            result = process.extractOne(transcript_lower, all_patterns, scorer=fuzz.ratio)
+            
+            if result:
+                matched_pattern, score = result[0], result[1]
+                if score >= FUZZY_THRESHOLD:
+                    return pattern_to_command[matched_pattern]
+        
+        return MusicCommand.NONE
     
     def stop(self):
         """Stop the detector (called externally)."""
@@ -392,10 +463,14 @@ class StopDetector:
                 pass
             self.audio_stream = None
         
-        # Reset VAD state
+        # Reset state
         self._vad_state = np.zeros((2, 1, 128), dtype=np.float32)
-        self._speech_buffer.clear()
+        self._rolling_buffer.clear()
         self._is_speaking = False
         self._speech_frame_count = 0
         self._silence_frames = 0
+
+
+# Backwards compatibility alias
+StopDetector = VoiceCommandDetector
 
