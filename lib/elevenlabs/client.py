@@ -1356,7 +1356,7 @@ class ElevenLabsConversationClient:
         # Initialize and start music player
         self._music_player = MusicPlayer(speaker_device_index=self.speaker_device_index)
         
-        if not self._music_player.start():
+        if not self._music_player.play_default():
             print("   ✗ Failed to start music player")
             self._music_mode_active = False
             await self._send_client_tool_result(
