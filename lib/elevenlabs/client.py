@@ -1317,9 +1317,10 @@ class ElevenLabsConversationClient:
         
         This method:
         1. Pauses the conversation (stops sending mic audio, clears playback queue)
-        2. Starts BBC Radio 6 Music stream
-        3. Runs VAD + Scribe stop detection
-        4. When "Stop" is detected, stops music and resumes conversation
+        2. Stops the duplex stream so mpv can access the speaker
+        3. Starts internet radio stream via mpv
+        4. Runs VAD + Scribe stop detection (opens its own input stream)
+        5. When "Stop" is detected, stops music, restarts duplex stream, resumes conversation
         """
         logger = self.logger
         
@@ -1353,12 +1354,29 @@ class ElevenLabsConversationClient:
         if cleared_count > 0:
             print(f"   ✓ Cleared {cleared_count} audio chunks from queue")
         
+        # IMPORTANT: Stop the duplex stream before starting mpv
+        # ReSpeaker doesn't support multiple simultaneous streams - if we keep the
+        # duplex stream open, mpv can't access the speaker for audio output.
+        # The stop detector will open its own input-only stream for voice detection.
+        if self._use_respeaker_aec and self.stream:
+            print("   ✓ Pausing duplex stream for music playback")
+            try:
+                self.stream.stop()
+            except Exception as e:
+                print(f"   ⚠️  Error stopping stream: {e}")
+        
         # Initialize and start music player
         self._music_player = MusicPlayer(speaker_device_index=self.speaker_device_index)
         
         if not self._music_player.play_default():
             print("   ✗ Failed to start music player")
             self._music_mode_active = False
+            # Restart stream on failure
+            if self._use_respeaker_aec and self.stream:
+                try:
+                    self.stream.start()
+                except Exception as e:
+                    print(f"   ⚠️  Error restarting stream: {e}")
             await self._send_client_tool_result(
                 tool_call_id=tool_call_id,
                 result="Failed to start music playback - mpv may not be installed",
@@ -1377,12 +1395,12 @@ class ElevenLabsConversationClient:
             )
         
         # Initialize and start stop detector
-        # Pass the shared input queue when using ReSpeaker to avoid "Device unavailable" errors
-        # (ReSpeaker with ALSA doesn't support multiple simultaneous audio streams)
+        # Now that the duplex stream is stopped, the stop detector can open its own
+        # input stream without "Device unavailable" errors
         self._stop_detector = StopDetector(
             mic_device_index=self.mic_device_index,
             on_stop_detected=None,  # We'll handle it via the return value
-            shared_input_queue=self._input_queue if self._use_respeaker_aec else None,
+            shared_input_queue=None,  # Don't use shared queue - stream is stopped
             use_respeaker_aec=self._use_respeaker_aec
         )
         
@@ -1418,13 +1436,30 @@ class ElevenLabsConversationClient:
             if self._music_player and self._music_player.is_active():
                 self._music_player.stop()
             
-            # Clean up
+            # Clean up stop detector
             if self._stop_detector:
                 self._stop_detector.stop()
             
             self._music_mode_active = False
             self._music_player = None
             self._stop_detector = None
+            
+            # Restart the duplex stream for conversation to resume
+            # (was stopped to allow mpv to access the speaker)
+            if self._use_respeaker_aec and self.stream:
+                print("   ✓ Restarting duplex stream for conversation")
+                try:
+                    self.stream.start()
+                except Exception as e:
+                    print(f"   ⚠️  Error restarting stream: {e}")
+                    if logger:
+                        logger.error(
+                            "stream_restart_error",
+                            extra={
+                                "error": str(e),
+                                "device_id": Config.DEVICE_ID
+                            }
+                        )
             
             if logger:
                 logger.info(
