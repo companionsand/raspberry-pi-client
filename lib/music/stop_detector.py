@@ -36,7 +36,9 @@ class StopDetector:
     def __init__(
         self,
         mic_device_index: Optional[int] = None,
-        on_stop_detected: Optional[Callable[[], None]] = None
+        on_stop_detected: Optional[Callable[[], None]] = None,
+        shared_input_queue=None,
+        use_respeaker_aec: bool = False
     ):
         """
         Initialize stop detector.
@@ -44,9 +46,14 @@ class StopDetector:
         Args:
             mic_device_index: Microphone device index (None for default)
             on_stop_detected: Callback function when stop is detected
+            shared_input_queue: Optional queue to read audio from (for ReSpeaker mode)
+                               When provided, won't open a new audio stream
+            use_respeaker_aec: Whether ReSpeaker AEC mode is active (for channel extraction)
         """
         self.mic_device_index = mic_device_index
         self.on_stop_detected = on_stop_detected
+        self._shared_input_queue = shared_input_queue
+        self._shared_respeaker_aec = use_respeaker_aec
         self.running = False
         self.stop_detected = False
         self.audio_stream = None
@@ -114,41 +121,60 @@ class StopDetector:
             )
         
         try:
-            # Detect ReSpeaker for AEC channel extraction
-            input_channels = Config.CHANNELS
-            try:
-                devices = sd.query_devices()
-                if self.mic_device_index is not None:
-                    input_dev = devices[self.mic_device_index]
-                else:
-                    input_dev = None
-                    for dev in devices:
-                        if any(kw in dev['name'].lower() for kw in ['respeaker', 'arrayuac10', 'uac1.0']):
-                            if dev['max_input_channels'] >= Config.RESPEAKER_CHANNELS:
-                                input_dev = dev
-                                break
-                
-                if input_dev and input_dev['max_input_channels'] >= Config.RESPEAKER_CHANNELS:
-                    self._use_respeaker_aec = True
-                    input_channels = Config.RESPEAKER_CHANNELS
-                    print(f"   ✓ Using ReSpeaker Ch{Config.RESPEAKER_AEC_CHANNEL} for stop detection")
-            except Exception as e:
-                print(f"   ⚠️  Device detection error: {e}")
+            # Check if we're using a shared input queue (ReSpeaker mode)
+            # This avoids "Device unavailable" errors on devices that don't support
+            # multiple simultaneous audio streams (like ReSpeaker with ALSA)
+            using_shared_queue = self._shared_input_queue is not None
             
-            # Start audio stream
-            self.audio_stream = sd.InputStream(
-                device=self.mic_device_index,
-                channels=input_channels,
-                samplerate=self.sample_rate,
-                blocksize=self.chunk_size,
-                dtype='int16'
-            )
-            self.audio_stream.start()
+            if using_shared_queue:
+                # Using shared queue from main conversation client
+                self._use_respeaker_aec = self._shared_respeaker_aec
+                print(f"   ✓ Using shared audio queue for stop detection (ReSpeaker mode)")
+            else:
+                # Fallback: Open our own audio stream (works on Mac, may fail on Pi)
+                input_channels = Config.CHANNELS
+                try:
+                    devices = sd.query_devices()
+                    if self.mic_device_index is not None:
+                        input_dev = devices[self.mic_device_index]
+                    else:
+                        input_dev = None
+                        for dev in devices:
+                            if any(kw in dev['name'].lower() for kw in ['respeaker', 'arrayuac10', 'uac1.0']):
+                                if dev['max_input_channels'] >= Config.RESPEAKER_CHANNELS:
+                                    input_dev = dev
+                                    break
+                    
+                    if input_dev and input_dev['max_input_channels'] >= Config.RESPEAKER_CHANNELS:
+                        self._use_respeaker_aec = True
+                        input_channels = Config.RESPEAKER_CHANNELS
+                        print(f"   ✓ Using ReSpeaker Ch{Config.RESPEAKER_AEC_CHANNEL} for stop detection")
+                except Exception as e:
+                    print(f"   ⚠️  Device detection error: {e}")
+                
+                # Start audio stream
+                self.audio_stream = sd.InputStream(
+                    device=self.mic_device_index,
+                    channels=input_channels,
+                    samplerate=self.sample_rate,
+                    blocksize=self.chunk_size,
+                    dtype='int16'
+                )
+                self.audio_stream.start()
             
             # Main detection loop
             while self.running and not self.stop_detected:
-                # Read audio frame
-                audio_data, _ = self.audio_stream.read(self.chunk_size)
+                # Read audio frame (from shared queue or own stream)
+                if using_shared_queue:
+                    try:
+                        # Non-blocking get with timeout to allow checking self.running
+                        audio_data = self._shared_input_queue.get(timeout=0.1)
+                    except:
+                        # Queue empty or timeout - continue loop
+                        await asyncio.sleep(0.01)
+                        continue
+                else:
+                    audio_data, _ = self.audio_stream.read(self.chunk_size)
                 
                 # Extract channel for ReSpeaker
                 if self._use_respeaker_aec and audio_data.ndim == 2 and audio_data.shape[1] >= Config.RESPEAKER_CHANNELS:

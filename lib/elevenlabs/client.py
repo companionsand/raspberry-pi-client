@@ -1377,9 +1377,13 @@ class ElevenLabsConversationClient:
             )
         
         # Initialize and start stop detector
+        # Pass the shared input queue when using ReSpeaker to avoid "Device unavailable" errors
+        # (ReSpeaker with ALSA doesn't support multiple simultaneous audio streams)
         self._stop_detector = StopDetector(
             mic_device_index=self.mic_device_index,
-            on_stop_detected=None  # We'll handle it via the return value
+            on_stop_detected=None,  # We'll handle it via the return value
+            shared_input_queue=self._input_queue if self._use_respeaker_aec else None,
+            use_respeaker_aec=self._use_respeaker_aec
         )
         
         # Run stop detection in a separate task so we don't block message receiving
