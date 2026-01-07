@@ -137,12 +137,16 @@ class MusicPlayer:
             ]
             
             # ALSA device selection (Linux only)
+            # Use 'alsa/default' which routes through /etc/asound.conf
+            # The ALSA config now uses dmix for software mixing, allowing multiple clients
+            # This allows both AudioManager and mpv to play audio simultaneously
             if sys.platform == "linux":
-                cmd.insert(-1, "--audio-device=alsa")
+                cmd.insert(-1, "--audio-device=alsa/default")
             
             print(f"   Stream: {stream_url}")
             
             # Start mpv process in new process group for clean termination
+            # Don't suppress stderr initially - we need to see errors
             self.process = subprocess.Popen(
                 cmd,
                 stdout=subprocess.DEVNULL,
@@ -154,11 +158,38 @@ class MusicPlayer:
             # Brief wait to check for immediate failure
             time.sleep(0.5)
             
+            # Check if process is still running
             if self.process.poll() is not None:
-                stderr = self.process.stderr.read().decode('utf-8', errors='ignore') if self.process.stderr else ""
+                # Process exited - read stderr to see what went wrong
+                stderr = ""
+                try:
+                    if self.process.stderr:
+                        stderr = self.process.stderr.read().decode('utf-8', errors='ignore')
+                except Exception as e:
+                    stderr = f"Could not read stderr: {e}"
+                
                 print(f"✗ mpv exited with code {self.process.returncode}")
                 if stderr:
-                    print(f"   Error: {stderr[:200]}")
+                    print(f"   Error: {stderr[:500]}")  # Show more of the error
+                else:
+                    print(f"   No error output captured")
+                self.process = None
+                return False
+            
+            # Process is still running - check again after a bit more time
+            # Sometimes mpv takes a moment to initialize
+            time.sleep(0.5)
+            if self.process.poll() is not None:
+                stderr = ""
+                try:
+                    if self.process.stderr:
+                        stderr = self.process.stderr.read().decode('utf-8', errors='ignore')
+                except Exception as e:
+                    stderr = f"Could not read stderr: {e}"
+                
+                print(f"✗ mpv exited after initialization (code {self.process.returncode})")
+                if stderr:
+                    print(f"   Error: {stderr[:500]}")
                 self.process = None
                 return False
             

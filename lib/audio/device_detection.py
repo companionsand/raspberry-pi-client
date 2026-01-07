@@ -43,10 +43,26 @@ pcm.respeaker_mono {{
     slave.pcm "respeaker_aec"
 }}
 
-# Playback to ReSpeaker with software volume control
+# Playback to ReSpeaker with dmix (software mixing) for multiple clients
+# This allows both AudioManager and mpv to play audio simultaneously
+pcm.respeaker_dmix {{
+    type dmix
+    ipc_key {card_number}000
+    slave {{
+        pcm "hw:{card_number},0"
+        period_time 0
+        period_size 1024
+        buffer_size 4096
+    }}
+    bindings {{
+        0 0
+        1 1
+    }}
+}}
+
 pcm.respeaker_out_raw {{
     type plug
-    slave.pcm "hw:{card_number},0"
+    slave.pcm "respeaker_dmix"
 }}
 
 pcm.respeaker_out {{
