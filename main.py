@@ -49,6 +49,8 @@ from lib.orchestrator import OrchestratorClient
 from lib.elevenlabs import ElevenLabsConversationClient
 from lib.local_storage import ContextManager
 from lib.presence_detection import HumanPresenceDetector
+from lib.music import MusicPlayer
+from lib.music.command_detector import VoiceCommandDetector, MusicCommand
 
 # Import WiFi setup module (optional - graceful degradation)
 try:
@@ -652,6 +654,9 @@ class KinClient:
         if TELEMETRY_AVAILABLE:
             add_span_event("orchestrator_connected", device_id=Config.DEVICE_ID)
         
+        # Update radio cache in background (don't wait for it)
+        asyncio.create_task(self._update_radio_cache_background())
+        
         # Start wake word detection
         self.wake_detector.start()
         
@@ -912,6 +917,13 @@ class KinClient:
             if self.user_terminate[0]:
                 print("✓ User terminated conversation")
             
+            # Check if music mode was requested
+            if client.end_reason == "music_mode":
+                print("\n🎵 Entering music mode...")
+                self.conversation_active = False
+                self._requested_music_genre = client.music_genre  # Store genre for music mode
+                await self._run_music_mode()
+            
             # Resume wake word detection
             self._resume_wake_word_detection()
             
@@ -942,6 +954,196 @@ class KinClient:
         else:
             # For reactive conversations, we're already in the trace context from _handle_conversation
             await _execute_conversation()
+    
+    async def _update_radio_cache_background(self):
+        """
+        Update radio station cache in the background on startup.
+        
+        Fetches stations from Radio Browser API, verifies they're working,
+        and saves to ~/.kin_radio_cache.json for faster music playback.
+        """
+        try:
+            from lib.music.radio_browser import RadioBrowserClient, verify_stream
+            import json
+            
+            CACHE_FILE = os.path.expanduser("~/.kin_radio_cache.json")
+            GENRES = ["jazz", "classical", "rock", "pop", "country", "blues", "electronic", "ambient", "folk", "soul"]
+            STATIONS_PER_GENRE = 10  # Fewer since we're verifying
+            VERIFY_TIMEOUT = 2.0
+            
+            print("📻 Updating radio station cache (background)...")
+            
+            def fetch_cache():
+                client = RadioBrowserClient()
+                cache = {}
+                
+                # Fetch popular stations (skip verification - high-vote = likely working)
+                try:
+                    popular = client.get_top_stations(limit=30)
+                    cache["popular"] = [s.to_dict() for s in popular[:20]]
+                except Exception as e:
+                    print(f"   ⚠️ Failed to fetch popular stations: {e}")
+                    cache["popular"] = []
+                
+                # Fetch by genre with verification
+                for genre in GENRES:
+                    try:
+                        stations = client.search_by_tag(genre, limit=50)
+                        verified = []
+                        for station in stations:
+                            if verify_stream(station.url, timeout=VERIFY_TIMEOUT):
+                                verified.append(station.to_dict())
+                                if len(verified) >= STATIONS_PER_GENRE:
+                                    break
+                        cache[genre] = verified
+                    except Exception:
+                        cache[genre] = []
+                
+                # Save cache
+                with open(CACHE_FILE, 'w') as f:
+                    json.dump(cache, f, indent=2)
+                
+                total = sum(len(v) for v in cache.values())
+                return total
+            
+            loop = asyncio.get_event_loop()
+            total = await loop.run_in_executor(None, fetch_cache)
+            print(f"   ✓ Radio cache updated: {total} verified stations")
+            
+            if self.logger:
+                self.logger.info(
+                    "radio_cache_updated",
+                    extra={
+                        "total_stations": total,
+                        "device_id": Config.DEVICE_ID
+                    }
+                )
+            
+        except Exception as e:
+            print(f"   ⚠️ Radio cache update failed (non-fatal): {e}")
+            if self.logger:
+                self.logger.warning(
+                    "radio_cache_update_failed",
+                    extra={
+                        "error": str(e),
+                        "device_id": Config.DEVICE_ID
+                    }
+                )
+    
+    async def _run_music_mode(self):
+        """
+        Run music playback mode with voice command control.
+        
+        This method:
+        1. Starts the music player (mpv)
+        2. Starts voice command detector
+        3. Handles commands: stop, pause, resume, volume up, volume down
+        4. Returns to wake word mode when "stop" is detected
+        """
+        music_player = None
+        voice_detector = None
+        
+        try:
+            # Set LED to indicate music mode (could add a music-specific state)
+            self.led_controller.set_state(LEDController.STATE_IDLE)
+            
+            # Start music player
+            music_player = MusicPlayer(speaker_device_index=self.speaker_device_index)
+            
+            # Get requested genre (if any)
+            genre = getattr(self, '_requested_music_genre', None)
+            
+            # Play by genre or default
+            if genre:
+                success = music_player.play_genre(genre)
+                if not success:
+                    print(f"⚠️ Genre '{genre}' not found, falling back to default")
+                    success = music_player.play_default()
+            else:
+                success = music_player.play_default()
+            
+            if not success:
+                print("✗ Failed to start music player")
+                if self.logger:
+                    self.logger.error(
+                        "music_player_start_failed",
+                        extra={
+                            "genre": genre,
+                            "user_id": Config.USER_ID,
+                            "device_id": Config.DEVICE_ID
+                        }
+                    )
+                return
+            
+            if self.logger:
+                self.logger.info(
+                    "music_mode_started",
+                    extra={
+                        "genre": genre,
+                        "station": music_player.current_station.name if music_player.current_station else None,
+                        "user_id": Config.USER_ID,
+                        "device_id": Config.DEVICE_ID
+                    }
+                )
+            
+            # Define command handler
+            def handle_command(command: MusicCommand):
+                """Handle voice commands for music control."""
+                if command == MusicCommand.PAUSE:
+                    music_player.pause()
+                elif command == MusicCommand.RESUME:
+                    music_player.resume()
+                elif command == MusicCommand.VOLUME_UP:
+                    music_player.volume_up()
+                elif command == MusicCommand.VOLUME_DOWN:
+                    music_player.volume_down()
+                # STOP is handled by detector returning
+            
+            # Start voice command detector
+            voice_detector = VoiceCommandDetector(
+                mic_device_index=self.mic_device_index,
+                on_command=handle_command
+            )
+            
+            # Run detector until STOP command
+            # The detector blocks until "stop" is detected or an error occurs
+            final_command = await voice_detector.start()
+            
+            if final_command == MusicCommand.STOP:
+                print("\n🛑 Stop command detected - exiting music mode")
+            else:
+                print("\n📻 Music mode ended")
+            
+        except Exception as e:
+            print(f"⚠️  Music mode error: {e}")
+            if self.logger:
+                self.logger.error(
+                    "music_mode_error",
+                    extra={
+                        "error": str(e),
+                        "user_id": Config.USER_ID,
+                        "device_id": Config.DEVICE_ID
+                    }
+                )
+        
+        finally:
+            # Clean up
+            if music_player:
+                music_player.stop()
+            
+            if voice_detector:
+                voice_detector.stop()
+            
+            if self.logger:
+                self.logger.info(
+                    "music_mode_ended",
+                    extra={
+                        "user_id": Config.USER_ID,
+                        "device_id": Config.DEVICE_ID
+                    }
+                )
+            
+            print("✓ Returning to wake word mode")
     
     async def _handle_orchestrator_message(self, message: dict):
         """Handle messages from conversation-orchestrator"""

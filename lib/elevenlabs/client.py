@@ -14,7 +14,7 @@ import numpy as np
 import onnxruntime as ort
 import queue
 from scipy import signal
-from typing import Optional
+from typing import Optional, Dict, Any
 from lib.config import Config
 from lib.orchestrator.client import OrchestratorClient
 from lib.local_storage import ContextManager
@@ -138,6 +138,19 @@ class ElevenLabsConversationClient:
         # Uses Ch0 (beamformed mic) + Ch5 (playback loopback) for adaptive filtering
         self.webrtc_aec_processor = None  # Initialized in start() if enabled
         self._use_webrtc_aec = False  # Set to True in start() if WebRTC AEC is enabled and available
+        
+        # -------------------------------------------------------------------------
+        # Client Tools - Music playback triggers conversation end
+        # -------------------------------------------------------------------------
+        # When play_music is called, we end the conversation so main.py can start music mode
+        # This is simpler than trying to share audio devices during conversation
+        self._music_mode_requested = False  # Set True when play_music tool is called
+        self._music_genre = None  # Genre requested for music playback (from tool parameters)
+        
+        # Agent speech monitoring for Ch5 RMS (detect when agent stops speaking)
+        self._agent_speaking = False
+        self._agent_silence_start = None
+        self._agent_silence_threshold_ms = 500  # Wait 500ms of silence before ending
         
         
     async def start(self, orchestrator_client: OrchestratorClient):
@@ -508,7 +521,8 @@ class ElevenLabsConversationClient:
                     },
                     exc_info=True
                 )
-            self.end_reason = "network_failure"
+            if self.end_reason not in ("music_mode",):
+                self.end_reason = "network_failure"
         finally:
             await self.stop(orchestrator_client)
     
@@ -772,10 +786,12 @@ class ElevenLabsConversationClient:
                         "user_id": Config.USER_ID
                     }
                 )
-            self.end_reason = "network_failure"
+            if self.end_reason not in ("music_mode",):
+                self.end_reason = "network_failure"
             self.running = False
         except asyncio.CancelledError:
-            self.end_reason = "user_terminated"
+            if self.end_reason not in ("music_mode",):
+                self.end_reason = "user_terminated"
             self.running = False
         except Exception as e:
             print(f"✗ Send error: {e}")
@@ -788,7 +804,8 @@ class ElevenLabsConversationClient:
                         "user_id": Config.USER_ID
                     }
                 )
-            self.end_reason = "network_failure"
+            if self.end_reason not in ("music_mode",):
+                self.end_reason = "network_failure"
             self.running = False
     
     async def _play_audio(self):
@@ -1080,6 +1097,10 @@ class ElevenLabsConversationClient:
                         await self.audio_queue.put(audio_array)
                         self.last_audio_time = time.time()  # Reset silence timer
                 
+                elif data.get('type') == 'client_tool_call' or 'client_tool_call' in data:
+                    # Handle client-side tool calls from ElevenLabs agent
+                    await self._handle_client_tool_call(data, orchestrator_client)
+                
                 elif data.get('type') == 'interruption' or 'interruption' in data:
                     # ElevenLabs detected user interruption - stop playback immediately
                     interruption_event = data.get('interruption', data)
@@ -1219,7 +1240,8 @@ class ElevenLabsConversationClient:
             print("\n✓ Conversation ended (connection closed)")
             if self.user_terminate_flag and self.user_terminate_flag[0]:
                 self.end_reason = "user_terminated"
-            else:
+            elif self.end_reason not in ("music_mode",):
+                # Don't overwrite specific end reasons like music_mode
                 self.end_reason = "normal"
             if logger:
                 logger.info(
@@ -1233,7 +1255,8 @@ class ElevenLabsConversationClient:
                 )
             self.running = False
         except asyncio.CancelledError:
-            self.end_reason = "user_terminated"
+            if self.end_reason not in ("music_mode",):
+                self.end_reason = "user_terminated"
             self.running = False
         except Exception as e:
             print(f"✗ Receive error: {e}")
@@ -1246,9 +1269,193 @@ class ElevenLabsConversationClient:
                         "user_id": Config.USER_ID
                     }
                 )
-            self.end_reason = "network_failure"
+            if self.end_reason not in ("music_mode",):
+                self.end_reason = "network_failure"
             self.running = False
     
+    async def _handle_client_tool_call(self, data: Dict[str, Any], orchestrator_client: OrchestratorClient):
+        """
+        Handle client-side tool calls from ElevenLabs agent.
+        
+        Supported tools:
+        - play_music: Play BBC Radio 6 Music, with VAD+Scribe stop detection
+        """
+        logger = self.logger
+        
+        # Extract tool call details
+        tool_call = data.get('client_tool_call', data)
+        tool_name = tool_call.get('tool_name', '')
+        tool_call_id = tool_call.get('tool_call_id', '')
+        parameters = tool_call.get('parameters', {})
+        
+        print(f"\n🔧 Client tool call: {tool_name}")
+        print(f"   Tool call ID: {tool_call_id}")
+        print(f"   Parameters: {parameters}")
+        
+        if logger:
+            logger.info(
+                "client_tool_call_received",
+                extra={
+                    "tool_name": tool_name,
+                    "tool_call_id": tool_call_id,
+                    "parameters": parameters,
+                    "conversation_id": self.conversation_id,
+                    "device_id": Config.DEVICE_ID
+                }
+            )
+        
+        if tool_name == "play_music":
+            await self._handle_play_music_tool(tool_call_id, parameters)
+        else:
+            # Unknown tool - send error response
+            print(f"   ⚠️  Unknown client tool: {tool_name}")
+            await self._send_client_tool_result(
+                tool_call_id=tool_call_id,
+                result=f"Error: Unknown tool '{tool_name}'",
+                is_error=True
+            )
+    
+    async def _handle_play_music_tool(self, tool_call_id: str, parameters: Dict[str, Any]):
+        """
+        Handle the play_music client tool.
+        
+        Simpler approach:
+        1. Wait for agent to finish speaking (monitor Ch5 RMS for 500ms silence)
+        2. End the conversation (frees up audio device)
+        3. main.py will detect end_reason="music_mode" and start music playback
+        
+        This avoids complex audio device sharing - conversation and music are separate modes.
+        """
+        logger = self.logger
+        
+        # Extract genre from parameters (if provided)
+        genre = parameters.get("genre") if parameters else None
+        
+        print(f"\n🎵 Music requested{f' (genre: {genre})' if genre else ''} - waiting for agent to finish speaking...")
+        
+        # Mark that music mode was requested and store genre
+        self._music_mode_requested = True
+        self._music_genre = genre
+        
+        if logger:
+            logger.info(
+                "music_mode_requested",
+                extra={
+                    "tool_call_id": tool_call_id,
+                    "genre": genre,
+                    "conversation_id": self.conversation_id,
+                    "device_id": Config.DEVICE_ID
+                }
+            )
+        
+        # Wait for agent to stop speaking by monitoring Ch5 RMS
+        # The audio callback will set _agent_speaking based on Ch5 levels
+        # We wait until 500ms of silence
+        await self._wait_for_agent_silence()
+        
+        print("   ✓ Agent finished speaking")
+        print("   ✓ Ending conversation to start music mode...")
+        
+        # Set end reason so main.py knows to start music
+        self.end_reason = "music_mode"
+        
+        # End the conversation
+        self.running = False
+    
+    async def _wait_for_agent_silence(self):
+        """
+        Wait for agent to stop speaking by monitoring Ch5 (playback reference) RMS.
+        
+        Returns when 500ms of silence is detected on Ch5.
+        """
+        # Give agent time to start speaking (the "Let me play some music" response)
+        await asyncio.sleep(0.2)
+        
+        silence_start = None
+        
+        while self.running:
+            # Check if agent is currently speaking (based on recent audio output)
+            # playback_active is True when we're outputting agent audio
+            if self.playback_active:
+                # Agent is speaking, reset silence counter
+                silence_start = None
+                self._agent_speaking = True
+            else:
+                # No audio being played
+                if self._agent_speaking:
+                    # Transition from speaking to silence
+                    if silence_start is None:
+                        silence_start = time.time()
+                    
+                    # Check if we've had 500ms of silence
+                    silence_duration_ms = (time.time() - silence_start) * 1000
+                    if silence_duration_ms >= self._agent_silence_threshold_ms:
+                        self._agent_speaking = False
+                        return
+                else:
+                    # Already in silence mode
+                    if silence_start is None:
+                        silence_start = time.time()
+                    
+                    silence_duration_ms = (time.time() - silence_start) * 1000
+                    if silence_duration_ms >= self._agent_silence_threshold_ms:
+                        return
+            
+            # Small delay to avoid busy loop
+            await asyncio.sleep(0.05)
+    
+    @property
+    def music_genre(self) -> Optional[str]:
+        """Get the requested music genre (if any) from the play_music tool call."""
+        return self._music_genre
+    
+    async def _send_client_tool_result(self, tool_call_id: str, result: str, is_error: bool = False):
+        """
+        Send client tool result back to ElevenLabs.
+        
+        Args:
+            tool_call_id: The tool call ID from the original request
+            result: Result message to send back
+            is_error: Whether this is an error response
+        """
+        if not self.websocket or not self.running:
+            print("⚠️  Cannot send tool result - WebSocket not connected")
+            return
+        
+        message = {
+            "type": "client_tool_result",
+            "tool_call_id": tool_call_id,
+            "result": result,
+            "is_error": is_error
+        }
+        
+        print(f"📤 Sending client tool result: {result[:50]}{'...' if len(result) > 50 else ''}")
+        
+        try:
+            await self.websocket.send(json.dumps(message))
+            
+            if self.logger:
+                self.logger.info(
+                    "client_tool_result_sent",
+                    extra={
+                        "tool_call_id": tool_call_id,
+                        "is_error": is_error,
+                        "conversation_id": self.conversation_id,
+                        "device_id": Config.DEVICE_ID
+                    }
+                )
+        except Exception as e:
+            print(f"✗ Failed to send tool result: {e}")
+            if self.logger:
+                self.logger.error(
+                    "client_tool_result_send_failed",
+                    extra={
+                        "error": str(e),
+                        "tool_call_id": tool_call_id,
+                        "device_id": Config.DEVICE_ID
+                    }
+                )
+
     async def stop(self, orchestrator_client: OrchestratorClient):
         """Stop the conversation"""
         self.running = False
