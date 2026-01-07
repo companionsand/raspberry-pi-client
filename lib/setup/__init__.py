@@ -6,5 +6,6 @@ when the device doesn't have internet connectivity.
 """
 
 from .manager import SetupManager
-__all__ = ['SetupManager']
+from .startup import run_startup_sequence
+__all__ = ['SetupManager', 'run_startup_sequence']
 
