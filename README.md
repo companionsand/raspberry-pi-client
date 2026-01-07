@@ -97,18 +97,36 @@ The Kin AI Raspberry Pi Client is a comprehensive voice assistant client that co
   - Supports trace context propagation for distributed tracing
   - Can interrupt idle state to start conversation
 
-### 9. **WiFi Setup & Device Pairing**
+### 9. **WiFi Setup**
 
 - Automatic WiFi setup mode when internet unavailable
+- Creates "Kin_Setup" WiFi access point (password: `kinsetup123`)
+- Web interface at `http://192.168.4.1:8080` for configuration
 - Retry logic with up to 3 attempts
-- Pairing code collection via web interface
 - Automatic WiFi connection deletion on failure (prevents deadlock)
 - Configurable via `SKIP_WIFI_SETUP` env var or cached config
 - Graceful fallback if WiFi setup module unavailable
+- **Note**: WiFi setup requires sudo privileges for network management. If prompted for a password, enter your Raspberry Pi user password (the password for the user account running the script). For production deployments, consider configuring passwordless sudo for `nmcli` commands.
 
 - See [Raspberry Pi Setup Guide](docs/RASPBERRY_PI_SETUP.md#6-wifi-setup-mode-optional---for-devices-without-initial-network-access) for WiFi setup instructions
 
-### 10. **Authentication & Configuration**
+### 10. **Device Pairing**
+
+- Links device to a user account in the backend system
+- Requires 4-digit pairing code from admin portal
+- Pairing code is collected via WiFi setup web interface (when device has no internet) or can be provided when device has internet but is unpaired
+- Device must be paired before it can:
+  - Start conversations
+  - Access user-specific settings
+  - Receive proactive conversations
+  - Function as a personal assistant
+- Pairing is separate from WiFi connectivity - a device can have internet but still need pairing
+
+**Note**: Currently, pairing code collection is combined with WiFi setup in the same web interface for convenience. However, pairing and WiFi are conceptually separate:
+- **WiFi Setup**: Provides network connectivity (only needed when device has no internet)
+- **Device Pairing**: Links device to user account (always needed if device is unpaired)
+
+### 11. **Authentication & Configuration**
 
 - Ed25519 device authentication
 - JWT token management with automatic refresh
@@ -116,20 +134,20 @@ The Kin AI Raspberry Pi Client is a comprehensive voice assistant client that co
 - Configuration caching for offline boot capability
 - Token refresh monitoring in background
 
-### 11. **Activity Tracking**
+### 12. **Activity Tracking**
 
 - Updates `.last_activity` file timestamp for wrapper idle monitoring
 - Tracks wake word detections and conversation activity
 - Enables wrapper to detect device activity for power management
 
-### 12. **Signal Handling**
+### 13. **Signal Handling**
 
 - `SIGINT/SIGTERM`: Full shutdown (graceful if not in conversation)
   - If in conversation: Ends current conversation, then shuts down
   - If idle: Shuts down immediately
 - Proper cleanup in all cases (LEDs, audio streams, WebSocket connections)
 
-### 13. **Modular Architecture**
+### 14. **Modular Architecture**
 
 - Clean separation of concerns
 - Easy to test and maintain
@@ -163,10 +181,9 @@ raspberry-pi-client/
     │       └── usb_4_mic_array/
     │           ├── __init__.py
     │           └── tuning.py     # ReSpeaker hardware tuning
-    ├── voice_feedback/
-    │   ├── __init__.py
-    │   ├── voice_feedback.py    # Voice feedback system
-    │   └── voice_messages/      # Pre-recorded voice message files
+    ├── audio/
+    │   ├── ...
+    │   └── voice_messages/      # Pre-recorded voice message files (voice feedback)
     │       ├── startup.wav
     │       ├── no_internet.wav
     │       ├── device_not_paired.wav
@@ -187,13 +204,15 @@ raspberry-pi-client/
     ├── orchestrator/
     │   ├── __init__.py
     │   └── client.py           # Orchestrator WebSocket client
-    ├── local_storage/
-    │   ├── __init__.py
-    │   └── context_manager.py  # Location/context data manager
-    ├── location/
-    │   ├── __init__.py
-    │   ├── fetcher.py           # Location fetching (WiFi triangulation)
-    │   └── wifi_location.py    # WiFi location helpers
+    ├── agent/
+    │   ├── orchestrator.py      # Orchestrator WebSocket client
+    │   ├── context.py           # Location/context data manager
+    │   ├── elevenlabs.py        # ElevenLabs conversation client
+    │   └── tools/
+    │       └── location/        # WiFi geolocation for agent context
+    │           ├── __init__.py
+    │           ├── fetcher.py   # Location fetching (WiFi triangulation)
+    │           └── wifi_location.py  # WiFi location helpers
     ├── wifi_setup/
     │   ├── __init__.py
     │   ├── manager.py           # WiFi setup orchestration
@@ -207,14 +226,119 @@ raspberry-pi-client/
         └── stdout_redirect.py   # Stdout/stderr redirection to OTEL
 ```
 
+## Installation
+
+### Prerequisites
+
+- Python 3.11 or higher
+- `uv` package manager (see installation instructions below)
+
+### System Dependencies
+
+The following system packages are required for full functionality:
+
+**On Raspberry Pi / Debian / Ubuntu:**
+```bash
+sudo apt update && sudo apt install -y \
+    mpv \
+    alsa-utils \
+    ffmpeg \
+    python3-usb \
+    git
+```
+
+**On macOS:**
+```bash
+brew install mpv ffmpeg
+```
+
+**Package Descriptions:**
+- **mpv** - Required for music playback (internet radio streaming)
+- **alsa-utils** - ALSA audio utilities (`aplay`, `arecord`, `alsamixer`) for audio device management
+- **ffmpeg** - Audio processing and format conversion (used for voice message generation)
+- **python3-usb** - Python USB library for ReSpeaker hardware control and tuning
+- **git** - Version control (for cloning the repository)
+
+**Note:** If you're running on Raspberry Pi, see the [Raspberry Pi Setup Guide](docs/RASPBERRY_PI_SETUP.md) for complete system setup instructions, including disabling PipeWire/PulseAudio and configuring ALSA.
+
+### Installing uv
+
+Install `uv` using one of the following methods:
+
+**On Linux/macOS:**
+```bash
+curl -LsSf https://astral.sh/uv/install.sh | sh
+```
+
+**On Windows:**
+```powershell
+powershell -ExecutionPolicy ByPass -c "irm https://astral.sh/uv/install.ps1 | iex"
+```
+
+**Or via pip:**
+```bash
+pip install uv
+```
+
+**Or via Homebrew (macOS):**
+```bash
+brew install uv
+```
+
+For more installation options, see the [official uv documentation](https://github.com/astral-sh/uv).
+
+### Setting Up the Project
+
+1. Clone the repository:
+```bash
+git clone https://github.com/companionsand/raspberry-pi-client
+cd raspberry-pi-client
+```
+
+2. Install dependencies using `uv`:
+```bash
+uv sync
+```
+
+Or use the Makefile:
+```bash
+make install
+```
+
+This will create a virtual environment and install all dependencies from `pyproject.toml`.
+
 ## Usage
 
-```bash
-# Run the client
-python main.py
+### Using Make Commands
 
-# Or if executable:
-./main.py
+The project includes a Makefile with convenient commands for common tasks:
+
+```bash
+# Show all available commands
+make help
+
+# Install dependencies
+make install
+# or
+make setup
+
+# Run the main client application
+make run
+
+# Generate voice message files (requires ELEVENLABS_API_KEY)
+ELEVENLABS_API_KEY=your-key make generate-voice-messages
+
+# Test voice message files (shows file information)
+make test-voice-messages
+```
+
+### Direct Usage
+
+You can also run commands directly:
+
+```bash
+# Run the client using uv
+uv run main.py
 
 # Send signals
 kill -SIGINT <pid>   # Full shutdown (or Ctrl+C)
@@ -232,7 +356,8 @@ kill -SIGINT <pid>   # Full shutdown (or Ctrl+C)
 
 - `SKIP_WIFI_SETUP` - Enable/disable WiFi setup mode (default: `false` = allow setup)
   - When `false`, device creates "Kin_Setup" WiFi network (password: `kinsetup123`) if no internet
-  - Connect to it and visit http://192.168.4.1:8080 to configure
+  - Connect to it and visit http://192.168.4.1:8080 to configure WiFi credentials
+  - **Note**: The WiFi setup interface also collects pairing code, but pairing and WiFi are separate concepts
   - Can also be set via cached config from backend
 - `OTEL_ENABLED` - Enable OpenTelemetry (default: `true`)
 - `OTEL_EXPORTER_ENDPOINT` - OTEL collector endpoint (default: `http://localhost:4318`)
@@ -277,11 +402,14 @@ Use the provided script to generate all voice message files using ElevenLabs API
 # Set your ElevenLabs API key
 export ELEVENLABS_API_KEY="your-api-key-here"
 
-# Generate voice message files
-python scripts/generate_voice_messages.py
+# Generate voice message files using Makefile
+make generate-voice-messages
+
+# Or run directly with uv:
+uv run scripts/generate_voice_messages.py
 
 # Or specify a custom voice:
-python scripts/generate_voice_messages.py --voice your-voice-id
+uv run scripts/generate_voice_messages.py --voice your-voice-id
 ```
 
 ### Option 2: Manual Recording
@@ -290,7 +418,7 @@ Record your own voice messages and convert them to the required format:
 
 ```bash
 # Required format: 16kHz, mono, 16-bit PCM WAV
-ffmpeg -i input.mp3 -ar 16000 -ac 1 -sample_fmt s16 lib/voice_feedback/voice_messages/startup.wav
+ffmpeg -i input.mp3 -ar 16000 -ac 1 -sample_fmt s16 lib/audio/voice_messages/startup.wav
 ```
 
 ### Required Voice Message Files
@@ -303,11 +431,14 @@ ffmpeg -i input.mp3 -ar 16000 -ac 1 -sample_fmt s16 lib/voice_feedback/voice_mes
 ### Testing Voice Message Files
 
 ```bash
-# Verify audio format
-file lib/voice_feedback/voice_messages/startup.wav
+# Test all voice message files (shows file information)
+make test-voice-messages
+
+# Or verify audio format manually
+file lib/audio/voice_messages/startup.wav
 
 # Play voice message file
-aplay lib/voice_feedback/voice_messages/startup.wav
+aplay lib/audio/voice_messages/startup.wav
 ```
 
 **Note**: If voice message files are missing, the system will continue to work normally but without voice guidance. Warnings will be logged for each missing file.

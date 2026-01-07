@@ -17,19 +17,31 @@ from opentelemetry.sdk._logs.export import BatchLogRecordProcessor
 from opentelemetry.sdk.resources import Resource, SERVICE_NAME, SERVICE_VERSION, DEPLOYMENT_ENVIRONMENT
 
 
-def get_resource(device_id: str) -> Resource:
-    """Create resource with service and device information."""
-    return Resource.create({
+def get_resource(device_id: Optional[str]) -> Resource:
+    """Create resource with service and device information.
+    
+    Args:
+        device_id: Device ID, or None for development mode
+        
+    Returns:
+        Resource with service and device information
+    """
+    # Use placeholder device_id if None (development mode)
+    effective_device_id = device_id if device_id is not None else "dev-unknown"
+    
+    resource_attrs = {
         SERVICE_NAME: "raspberry-pi-client",
         SERVICE_VERSION: "1.0.0",
         DEPLOYMENT_ENVIRONMENT: os.getenv("ENV", "production"),
         "service.namespace": "kin-ai",
-        "device.id": device_id,
+        "device.id": effective_device_id,
         "device.type": "raspberry-pi",
-    })
+    }
+    
+    return Resource.create(resource_attrs)
 
 
-def setup_tracing(device_id: str, endpoint: str = "http://localhost:4318") -> Optional[TracerProvider]:
+def setup_tracing(device_id: Optional[str], endpoint: str = "http://localhost:4318") -> Optional[TracerProvider]:
     """Setup OpenTelemetry tracing.
     
     Args:
@@ -65,7 +77,7 @@ def setup_tracing(device_id: str, endpoint: str = "http://localhost:4318") -> Op
     return provider
 
 
-def setup_metrics(device_id: str, endpoint: str = "http://localhost:4318") -> Optional[MeterProvider]:
+def setup_metrics(device_id: Optional[str], endpoint: str = "http://localhost:4318") -> Optional[MeterProvider]:
     """Setup OpenTelemetry metrics.
     
     Args:
@@ -102,7 +114,7 @@ def setup_metrics(device_id: str, endpoint: str = "http://localhost:4318") -> Op
     return provider
 
 
-def setup_logging(device_id: str, endpoint: str = "http://localhost:4318") -> Optional[LoggerProvider]:
+def setup_logging(device_id: Optional[str], endpoint: str = "http://localhost:4318") -> Optional[LoggerProvider]:
     """Setup OpenTelemetry logging.
     
     Args:
@@ -124,8 +136,52 @@ def setup_logging(device_id: str, endpoint: str = "http://localhost:4318") -> Op
         timeout=30,
     )
     
-    # Batch processor for logs
-    processor = BatchLogRecordProcessor(
+    # Batch processor for logs with error suppression
+    # Suppress connection errors when collector isn't running (common in development)
+    class SuppressingBatchLogRecordProcessor(BatchLogRecordProcessor):
+        """Batch processor that suppresses connection errors when collector is unavailable."""
+        def _export_batch(self, batch=None):
+            """Override _export_batch to catch and suppress connection errors before SDK logs them."""
+            try:
+                # Parent class calls _export_batch() without arguments, so handle both cases
+                if batch is not None:
+                    return super()._export_batch(batch)
+                else:
+                    # Call parent's _export_batch without arguments (it gets batch internally)
+                    return super()._export_batch()
+            except Exception as e:
+                # Suppress connection errors (expected when collector isn't running)
+                # Check both the exception type and message
+                error_str = str(e).lower()
+                error_type = type(e).__name__.lower()
+                
+                # Check exception chain for connection errors
+                exception_chain = [e]
+                current = e
+                while hasattr(current, '__cause__') and current.__cause__:
+                    exception_chain.append(current.__cause__)
+                    current = current.__cause__
+                
+                # Check all exceptions in the chain
+                for exc in exception_chain:
+                    exc_str = str(exc).lower()
+                    exc_type = type(exc).__name__.lower()
+                    
+                    # Suppress connection-related errors
+                    if any(keyword in exc_str for keyword in [
+                        'connection refused', 
+                        'connectionerror', 
+                        'newconnectionerror',
+                        'failed to establish a new connection',
+                        'max retries exceeded'
+                    ]) or any(keyword in exc_type for keyword in ['connection', 'newconnection', 'maxretry']):
+                        # Silently ignore - collector not available (common in dev)
+                        return
+                
+                # Re-raise other errors
+                raise
+    
+    processor = SuppressingBatchLogRecordProcessor(
         otlp_exporter,
         max_queue_size=1024,
         max_export_batch_size=256,
@@ -141,7 +197,7 @@ def setup_logging(device_id: str, endpoint: str = "http://localhost:4318") -> Op
     return provider
 
 
-def setup_telemetry(device_id: str, endpoint: str = "http://localhost:4318"):
+def setup_telemetry(device_id: Optional[str], endpoint: str = "http://localhost:4318"):
     """Setup all OpenTelemetry components.
     
     Args:
@@ -192,7 +248,7 @@ def get_meter(name: str):
     return metrics.get_meter(name)
 
 
-def get_logger(name: str, device_id: str = None):
+def get_logger(name: str, device_id: Optional[str] = None):
     """Get a logger instance with structured logging support.
     
     Args:

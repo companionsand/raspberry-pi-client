@@ -1,7 +1,7 @@
 """
-WiFi Setup Manager
+Setup Manager
 
-Orchestrates the WiFi setup process including:
+Orchestrates the device setup process including:
 - Creating a WiFi access point
 - Running HTTP server for configuration
 - Handling WiFi connection attempts
@@ -20,7 +20,7 @@ from .connectivity import ConnectivityChecker
 logger = logging.getLogger(__name__)
 
 
-class WiFiSetupManager:
+class SetupManager:
     """Manages the complete WiFi setup flow"""
     
     def __init__(
@@ -171,10 +171,10 @@ class WiFiSetupManager:
             True if configuration was accepted
         """
         logger.info("=" * 60)
-        logger.info("[WiFi Setup] ✓ Configuration received from web interface")
-        logger.info(f"[WiFi Setup]   Target SSID: {ssid}")
-        logger.info(f"[WiFi Setup]   Password length: {len(password)} chars")
-        logger.info(f"[WiFi Setup]   Pairing code: {pairing_code}")
+        logger.info("[Setup] ✓ Configuration received from web interface")
+        logger.info(f"[Setup]   Target SSID: {ssid}")
+        logger.info(f"[Setup]   Password length: {len(password)} chars")
+        logger.info(f"[Setup]   Pairing code: {pairing_code}")
         logger.info("=" * 60)
         
         self._wifi_credentials = (ssid, password)
@@ -195,12 +195,12 @@ class WiFiSetupManager:
         last_log_time = start_time
         log_interval = 30  # Log every 30 seconds
         
-        logger.info(f"[WiFi Setup] Waiting for configuration (timeout: {timeout}s)")
+        logger.info(f"[Setup] Waiting for configuration (timeout: {timeout}s)")
         
         while True:
             if self._wifi_credentials and self._pairing_code:
                 elapsed = asyncio.get_event_loop().time() - start_time
-                logger.info(f"[WiFi Setup] Configuration received after {elapsed:.0f}s")
+                logger.info(f"[Setup] Configuration received after {elapsed:.0f}s")
                 return True
             
             elapsed = asyncio.get_event_loop().time() - start_time
@@ -208,11 +208,11 @@ class WiFiSetupManager:
             # Log progress periodically
             if elapsed - (last_log_time - start_time) >= log_interval:
                 remaining = timeout - elapsed
-                logger.info(f"[WiFi Setup] Still waiting... ({remaining:.0f}s remaining)")
+                logger.info(f"[Setup] Still waiting... ({remaining:.0f}s remaining)")
                 last_log_time = asyncio.get_event_loop().time()
             
             if elapsed >= timeout:
-                logger.warning(f"[WiFi Setup] Configuration timeout reached after {timeout}s")
+                logger.warning(f"[Setup] Configuration timeout reached after {timeout}s")
                 return False
             
             await asyncio.sleep(1)
@@ -225,21 +225,21 @@ class WiFiSetupManager:
             True if connection successful
         """
         if not self._wifi_credentials:
-            logger.error("[WiFi Setup] No WiFi credentials available!")
+            logger.error("[Setup] No WiFi credentials available!")
             return False
         
         ssid, password = self._wifi_credentials
         logger.info("=" * 60)
-        logger.info(f"[WiFi Setup] Attempting to connect to WiFi network: {ssid}")
-        logger.info(f"[WiFi Setup] This will stop the access point...")
+        logger.info(f"[Setup] Attempting to connect to WiFi network: {ssid}")
+        logger.info(f"[Setup] This will stop the access point...")
         logger.info("=" * 60)
         
         result = await self.network_connector.connect(ssid, password)
         
         if result:
-            logger.info(f"[WiFi Setup] ✓ Successfully connected to {ssid}")
+            logger.info(f"[Setup] ✓ Successfully connected to {ssid}")
         else:
-            logger.error(f"[WiFi Setup] ✗ Failed to connect to {ssid}")
+            logger.error(f"[Setup] ✗ Failed to connect to {ssid}")
         
         return result
     
@@ -292,7 +292,7 @@ class WiFiSetupManager:
     
     async def _cleanup(self):
         """Clean up all resources and reset state"""
-        logger.info("Cleaning up WiFi setup resources...")
+        logger.info("Cleaning up setup resources...")
         
         try:
             await self.http_server.stop()
@@ -307,4 +307,3 @@ class WiFiSetupManager:
         # Reset state
         self._wifi_credentials = None
         # Don't reset pairing code as we might need it for retry
-

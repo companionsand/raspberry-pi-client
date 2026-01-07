@@ -261,7 +261,7 @@ class OrchestratorClient:
             True if token refreshed successfully, False otherwise
         """
         import time
-        from lib.auth import authenticate
+        from lib.device_auth import authenticate
         
         logger = self.logger
         

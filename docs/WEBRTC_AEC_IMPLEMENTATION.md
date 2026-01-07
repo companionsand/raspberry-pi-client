@@ -86,12 +86,12 @@ All 4 phases have been successfully implemented. The system is now ready for tes
 
 ### Phase 4: Dependencies ✅
 
-**File**: `requirements.txt`
+**File**: `pyproject.toml`
 
 **Added**:
-```txt
+```toml
 # WebRTC AEC3 (Acoustic Echo Cancellation) - Optional
-aec-audio-processing>=0.1.0
+"aec-audio-processing>=0.1.0",
 ```
 
 ---

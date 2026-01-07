@@ -222,4 +222,3 @@ class NetworkConnector:
     async def _run_sudo_cmd(self, cmd: list, check: bool = True, capture_output: bool = False, timeout: int = 30, suppress_output: bool = False):
         """Run a command with sudo"""
         return await self._run_cmd(['sudo'] + cmd, check=check, capture_output=capture_output or suppress_output, timeout=timeout)
-

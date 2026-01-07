@@ -156,9 +156,10 @@ cd ~/kin-ai-prototype
 
 # copy code from laptop
 scp pi-client/new_main.py kin@kin-ai.local:~/kin-ai-prototype/main.py
-scp pi-client/requirements.txt kin@kin-ai.local:~/kin-ai-prototype/requirements.txt
+scp pi-client/pyproject.toml kin@kin-ai.local:~/kin-ai-prototype/pyproject.toml
 
-pip install -r requirements.txt
+# Install dependencies using uv
+uv sync
 ```
 
 `.env` template:

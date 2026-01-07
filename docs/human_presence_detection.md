@@ -58,7 +58,7 @@ python -m tf2onnx.convert \
 ### Basic Usage
 
 ```python
-from lib.presence_detection import HumanPresenceDetector
+from lib.detection import HumanPresenceDetector
 
 # Initialize detector
 detector = HumanPresenceDetector(
@@ -78,7 +78,7 @@ detector.stop()
 ### Integration Example
 
 ```python
-from lib.presence_detection import HumanPresenceDetector
+from lib.detection import HumanPresenceDetector
 
 class MyApp:
     def __init__(self):

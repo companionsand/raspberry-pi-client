@@ -1,0 +1,57 @@
+[project]
+name = "kin-ai-raspberry-pi-client"
+version = "0.1.0"
+description = "Kin AI Raspberry Pi Client - Voice assistant client with ALSA-only audio, telemetry, LED feedback, and human presence detection"
+readme = "README.md"
+requires-python = ">=3.11"
+dependencies = [
+    # Wake word detection
+    "pvporcupine>=3.0.0",
+    # Audio processing
+    "pyaudio>=0.2.11",
+    "sounddevice>=0.4.6",
+    "numpy>=1.24.0",
+    "scipy>=1.11.0",
+    # ReSpeaker USB Tuning
+    "pyusb>=1.2.1",
+    # WebSocket communication
+    "websockets>=12.0",
+    "certifi>=2023.0.0",
+    # Environment and configuration
+    "python-dotenv>=1.0.0",
+    # Device authentication
+    "cryptography>=41.0.0",
+    "requests>=2.31.0",
+    # JWT token decoding for token expiry tracking
+    "PyJWT>=2.8.0",
+    # Async HTTP client for WiFi-based geolocation
+    "aiohttp>=3.9.0",
+    # OpenTelemetry (upgraded to 1.28.x for protobuf 5.x compatibility)
+    "opentelemetry-api==1.28.2",
+    "opentelemetry-sdk==1.28.2",
+    "opentelemetry-exporter-otlp-proto-http==1.28.2",
+    # for local VAD
+    "onnxruntime>=1.16.0",
+    # ElevenLabs Scribe v2 for wake word verification
+    "elevenlabs>=1.0.0",
+]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project.optional-dependencies]
+led = [
+    # LED control for ReSpeaker (optional, requires Linux/spidev)
+    "pixel-ring>=0.1.0",
+]
+webrtc-aec = [
+    # WebRTC AEC3 (Acoustic Echo Cancellation) - Optional
+    # Enable via USE_WEBRTC_AEC=true environment variable
+    # Note: May have build issues on macOS, primarily intended for Linux/Raspberry Pi
+    "aec-audio-processing>=0.1.0",
+]
+
+[tool.hatch.build.targets.wheel]
+packages = ["lib"]
+
