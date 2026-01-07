@@ -80,7 +80,8 @@ except ImportError:
 
 # Setup stdout/stderr redirection EARLY (before any print statements)
 # This captures all print() output and sends it to OTEL/BetterStack
-if TELEMETRY_AVAILABLE:
+# Skip in MAC_MODE to avoid unnecessary telemetry overhead
+if TELEMETRY_AVAILABLE and not Config.MAC_MODE:
     setup_stdout_redirect("raspberry-pi-client")
 
 
@@ -114,9 +115,12 @@ class KinClient:
         # Activity tracking for wrapper idle monitoring
         self.activity_file = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", ".last_activity")
         
-        # Setup telemetry if available (skip in dev mode when device_id is missing)
-        # Skip telemetry initialization if device_id is None to avoid connection errors
-        if TELEMETRY_AVAILABLE and Config.OTEL_ENABLED and Config.DEVICE_ID:
+        # Setup telemetry if available (skip in MAC_MODE)
+        if Config.MAC_MODE:
+            # MAC_MODE: Skip OTEL entirely, no logger (print statements still work)
+            Config.LOGGER = None
+            self.logger = None
+        elif TELEMETRY_AVAILABLE and Config.OTEL_ENABLED:
             try:
                 setup_telemetry(
                     device_id=Config.DEVICE_ID,
@@ -197,6 +201,16 @@ class KinClient:
         print("🎙️  Kin AI Raspberry Pi Client (v2)")
         print("="*60)
         
+        # MAC_MODE: Show clear message about what's disabled
+        if Config.MAC_MODE:
+            print("\n⚠️  MAC_MODE enabled - Running without:")
+            print("   • OpenTelemetry (OTEL)")
+            print("   • WiFi setup mode")
+            print("   • LED controller")
+            print("   • Location fetching (WiFi triangulation)")
+            print("   • ReSpeaker tuning")
+            print("="*60)
+        
         # Initialize voice feedback early (speaker device will be set after detection)
         self.voice_feedback = VoiceFeedback(speaker_device_index=None)
         
@@ -227,18 +241,27 @@ class KinClient:
         # Initialize LED controller early (before setup)
         # This allows setup to show LED feedback
         # Default to True if not set yet (will be set after authentication)
-        led_enabled = Config.LED_ENABLED if Config.LED_ENABLED is not None else True
+        # MAC_MODE: Force LED disabled (no ReSpeaker hardware on Mac)
+        if Config.MAC_MODE:
+            led_enabled = False
+        else:
+            led_enabled = Config.LED_ENABLED if Config.LED_ENABLED is not None else True
         self.led_controller = LEDController(enabled=led_enabled)
         self.led_controller.set_state(LEDController.STATE_BOOT)
         
-        # Determine if setup should be skipped
-        # Priority: env var (for testing) → cached config → default (false = allow setup)
+        # Determine if WiFi setup should be skipped
+        # Priority: MAC_MODE → env var (for testing) → cached config → default (false = allow setup)
         skip_wifi_setup = False  # Default: allow WiFi setup
         config_source = "default"  # Track where the value came from
         
+        # MAC_MODE: Force skip WiFi setup (NetworkManager not available on Mac)
+        if Config.MAC_MODE:
+            skip_wifi_setup = True
+            config_source = "mac_mode"
+            print(f"ℹ️  MAC_MODE: Skipping WiFi setup")
         # Check env var override first (for testing/debugging)
-        env_skip_wifi = os.getenv('SKIP_WIFI_SETUP')
-        if env_skip_wifi:
+        elif os.getenv('SKIP_WIFI_SETUP'):
+            env_skip_wifi = os.getenv('SKIP_WIFI_SETUP')
             skip_wifi_setup = env_skip_wifi.lower() == 'true'
             config_source = "env_var"
             print(f"ℹ️  Using SKIP_WIFI_SETUP from environment: {skip_wifi_setup}")
@@ -545,17 +568,24 @@ class KinClient:
         self.context_manager.set_logger(self.logger)
         
         # Start context manager (performs initial fetch with timeout)
-        print("📍 Fetching location data...")
-        await self.context_manager.start()
-        
-        if self.context_manager.has_location_data:
-            print("✓ Location data loaded")
+        # MAC_MODE: Skip location fetching (uses Linux-specific WiFi scanning tools)
+        if Config.MAC_MODE:
+            print("📍 Skipping location data (MAC_MODE)")
         else:
-            print("⚠️  Location data unavailable - continuing without location")
+            print("📍 Fetching location data...")
+            await self.context_manager.start()
+            
+            if self.context_manager.has_location_data:
+                print("✓ Location data loaded")
+            else:
+                print("⚠️  Location data unavailable - continuing without location")
         
         # Initialize ReSpeaker hardware tuning if configuration is available
-        print("🔧 Checking for ReSpeaker hardware...")
-        if Config.RESPEAKER_CONFIG:
+        # MAC_MODE: Skip ReSpeaker tuning (no ReSpeaker hardware on Mac)
+        if Config.MAC_MODE:
+            print("🔧 Skipping ReSpeaker tuning (MAC_MODE)")
+        elif Config.RESPEAKER_CONFIG:
+            print("🔧 Checking for ReSpeaker hardware...")
             from lib.audio.respeaker import ReSpeakerController
             
             respeaker = ReSpeakerController(

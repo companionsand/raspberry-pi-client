@@ -1,0 +1,56 @@
+# Wake word detection
+pvporcupine>=3.0.0
+
+# Audio processing
+pyaudio>=0.2.11
+sounddevice>=0.4.6
+numpy>=1.24.0
+scipy>=1.11.0
+
+# WebRTC AEC3 (Acoustic Echo Cancellation) - Optional
+# Provides superior echo cancellation beyond ReSpeaker hardware AEC
+# Enable via USE_WEBRTC_AEC=true environment variable
+aec-audio-processing>=0.1.0
+
+# ReSpeaker USB Tuning
+pyusb>=1.2.1
+
+# WebSocket communication
+websockets>=12.0
+certifi>=2023.0.0
+
+# Environment and configuration
+python-dotenv>=1.0.0
+
+# Device authentication
+cryptography>=41.0.0
+requests>=2.31.0
+
+# JWT token decoding for token expiry tracking
+PyJWT>=2.8.0
+
+# Async HTTP client for WiFi-based geolocation
+aiohttp>=3.9.0
+
+# LED control for ReSpeaker (Linux/Raspberry Pi only - requires SPI hardware)
+pixel-ring>=0.1.0; sys_platform == 'linux'
+
+# UUID generation
+# (built-in, no package needed)
+
+# Activity detection (YAMNet)
+# tflite-runtime>=2.14.0
+
+# OpenTelemetry (upgraded to 1.28.x for protobuf 5.x compatibility)
+opentelemetry-api==1.28.2
+opentelemetry-sdk==1.28.2
+opentelemetry-exporter-otlp-proto-http==1.28.2
+
+# for local VAD
+onnxruntime>=1.16.0
+
+# ElevenLabs Scribe v2 for wake word verification
+elevenlabs>=1.0.0
+
+# Note: ReSpeaker hardware control requires python3-usb system package
+# Install via: sudo apt install python3-usb (handled by install.sh)
