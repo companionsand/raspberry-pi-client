@@ -17,6 +17,7 @@ import logging
 import os
 import socket
 import subprocess
+import time
 from http.server import BaseHTTPRequestHandler
 from pathlib import Path
 from socketserver import TCPServer
@@ -241,7 +242,6 @@ class SetupHTTPServer:
             logger.info("[HTTP] Stopping existing server instance...")
             try:
                 await self.stop()
-                import time
                 time.sleep(0.5)  # Wait for port to be released
             except Exception as e:
                 logger.debug(f"[HTTP] Error stopping existing server: {e}")
@@ -274,16 +274,12 @@ class SetupHTTPServer:
                 if self._server:
                     try:
                         await self.stop()
-                        import time
                         time.sleep(1)
                     except Exception:
                         pass
                 
                 # Try to kill any process using the port
                 try:
-                    import subprocess
-                    import time
-                    
                     # Get detailed info about what's using the port
                     info_result = subprocess.run(
                         ['lsof', '-i', f':{self.port}'],
@@ -338,7 +334,6 @@ class SetupHTTPServer:
                 except (FileNotFoundError, subprocess.TimeoutExpired, Exception) as cleanup_error:
                     logger.warning(f"[HTTP] Could not clean up port: {cleanup_error}")
                     # Still wait a bit in case it's just TIME_WAIT
-                    import time
                     time.sleep(2)
                 
                 # Try one more time after cleanup
