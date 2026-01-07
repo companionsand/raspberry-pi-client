@@ -656,8 +656,8 @@ class KinClient:
         if TELEMETRY_AVAILABLE:
             add_span_event("orchestrator_connected", device_id=Config.DEVICE_ID)
         
-        # Update radio cache in background (don't wait for it)
-        asyncio.create_task(self._update_radio_cache_background())
+        # Note: Radio cache is now fetched by the server and included in device config.
+        # The cache is saved to ~/.kin_radio_cache.json during Config.load_runtime_config()
         
         # Start wake word detection
         self.wake_detector.start()
@@ -956,81 +956,6 @@ class KinClient:
         else:
             # For reactive conversations, we're already in the trace context from _handle_conversation
             await _execute_conversation()
-    
-    async def _update_radio_cache_background(self):
-        """
-        Update radio station cache in the background on startup.
-        
-        Fetches stations from Radio Browser API, verifies they're working,
-        and saves to ~/.kin_radio_cache.json for faster music playback.
-        """
-        try:
-            from lib.music.radio_browser import RadioBrowserClient, verify_stream
-            import json
-            
-            CACHE_FILE = os.path.expanduser("~/.kin_radio_cache.json")
-            GENRES = ["jazz", "classical", "rock", "pop", "country", "blues", "electronic", "ambient", "folk", "soul"]
-            STATIONS_PER_GENRE = 10  # Fewer since we're verifying
-            VERIFY_TIMEOUT = 2.0
-            
-            print("📻 Updating radio station cache (background)...")
-            
-            def fetch_cache():
-                client = RadioBrowserClient()
-                cache = {}
-                
-                # Fetch popular stations (skip verification - high-vote = likely working)
-                try:
-                    popular = client.get_top_stations(limit=30)
-                    cache["popular"] = [s.to_dict() for s in popular[:20]]
-                except Exception as e:
-                    print(f"   ⚠️ Failed to fetch popular stations: {e}")
-                    cache["popular"] = []
-                
-                # Fetch by genre with verification
-                for genre in GENRES:
-                    try:
-                        stations = client.search_by_tag(genre, limit=50)
-                        verified = []
-                        for station in stations:
-                            if verify_stream(station.url, timeout=VERIFY_TIMEOUT):
-                                verified.append(station.to_dict())
-                                if len(verified) >= STATIONS_PER_GENRE:
-                                    break
-                        cache[genre] = verified
-                    except Exception:
-                        cache[genre] = []
-                
-                # Save cache
-                with open(CACHE_FILE, 'w') as f:
-                    json.dump(cache, f, indent=2)
-                
-                total = sum(len(v) for v in cache.values())
-                return total
-            
-            loop = asyncio.get_event_loop()
-            total = await loop.run_in_executor(None, fetch_cache)
-            print(f"   ✓ Radio cache updated: {total} verified stations")
-            
-            if self.logger:
-                self.logger.info(
-                    "radio_cache_updated",
-                    extra={
-                        "total_stations": total,
-                        "device_id": Config.DEVICE_ID
-                    }
-                )
-            
-        except Exception as e:
-            print(f"   ⚠️ Radio cache update failed (non-fatal): {e}")
-            if self.logger:
-                self.logger.warning(
-                    "radio_cache_update_failed",
-                    extra={
-                        "error": str(e),
-                        "device_id": Config.DEVICE_ID
-                    }
-                )
     
     async def _run_music_mode(self):
         """
