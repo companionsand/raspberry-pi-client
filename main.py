@@ -250,6 +250,7 @@ class KinClient:
         self.led_controller.set_state(LEDController.STATE_BOOT)
         
         # Run startup sequence (connectivity check, setup mode, authentication)
+        # This encapsulates all the setup logic that was previously inline
         startup_result = await run_startup_sequence(
             led_controller=self.led_controller,
             voice_feedback=self.voice_feedback,

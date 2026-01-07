@@ -145,8 +145,7 @@ async def _run_setup_loop(
         # Start setup manager
         setup_manager = SetupManager(
             led_controller=led_controller,
-            voice_feedback=voice_feedback,
-            shutdown_flag=user_terminate_flag
+            voice_feedback=voice_feedback
         )
         
         pairing_code, success = await setup_manager.start_setup_mode()

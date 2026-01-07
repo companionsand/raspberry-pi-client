@@ -30,8 +30,8 @@ class AccessPoint:
             # Clean up any existing hotspot connection
             await self._cleanup_existing()
             
-            # Unblock WiFi (optional - rfkill is Linux-specific, skip on macOS)
-            await self._run_sudo_cmd(['rfkill', 'unblock', 'wifi'], check=False)
+            # Unblock WiFi
+            await self._run_sudo_cmd(['rfkill', 'unblock', 'wifi'])
             
             # Ensure the interface is fully down and clean
             logger.debug(f"Ensuring {self.interface} is clean...")
@@ -276,4 +276,3 @@ class AccessPoint:
     async def _run_sudo_cmd(self, cmd: list, check: bool = True, suppress_output: bool = False) -> Optional[subprocess.CompletedProcess]:
         """Run a command with sudo"""
         return await self._run_cmd(['sudo'] + cmd, check=check, suppress_output=suppress_output)
-
