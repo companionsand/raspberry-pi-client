@@ -166,15 +166,24 @@
 <body>
     <div class="container">
         <h1>Kin Device Setup</h1>
-        <p class="subtitle">{subtitle}</p>
+        <p class="subtitle">Configure your WiFi network to get started</p>
         <div id="message"></div>
         <form id="setupForm">
-            {wifi_fields_html}
+            <div class="form-group">
+                <label for="ssid">WiFi Network</label>
+                <select id="ssid" name="ssid" required>
+                    <option value="">Scanning...</option>
+                </select>
+            </div>
+            <div class="form-group">
+                <label for="password">WiFi Password</label>
+                <input type="password" id="password" name="password" placeholder="Leave blank if open">
+            </div>
             <div class="form-group">
                 <label for="pairingCode">Pairing Code (4 digits)</label>
                 <input type="text" id="pairingCode" name="pairingCode" pattern="[0-9]{4}" maxlength="4" placeholder="1234" required>
             </div>
-            <button type="submit" id="submitBtn">{button_text}</button>
+            <button type="submit" id="submitBtn">Connect</button>
         </form>
     </div>
     <script>
@@ -191,7 +200,18 @@
             messageDiv.innerHTML = '';
         }
         
-        {network_scan_script}
+        fetch('/networks')
+            .then(r => r.json())
+            .then(data => {
+                ssidSelect.innerHTML = '<option value="">Select network...</option>';
+                data.networks.forEach(n => {
+                    const opt = document.createElement('option');
+                    opt.value = n.ssid;
+                    opt.textContent = n.ssid + (n.encrypted ? ' 🔒' : '');
+                    ssidSelect.appendChild(opt);
+                });
+            })
+            .catch(e => showMessage('Failed to load networks: ' + e.message, 'error'));
         
         let statusPollInterval = null;
         
@@ -214,7 +234,7 @@
                         showMessage('✗ ' + data.message + (data.error ? '\n' + data.error : ''), 'error');
                         clearInterval(statusPollInterval);
                         submitBtn.disabled = false;
-                        submitBtn.textContent = '{button_text_js}';
+                        submitBtn.textContent = 'Connect';
                     }
                 })
                 .catch(e => console.error('Status poll failed:', e));
@@ -226,36 +246,33 @@
             submitBtn.disabled = true;
             submitBtn.textContent = 'Submitting...';
             
-            {form_validation}
-            
             try {
                 const r = await fetch('/configure', {
                     method: 'POST',
                     headers: {'Content-Type': 'application/json'},
                     body: JSON.stringify({
-                        ssid: form.ssid ? form.ssid.value : '',
-                        password: form.password ? form.password.value : '',
+                        ssid: form.ssid.value,
+                        password: form.password.value,
                         pairing_code: form.pairingCode.value
                     })
                 });
                 const result = await r.json();
                 if (result.success) {
-                    showMessage('{submit_message_js}', 'success');
+                    showMessage('Configuration received. Connecting to WiFi...', 'success');
                     // Start polling for status updates
                     statusPollInterval = setInterval(pollStatus, 2000);
                     pollStatus(); // Poll immediately
                 } else {
                     showMessage('Error: ' + (result.error || 'Failed'), 'error');
                     submitBtn.disabled = false;
-                    submitBtn.textContent = '{button_text_js}';
+                    submitBtn.textContent = 'Connect';
                 }
             } catch(e) {
                 showMessage('Error: ' + e.message, 'error');
                 submitBtn.disabled = false;
-                submitBtn.textContent = '{button_text_js}';
+                submitBtn.textContent = 'Connect';
             }
         };
     </script>
 </body>
 </html>
-
