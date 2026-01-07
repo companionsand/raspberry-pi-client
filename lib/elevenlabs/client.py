@@ -145,6 +145,7 @@ class ElevenLabsConversationClient:
         # When play_music is called, we end the conversation so main.py can start music mode
         # This is simpler than trying to share audio devices during conversation
         self._music_mode_requested = False  # Set True when play_music tool is called
+        self._music_genre = None  # Genre requested for music playback (from tool parameters)
         
         # Agent speech monitoring for Ch5 RMS (detect when agent stops speaking)
         self._agent_speaking = False
@@ -1327,16 +1328,21 @@ class ElevenLabsConversationClient:
         """
         logger = self.logger
         
-        print("\n🎵 Music requested - waiting for agent to finish speaking...")
+        # Extract genre from parameters (if provided)
+        genre = parameters.get("genre") if parameters else None
         
-        # Mark that music mode was requested
+        print(f"\n🎵 Music requested{f' (genre: {genre})' if genre else ''} - waiting for agent to finish speaking...")
+        
+        # Mark that music mode was requested and store genre
         self._music_mode_requested = True
+        self._music_genre = genre
         
         if logger:
             logger.info(
                 "music_mode_requested",
                 extra={
                     "tool_call_id": tool_call_id,
+                    "genre": genre,
                     "conversation_id": self.conversation_id,
                     "device_id": Config.DEVICE_ID
                 }
@@ -1397,6 +1403,11 @@ class ElevenLabsConversationClient:
             
             # Small delay to avoid busy loop
             await asyncio.sleep(0.05)
+    
+    @property
+    def music_genre(self) -> Optional[str]:
+        """Get the requested music genre (if any) from the play_music tool call."""
+        return self._music_genre
     
     async def _send_client_tool_result(self, tool_call_id: str, result: str, is_error: bool = False):
         """
