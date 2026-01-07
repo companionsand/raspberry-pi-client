@@ -330,11 +330,9 @@ class KinClient:
                     print("="*60)
                     
                     # Start setup manager with LED controller and voice feedback
-                    # Pass shutdown flag so setup can respond to CTRL+C
                     setup_manager = SetupManager(
                         led_controller=self.led_controller,
-                        voice_feedback=self.voice_feedback,
-                        shutdown_flag=self.user_terminate  # Use same flag for shutdown
+                        voice_feedback=self.voice_feedback
                     )
                     pairing_code, success = await setup_manager.start_setup_mode()
                     
@@ -457,11 +455,9 @@ class KinClient:
                             print("="*60)
                             
                             # Start setup manager with LED controller and voice feedback
-                            # Pass shutdown flag so setup can respond to CTRL+C
                             setup_manager = SetupManager(
                                 led_controller=self.led_controller,
-                                voice_feedback=self.voice_feedback,
-                                shutdown_flag=self.user_terminate  # Use same flag for shutdown
+                                voice_feedback=self.voice_feedback
                             )
                             pairing_code, success = await setup_manager.start_setup_mode()
                             
