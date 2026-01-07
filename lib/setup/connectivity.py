@@ -136,4 +136,3 @@ class ConnectivityChecker:
         orchestrator_reachable = await self.check_orchestrator(retries=orchestrator_retries)
         
         return has_internet, orchestrator_reachable
-

@@ -12,7 +12,7 @@ Features:
 - Device authentication via provisioned Ed25519 credentials
 - OpenTelemetry observability (traces, spans, logs - no metrics)
 - LED visual feedback for device states
-- WiFi setup mode for devices without internet connectivity
+- Setup mode for device pairing and WiFi configuration when needed
 
 Usage:
     python main.py
@@ -24,7 +24,6 @@ Requirements:
 """
 
 import os
-import sys
 import signal
 import time
 import asyncio
@@ -41,25 +40,21 @@ logging.basicConfig(
 
 # Import local modules
 from lib.config import Config
-from lib.auth import authenticate
-from lib.audio import get_audio_devices, LEDController
-from lib.voice_feedback import VoiceFeedback
-from lib.wake_word import WakeWordDetector
-from lib.orchestrator import OrchestratorClient
-from lib.elevenlabs import ElevenLabsConversationClient
-from lib.local_storage import ContextManager
-from lib.presence_detection import HumanPresenceDetector
+from lib.device_auth import authenticate
+from lib.audio import get_audio_devices, LEDController, VoiceFeedback
+from lib.detection import WakeWordDetector, HumanPresenceDetector
+from lib.agent import OrchestratorClient, ElevenLabsConversationClient, ContextManager
 from lib.music import MusicPlayer
 from lib.music.command_detector import VoiceCommandDetector, MusicCommand
 
-# Import WiFi setup module (optional - graceful degradation)
+# Import setup module (optional - graceful degradation)
 try:
-    from lib.wifi_setup import WiFiSetupManager
-    from lib.wifi_setup.connectivity import ConnectivityChecker
-    WIFI_SETUP_AVAILABLE = True
+    from lib.setup import SetupManager
+    from lib.setup.connectivity import ConnectivityChecker
+    SETUP_AVAILABLE = True
 except ImportError as e:
-    print(f"⚠️  WiFi setup module not available: {e}")
-    WIFI_SETUP_AVAILABLE = False
+    print(f"⚠️  Setup module not available: {e}")
+    SETUP_AVAILABLE = False
 
 # Import telemetry (optional - graceful degradation)
 try:
@@ -68,7 +63,6 @@ try:
         get_logger as get_otel_logger,
         add_span_event,
         create_conversation_trace,
-        inject_trace_context,
         extract_trace_context,
         setup_stdout_redirect,
         cleanup_stdout_redirect,
@@ -145,9 +139,11 @@ class KinClient:
                 Config.LOGGER = None
                 self.logger = None
         else:
-            # Fallback logger without telemetry
+            # Fallback logger without telemetry (dev mode or telemetry disabled)
             Config.LOGGER = logging.getLogger(__name__)
             self.logger = Config.LOGGER
+            if TELEMETRY_AVAILABLE and Config.OTEL_ENABLED and not Config.DEVICE_ID:
+                print("⚠️  Telemetry skipped (development mode - no device_id)")
         
         # Setup signal handlers
         signal.signal(signal.SIGINT, self._handle_interrupt_signal)
@@ -174,6 +170,8 @@ class KinClient:
             print("shutting down...")
             self.shutdown_requested = True
             self.running = False
+            # Also set user_terminate so setup can detect shutdown
+            self.user_terminate[0] = True
         
         if self.logger:
             self.logger.info(
@@ -219,10 +217,31 @@ class KinClient:
         self.voice_feedback = VoiceFeedback(speaker_device_index=None)
         
         # Validate configuration
-        Config.validate()
+        config_valid = Config.validate()
         
-        # Initialize LED controller early (before WiFi setup)
-        # This allows WiFi setup to show LED feedback
+        # Check if running in development mode (missing credentials)
+        if Config.DEV_MODE:
+            print("\n" + "="*60)
+            print("⚠️  DEVELOPMENT MODE - Missing Required Configuration")
+            print("="*60)
+            print("\nThe following services are DISABLED due to missing credentials:")
+            print("  ✗ Device Authentication (requires DEVICE_ID and DEVICE_PRIVATE_KEY)")
+            print("  ✗ Orchestrator Connection (requires authentication)")
+            print("  ✗ WiFi Setup (requires authentication)")
+            print("  ✗ Wake Word Detection (requires PICOVOICE_ACCESS_KEY from backend)")
+            print("  ✗ Presence Detection (requires authentication)")
+            print("  ✗ Voice Conversations (requires ELEVENLABS_API_KEY from backend)")
+            print("\nTo enable full functionality:")
+            print("  1. Provision device through admin portal")
+            print("  2. Set DEVICE_ID and DEVICE_PRIVATE_KEY environment variables")
+            print("  3. Or create a .env file with these credentials")
+            print("\n" + "="*60)
+            print("Exiting - this application requires device credentials to run.")
+            print("="*60 + "\n")
+            return
+        
+        # Initialize LED controller early (before setup)
+        # This allows setup to show LED feedback
         # Default to True if not set yet (will be set after authentication)
         # MAC_MODE: Force LED disabled (no ReSpeaker hardware on Mac)
         if Config.MAC_MODE:
@@ -262,7 +281,7 @@ class KinClient:
         # Log final skip_wifi_setup value for monitoring
         print("=" * 60)
         print(f"⚙️  SKIP_WIFI_SETUP: {skip_wifi_setup}")
-        print(f"   WiFi Setup Mode: {'DISABLED' if skip_wifi_setup else 'ENABLED'}")
+        print(f"   Setup Mode: {'DISABLED' if skip_wifi_setup else 'ENABLED'}")
         print(f"   Config Source: {config_source}")
         print("=" * 60)
         
@@ -277,10 +296,10 @@ class KinClient:
                 }
             )
         
-        pairing_code = None  # Will be set by WiFi setup if needed
+        pairing_code = None  # Will be set by setup if needed
         
-        # WiFi Setup Mode - only if enabled and available
-        if not skip_wifi_setup and WIFI_SETUP_AVAILABLE:
+        # Setup Mode - only if enabled and available
+        if not skip_wifi_setup and SETUP_AVAILABLE:
             print("\n📡 Checking connectivity...")
             
             connectivity_checker = ConnectivityChecker()
@@ -295,22 +314,27 @@ class KinClient:
                 if self.voice_feedback:
                     self.voice_feedback.play("no_internet")
                 
-                # WiFi setup + pairing loop - retry if pairing fails
+                # Setup + pairing loop - retry if pairing fails
+                # Note: Setup interface collects both WiFi credentials (for connectivity)
+                # and pairing code (for device-to-user linking). These are conceptually separate.
                 max_setup_attempts = 3
                 setup_attempt = 0
                 authenticated = False
                 
                 while setup_attempt < max_setup_attempts and not authenticated:
                     setup_attempt += 1
-                    print(f"\n🔧 Entering WiFi setup mode (attempt {setup_attempt}/{max_setup_attempts})...")
+                    print(f"\n🔧 Entering setup mode (attempt {setup_attempt}/{max_setup_attempts})...")
+                    print("="*60)
+                    print("ℹ️  Note: Setup requires sudo privileges for network management.")
+                    print("   If prompted for a password, enter your Raspberry Pi user password.")
                     print("="*60)
                     
-                    # Start WiFi setup manager with LED controller and voice feedback
-                    wifi_manager = WiFiSetupManager(
+                    # Start setup manager with LED controller and voice feedback
+                    setup_manager = SetupManager(
                         led_controller=self.led_controller,
                         voice_feedback=self.voice_feedback
                     )
-                    pairing_code, success = await wifi_manager.start_setup_mode()
+                    pairing_code, success = await setup_manager.start_setup_mode()
                     
                     if success and pairing_code:
                         print(f"\n✓ WiFi connected!")
@@ -335,7 +359,7 @@ class KinClient:
                             
                             # Clean up (HTTP server already stopped during WiFi switch)
                             try:
-                                await wifi_manager.http_server.stop()
+                                await setup_manager.http_server.stop()
                             except:
                                 pass
                         else:
@@ -352,8 +376,8 @@ class KinClient:
                                 # If WiFi stays connected, main loop won't re-enter setup mode
                                 # But device isn't authenticated, so can't start normal operation
                                 # Result: Deadlock!
-                                if wifi_manager._wifi_credentials:
-                                    failed_ssid = wifi_manager._wifi_credentials[0]
+                                if setup_manager._wifi_credentials:
+                                    failed_ssid = setup_manager._wifi_credentials[0]
                                     print(f"  Deleting WiFi connection: {failed_ssid}")
                                     try:
                                         import subprocess
@@ -363,8 +387,8 @@ class KinClient:
                                         print(f"  Warning: Could not delete connection: {e}")
                                 
                                 # Clear credentials from manager so setup starts fresh
-                                wifi_manager._wifi_credentials = None
-                                wifi_manager._pairing_code = None
+                                setup_manager._wifi_credentials = None
+                                setup_manager._pairing_code = None
                                 
                                 print(f"  Please reconnect to Kin_Setup and try again")
                                 await asyncio.sleep(3)
@@ -372,10 +396,10 @@ class KinClient:
                                 print(f"  Max attempts ({max_setup_attempts}) reached")
                                 await asyncio.sleep(3)
                     else:
-                        print("\n✗ WiFi setup failed")
+                        print("\n✗ Setup failed")
                         # Clean up HTTP server if it's still running
                         try:
-                            await wifi_manager.http_server.stop()
+                            await setup_manager.http_server.stop()
                         except:
                             pass
                         
@@ -406,58 +430,36 @@ class KinClient:
                     reason = auth_result.get("reason") if auth_result else "unknown"
                     
                     if reason == "unpaired":
-                        # Device is authenticated but not paired - enter WiFi setup mode to collect pairing code
+                        # Device is authenticated but not paired - enter setup mode to collect pairing code
+                        # Note: Device already has internet, so WiFi setup is not needed for connectivity.
+                        # Setup manager will detect internet and skip WiFi/sudo setup automatically.
                         print("⚠️  Device is not paired with a user")
-                        print("   Entering WiFi setup mode to collect pairing code...")
+                        print("   Entering pairing mode to collect pairing code...")
+                        print("   Note: Device already has internet - no WiFi setup needed (no sudo required)")
                         
                         # Play voice feedback
                         if self.voice_feedback:
                             self.voice_feedback.play("device_not_paired")
                         
-                        # Delete existing WiFi connection before entering setup mode
-                        # User will provide WiFi credentials anyway, so no need to keep old connection
-                        print("   Cleaning up existing WiFi connection...")
-                        try:
-                            import subprocess
-                            # Get active WiFi connection
-                            result = subprocess.run(
-                                ['nmcli', '-t', '-f', 'NAME,TYPE', 'connection', 'show', '--active'],
-                                capture_output=True,
-                                text=True,
-                                timeout=5
-                            )
-                            
-                            # Find and delete WiFi connections (type: 802-11-wireless)
-                            for line in result.stdout.strip().split('\n'):
-                                if line and '802-11-wireless' in line:
-                                    conn_name = line.split(':')[0]
-                                    # Don't delete the Kin_Hotspot connection
-                                    if conn_name and 'Kin_Hotspot' not in conn_name:
-                                        print(f"   Deleting WiFi connection: {conn_name}")
-                                        subprocess.run(
-                                            ['sudo', 'nmcli', 'connection', 'delete', conn_name],
-                                            capture_output=True,
-                                            timeout=5
-                                        )
-                        except Exception as e:
-                            print(f"   Warning: Could not clean up WiFi connection: {e}")
-                        
-                        # WiFi setup + pairing loop
+                        # Setup + pairing loop
                         max_setup_attempts = 3
                         setup_attempt = 0
                         authenticated = False
                         
                         while setup_attempt < max_setup_attempts and not authenticated:
                             setup_attempt += 1
-                            print(f"\n🔧 Entering WiFi setup mode (attempt {setup_attempt}/{max_setup_attempts})...")
+                            print(f"\n🔧 Entering pairing mode (attempt {setup_attempt}/{max_setup_attempts})...")
+                            print("="*60)
+                            print("ℹ️  Note: Pairing mode uses existing network connection.")
+                            print("   No sudo password required - device already has internet.")
                             print("="*60)
                             
-                            # Start WiFi setup manager with LED controller and voice feedback
-                            wifi_manager = WiFiSetupManager(
+                            # Start setup manager with LED controller and voice feedback
+                            setup_manager = SetupManager(
                                 led_controller=self.led_controller,
                                 voice_feedback=self.voice_feedback
                             )
-                            pairing_code, success = await wifi_manager.start_setup_mode()
+                            pairing_code, success = await setup_manager.start_setup_mode()
                             
                             if success and pairing_code:
                                 print(f"\n✓ Setup complete!")
@@ -478,7 +480,7 @@ class KinClient:
                                     
                                     # Clean up
                                     try:
-                                        await wifi_manager.http_server.stop()
+                                        await setup_manager.http_server.stop()
                                     except:
                                         pass
                                 else:
@@ -487,7 +489,7 @@ class KinClient:
                                     
                                     # Clean up before retry
                                     try:
-                                        await wifi_manager.http_server.stop()
+                                        await setup_manager.http_server.stop()
                                     except:
                                         pass
                                     
@@ -499,8 +501,8 @@ class KinClient:
                                         print(f"\n  Cleaning up and restarting setup mode...")
                                         
                                         # Delete WiFi connection to prevent device from getting stuck
-                                        if wifi_manager._wifi_credentials:
-                                            failed_ssid = wifi_manager._wifi_credentials[0]
+                                        if setup_manager._wifi_credentials:
+                                            failed_ssid = setup_manager._wifi_credentials[0]
                                             print(f"  Deleting WiFi connection: {failed_ssid}")
                                             try:
                                                 import subprocess
@@ -510,17 +512,17 @@ class KinClient:
                                                 print(f"  Warning: Could not delete connection: {e}")
                                         
                                         # Clear credentials from manager so setup starts fresh
-                                        wifi_manager._wifi_credentials = None
-                                        wifi_manager._pairing_code = None
+                                        setup_manager._wifi_credentials = None
+                                        setup_manager._pairing_code = None
                                         
                                         print(f"  Please reconnect to Kin_Setup and try again")
                                         await asyncio.sleep(3)
                             else:
-                                print("✗ WiFi setup failed or cancelled")
+                                print("✗ Setup failed or cancelled")
                                 
                                 # Clean up
                                 try:
-                                    await wifi_manager.http_server.stop()
+                                    await setup_manager.http_server.stop()
                                 except:
                                     pass
                                 
@@ -545,7 +547,7 @@ class KinClient:
                     if self.led_controller:
                         self.led_controller.enabled = Config.LED_ENABLED
         else:
-            # WiFi setup skipped, authenticate normally
+            # Setup skipped, authenticate normally
             auth_result = authenticate()
             if not auth_result or not auth_result.get("success"):
                 reason = auth_result.get("reason") if auth_result else "unknown"
@@ -556,7 +558,7 @@ class KinClient:
             if self.led_controller:
                 self.led_controller.enabled = Config.LED_ENABLED
         
-        # LED controller already initialized before WiFi setup
+        # LED controller already initialized before setup
         # Keep boot state while initializing remaining components
         self.led_controller.set_state(LEDController.STATE_BOOT)
         

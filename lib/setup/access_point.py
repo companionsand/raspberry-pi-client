@@ -276,4 +276,3 @@ class AccessPoint:
     async def _run_sudo_cmd(self, cmd: list, check: bool = True, suppress_output: bool = False) -> Optional[subprocess.CompletedProcess]:
         """Run a command with sudo"""
         return await self._run_cmd(['sudo'] + cmd, check=check, suppress_output=suppress_output)
-

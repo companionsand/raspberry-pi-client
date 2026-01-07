@@ -7,8 +7,11 @@ Provides web interface for WiFi configuration using asyncio HTTP server.
 import asyncio
 import json
 import logging
+import socket
 import subprocess
+import time
 from http.server import BaseHTTPRequestHandler
+from pathlib import Path
 from socketserver import TCPServer
 from threading import Thread
 from typing import Callable, Optional
@@ -16,285 +19,19 @@ from typing import Callable, Optional
 logger = logging.getLogger(__name__)
 
 
-HTML_TEMPLATE = '''<!DOCTYPE html>
-<html>
-<head>
-    <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Kin Device Setup</title>
-    <link rel="preconnect" href="https://fonts.googleapis.com">
-    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-    <link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:wght@400;500&family=Instrument+Serif:ital,wght@0,400;1,400&family=Limelight&display=swap" rel="stylesheet">
-    <style>
-        * { margin: 0; padding: 0; box-sizing: border-box; }
-        
-        :root {
-            --color-primary: #ed572d;
-            --color-success: #04602B;
-            --color-black: #111111;
-            --color-white: #FFFFFF;
-            --color-warm-white: #FFF8F3;
-        }
-        
-        body {
-            font-family: 'IBM Plex Sans', -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
-            background-color: var(--color-warm-white);
-            color: var(--color-black);
-            min-height: 100vh;
-            display: flex;
-            align-items: center;
-            justify-content: center;
-            padding: 20px;
-            font-size: 18px;
-            line-height: 1.5;
-            filter: contrast(1.02) saturate(1.1);
-            -webkit-font-smoothing: antialiased;
-            -moz-osx-font-smoothing: grayscale;
-        }
-        
-        /* Grainy overlay effect for nostalgic texture */
-        body::before {
-            content: "";
-            position: fixed;
-            inset: 0;
-            background:
-                radial-gradient(circle at 20% 20%, rgba(255,255,255,0.03) 0%, transparent 100%),
-                url("https://grainy-gradients.vercel.app/noise.svg");
-            mix-blend-mode: overlay;
-            opacity: 0.35;
-            pointer-events: none;
-            z-index: 9999;
-        }
-        
-        .container {
-            background: var(--color-white);
-            border-radius: 12px;
-            border: 1px solid rgba(17, 17, 17, 0.1);
-            padding: 40px;
-            max-width: 500px;
-            width: 100%;
-            box-shadow: 0 1px 3px rgba(0,0,0,0.05);
-            position: relative;
-            z-index: 1;
-        }
-        
-        h1 { 
-            font-family: 'Instrument Serif', serif;
-            color: var(--color-black);
-            margin-bottom: 8px;
-            font-size: 28px;
-            line-height: 1.2;
-            text-transform: uppercase;
-            letter-spacing: 0.02em;
-            font-weight: 400;
-        }
-        
-        .subtitle { 
-            font-family: 'IBM Plex Sans', sans-serif;
-            color: var(--color-black);
-            opacity: 0.7;
-            margin-bottom: 32px;
-            font-size: 18px;
-            line-height: 1.5;
-        }
-        
-        .form-group { margin-bottom: 20px; }
-        
-        label { 
-            display: block;
-            margin-bottom: 8px;
-            color: var(--color-black);
-            font-weight: 500;
-            font-size: 14px;
-        }
-        
-        select, input {
-            width: 100%;
-            padding: 10px 12px;
-            border: 1px solid rgba(17, 17, 17, 0.1);
-            border-radius: 8px;
-            font-size: 18px;
-            font-family: 'IBM Plex Sans', sans-serif;
-            background-color: var(--color-white);
-            color: var(--color-black);
-            transition: all 150ms ease;
-        }
-        
-        select:focus, input:focus {
-            outline: none;
-            border-color: var(--color-primary);
-            box-shadow: 0 0 0 3px rgba(237, 87, 45, 0.15);
-        }
-        
-        button {
-            width: 100%;
-            padding: 12px 20px;
-            background: var(--color-primary);
-            color: var(--color-white);
-            border: none;
-            border-radius: 12px;
-            font-size: 18px;
-            font-weight: 500;
-            font-family: 'IBM Plex Sans', sans-serif;
-            cursor: pointer;
-            transition: all 150ms ease;
-        }
-        
-        button:hover:not(:disabled) {
-            transform: translateY(-2px);
-            box-shadow: 0 4px 12px rgba(237, 87, 45, 0.3);
-        }
-        
-        button:active:not(:disabled) {
-            transform: translateY(0);
-        }
-        
-        button:disabled { 
-            opacity: 0.5;
-            cursor: not-allowed;
-        }
-        
-        .message { 
-            padding: 12px 16px;
-            border-radius: 8px;
-            margin-bottom: 20px;
-            white-space: pre-line;
-            font-size: 16px;
-        }
-        
-        .success { 
-            background-color: rgba(4, 96, 43, 0.1);
-            color: var(--color-success);
-            border: 1px solid rgba(4, 96, 43, 0.2);
-        }
-        
-        .error { 
-            background-color: rgba(237, 87, 45, 0.1);
-            color: var(--color-primary);
-            border: 1px solid rgba(237, 87, 45, 0.2);
-        }
-        
-        .info { 
-            background-color: rgba(17, 17, 17, 0.05);
-            color: var(--color-black);
-            border: 1px solid rgba(17, 17, 17, 0.1);
-        }
-    </style>
-</head>
-<body>
-    <div class="container">
-        <h1>Kin Device Setup</h1>
-        <p class="subtitle">Configure your WiFi network to get started</p>
-        <div id="message"></div>
-        <form id="setupForm">
-            <div class="form-group">
-                <label for="ssid">WiFi Network</label>
-                <select id="ssid" name="ssid" required>
-                    <option value="">Scanning...</option>
-                </select>
-            </div>
-            <div class="form-group">
-                <label for="password">WiFi Password</label>
-                <input type="password" id="password" name="password" placeholder="Leave blank if open">
-            </div>
-            <div class="form-group">
-                <label for="pairingCode">Pairing Code (4 digits)</label>
-                <input type="text" id="pairingCode" name="pairingCode" pattern="[0-9]{4}" maxlength="4" placeholder="1234" required>
-            </div>
-            <button type="submit" id="submitBtn">Connect</button>
-        </form>
-    </div>
-    <script>
-        const form = document.getElementById('setupForm');
-        const ssidSelect = document.getElementById('ssid');
-        const messageDiv = document.getElementById('message');
-        const submitBtn = document.getElementById('submitBtn');
-        
-        function showMessage(text, type) {
-            messageDiv.innerHTML = '<div class="message ' + type + '">' + text + '</div>';
-        }
-        
-        function clearMessage() {
-            messageDiv.innerHTML = '';
-        }
-        
-        fetch('/networks')
-            .then(r => r.json())
-            .then(data => {
-                ssidSelect.innerHTML = '<option value="">Select network...</option>';
-                data.networks.forEach(n => {
-                    const opt = document.createElement('option');
-                    opt.value = n.ssid;
-                    opt.textContent = n.ssid + (n.encrypted ? ' 🔒' : '');
-                    ssidSelect.appendChild(opt);
-                });
-            })
-            .catch(e => showMessage('Failed to load networks: ' + e.message, 'error'));
-        
-        let statusPollInterval = null;
-        
-        function pollStatus() {
-            fetch('/status')
-                .then(r => r.json())
-                .then(data => {
-                    if (data.status === 'waiting') {
-                        showMessage(data.message, 'info');
-                    } else if (data.status === 'connecting') {
-                        showMessage('📶 ' + data.message, 'info');
-                    } else if (data.status === 'authenticating') {
-                        showMessage('🔐 ' + data.message, 'info');
-                    } else if (data.status === 'success') {
-                        showMessage('✓ ' + data.message, 'success');
-                        clearInterval(statusPollInterval);
-                        submitBtn.disabled = true;
-                        submitBtn.textContent = 'Setup Complete!';
-                    } else if (data.status === 'error') {
-                        showMessage('✗ ' + data.message + (data.error ? '\\n' + data.error : ''), 'error');
-                        clearInterval(statusPollInterval);
-                        submitBtn.disabled = false;
-                        submitBtn.textContent = 'Connect';
-                    }
-                })
-                .catch(e => console.error('Status poll failed:', e));
-        }
-        
-        form.onsubmit = async (e) => {
-            e.preventDefault();
-            clearMessage();  // Clear any old error messages
-            submitBtn.disabled = true;
-            submitBtn.textContent = 'Submitting...';
-            
-            try {
-                const r = await fetch('/configure', {
-                    method: 'POST',
-                    headers: {'Content-Type': 'application/json'},
-                    body: JSON.stringify({
-                        ssid: form.ssid.value,
-                        password: form.password.value,
-                        pairing_code: form.pairingCode.value
-                    })
-                });
-                const result = await r.json();
-                if (result.success) {
-                    showMessage('Configuration received. Connecting to WiFi...', 'success');
-                    // Start polling for status updates
-                    statusPollInterval = setInterval(pollStatus, 2000);
-                    pollStatus(); // Poll immediately
-                } else {
-                    showMessage('Error: ' + (result.error || 'Failed'), 'error');
-                    submitBtn.disabled = false;
-                    submitBtn.textContent = 'Connect';
-                }
-            } catch(e) {
-                showMessage('Error: ' + e.message, 'error');
-                submitBtn.disabled = false;
-                submitBtn.textContent = 'Connect';
-            }
-        };
-    </script>
-</body>
-</html>
-'''
+class ReuseAddressTCPServer(TCPServer):
+    """TCPServer that sets SO_REUSEADDR before binding"""
+    allow_reuse_address = True
+    
+    def server_bind(self):
+        """Override to set SO_REUSEADDR before binding"""
+        self.socket.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+        super().server_bind()
+
+
+# Path to HTML template file
+TEMPLATE_DIR = Path(__file__).parent / "templates"
+TEMPLATE_FILE = TEMPLATE_DIR / "setup.html"
 
 
 class SetupHTTPServer:
@@ -312,6 +49,18 @@ class SetupHTTPServer:
         self._status_message = "Waiting for WiFi configuration..."
         self._error_details = None
     
+    def _load_template(self) -> str:
+        """Load HTML template from file."""
+        try:
+            with open(TEMPLATE_FILE, 'r', encoding='utf-8') as f:
+                return f.read()
+        except FileNotFoundError:
+            logger.error(f"Template file not found: {TEMPLATE_FILE}")
+            raise
+        except Exception as e:
+            logger.error(f"Error loading template: {e}")
+            raise
+    
     async def start(self, config_callback: Callable[[str, str, str], bool]):
         """
         Start the HTTP server.
@@ -321,6 +70,9 @@ class SetupHTTPServer:
                            Should accept (ssid, password, pairing_code) and return bool.
         """
         self._config_callback = config_callback
+        
+        # Load template once at startup
+        html_template = self._load_template()
         
         # Create request handler class with reference to this instance
         setup_server = self
@@ -339,7 +91,7 @@ class SetupHTTPServer:
                     self.send_response(200)
                     self.send_header('Content-type', 'text/html')
                     self.end_headers()
-                    self.wfile.write(HTML_TEMPLATE.encode())
+                    self.wfile.write(html_template.encode())
                 elif self.path == '/ap-info':
                     logger.debug(f"[HTTP] Serving AP info to {client_ip}")
                     self._handle_ap_info()
@@ -478,24 +230,119 @@ class SetupHTTPServer:
                     logger.error(f"[HTTP] Error handling configuration: {e}", exc_info=True)
                     self._send_json(500, {'success': False, 'error': str(e)})
         
+        # Ensure any existing server is stopped first
+        if self._server:
+            logger.info("[HTTP] Stopping existing server instance...")
+            try:
+                await self.stop()
+                time.sleep(0.5)  # Wait for port to be released
+            except Exception as e:
+                logger.debug(f"[HTTP] Error stopping existing server: {e}")
+        
         # Start server in thread
         logger.info(f"[HTTP] Starting HTTP server on 0.0.0.0:{self.port}")
         logger.info(f"[HTTP] AP SSID: {self.ap_ssid}, Password: {self.ap_password}")
         logger.info(f"[HTTP] WiFi Interface: {self.wifi_interface}")
         
         try:
-            self._server = TCPServer(('', self.port), SetupHandler)
+            # Use SO_REUSEADDR to allow port reuse if previous server didn't clean up properly
+            self._server = ReuseAddressTCPServer(('', self.port), SetupHandler)
             self._server_thread = Thread(target=self._server.serve_forever, daemon=True)
             self._server_thread.start()
             logger.info(f"[HTTP] ✓ HTTP server listening on port {self.port}")
             logger.info(f"[HTTP] Access the setup page at: http://192.168.4.1:{self.port}")
         except OSError as e:
-            if e.errno == 98:  # Address already in use
+            # Handle "Address already in use" error (errno 48 on macOS, 98 on Linux)
+            if e.errno == 48 or e.errno == 98:  # EADDRINUSE
                 logger.error(f"[HTTP] ✗ Port {self.port} is already in use!")
-                logger.error(f"[HTTP] Try: sudo lsof -ti :{self.port} | xargs kill")
+                logger.error(f"[HTTP] Attempting to clean up port {self.port}...")
+                
+                # First, try to stop our own server instance if it exists
+                if self._server:
+                    try:
+                        await self.stop()
+                        time.sleep(1)
+                    except Exception:
+                        pass
+                
+                # Try to kill any process using the port
+                try:
+                    # Get detailed info about what's using the port
+                    info_result = subprocess.run(
+                        ['lsof', '-i', f':{self.port}'],
+                        capture_output=True,
+                        timeout=5,
+                        text=True
+                    )
+                    if info_result.stdout:
+                        logger.info(f"[HTTP] Port {self.port} is being used by:\n{info_result.stdout}")
+                    
+                    # Try lsof to find PIDs
+                    result = subprocess.run(
+                        ['lsof', '-ti', f':{self.port}'],
+                        capture_output=True,
+                        timeout=5,
+                        text=True
+                    )
+                    if result.returncode == 0 and result.stdout:
+                        pids = [pid.strip() for pid in result.stdout.strip().split('\n') if pid.strip()]
+                        logger.info(f"[HTTP] Found {len(pids)} process(es) using port {self.port}: {pids}")
+                        
+                        for pid in pids:
+                            try:
+                                # Try graceful kill first
+                                kill_result = subprocess.run(
+                                    ['kill', pid],
+                                    timeout=5,
+                                    capture_output=True
+                                )
+                                if kill_result.returncode == 0:
+                                    logger.info(f"[HTTP] Sent SIGTERM to process {pid}")
+                                else:
+                                    # Try force kill
+                                    kill9_result = subprocess.run(
+                                        ['kill', '-9', pid],
+                                        timeout=5,
+                                        capture_output=True
+                                    )
+                                    if kill9_result.returncode == 0:
+                                        logger.info(f"[HTTP] Force killed process {pid}")
+                            except Exception as kill_error:
+                                logger.debug(f"[HTTP] Could not kill process {pid}: {kill_error}")
+                        
+                        # Wait longer for port to be released (especially important on macOS)
+                        time.sleep(2)
+                    else:
+                        logger.warning(f"[HTTP] No processes found using port {self.port} (might be in TIME_WAIT state)")
+                        # On macOS, ports can stay in TIME_WAIT for up to 15 seconds
+                        # Wait a bit and try again
+                        time.sleep(2)
+                        
+                except (FileNotFoundError, subprocess.TimeoutExpired, Exception) as cleanup_error:
+                    logger.warning(f"[HTTP] Could not clean up port: {cleanup_error}")
+                    # Still wait a bit in case it's just TIME_WAIT
+                    time.sleep(2)
+                
+                # Try one more time after cleanup
+                try:
+                    self._server = ReuseAddressTCPServer(('', self.port), SetupHandler)
+                    self._server_thread = Thread(target=self._server.serve_forever, daemon=True)
+                    self._server_thread.start()
+                    logger.info(f"[HTTP] ✓ HTTP server listening on port {self.port} (after cleanup)")
+                    logger.info(f"[HTTP] Access the setup page at: http://192.168.4.1:{self.port}")
+                except OSError as retry_error:
+                    logger.error(f"[HTTP] ✗ Still cannot bind to port {self.port} after cleanup")
+                    logger.error(f"[HTTP] Diagnostic commands:")
+                    logger.error(f"[HTTP]   lsof -i :{self.port}")
+                    logger.error(f"[HTTP]   lsof -ti :{self.port} | xargs kill -9")
+                    logger.error(f"[HTTP]   netstat -an | grep {self.port}")
+                    # Ensure _server is None on failure
+                    self._server = None
                 raise
             else:
                 logger.error(f"[HTTP] ✗ Failed to start HTTP server: {e}")
+                # Ensure _server is None on failure
+                self._server = None
                 raise
     
     def set_status(self, status: str, message: str, error: str = None):
@@ -525,11 +372,20 @@ class SetupHTTPServer:
                 loop = asyncio.get_event_loop()
                 await loop.run_in_executor(None, self._server.shutdown)
                 self._server.server_close()
+                
+                # Wait for thread to finish (with timeout)
+                if self._server_thread and self._server_thread.is_alive():
+                    self._server_thread.join(timeout=2.0)
+                    if self._server_thread.is_alive():
+                        logger.warning("[HTTP] Server thread did not stop within timeout")
+                
                 self._server = None
                 self._server_thread = None
                 logger.info("[HTTP] ✓ HTTP server stopped successfully")
             except Exception as e:
                 logger.error(f"[HTTP] Error stopping server: {e}")
+                # Ensure cleanup even on error
+                self._server = None
+                self._server_thread = None
         else:
             logger.debug("[HTTP] Server already stopped")
-

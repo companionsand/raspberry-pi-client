@@ -7,6 +7,16 @@
 
 # Pull Request Rules
 
-- When asked to create a pull request, always generate a diff with the main branch to create the pull request message/description
+- When asked to create a pull request, always generate a diff with the main branch to create the pull request message/description, unless otherwise specified
 - The diff should show the changes between the current branch and the main branch to provide context for reviewers
 
+# Python Environment Rules
+
+- All Python code must run in a `uv` environment
+- Use `uv run` to execute Python scripts (e.g., `uv run main.py`)
+- Use `uv sync` to install dependencies
+- Never use bare `python` or `pip` commands - always use `uv` for Python execution and package management
+
+# Versioning Rules
+
+- Never run commands `git add` or `git commit` yourself. I'll take care of that.
