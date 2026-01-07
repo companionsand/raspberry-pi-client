@@ -233,6 +233,34 @@ raspberry-pi-client/
 - Python 3.11 or higher
 - `uv` package manager (see installation instructions below)
 
+### System Dependencies
+
+The following system packages are required for full functionality:
+
+**On Raspberry Pi / Debian / Ubuntu:**
+```bash
+sudo apt update && sudo apt install -y \
+    mpv \
+    alsa-utils \
+    ffmpeg \
+    python3-usb \
+    git
+```
+
+**On macOS:**
+```bash
+brew install mpv ffmpeg
+```
+
+**Package Descriptions:**
+- **mpv** - Required for music playback (internet radio streaming)
+- **alsa-utils** - ALSA audio utilities (`aplay`, `arecord`, `alsamixer`) for audio device management
+- **ffmpeg** - Audio processing and format conversion (used for voice message generation)
+- **python3-usb** - Python USB library for ReSpeaker hardware control and tuning
+- **git** - Version control (for cloning the repository)
+
+**Note:** If you're running on Raspberry Pi, see the [Raspberry Pi Setup Guide](docs/RASPBERRY_PI_SETUP.md) for complete system setup instructions, including disabling PipeWire/PulseAudio and configuring ALSA.
+
 ### Installing uv
 
 Install `uv` using one of the following methods:
