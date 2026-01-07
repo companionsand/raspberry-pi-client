@@ -7,6 +7,14 @@ connectivity or is unpaired.
 """
 
 from .manager import SetupManager
+from .connectivity import ConnectivityChecker
+from .startup import run_startup_sequence, StartupResult, StartupFailureReason
 
-__all__ = ['SetupManager']
+__all__ = [
+    'SetupManager',
+    'ConnectivityChecker',
+    'run_startup_sequence',
+    'StartupResult',
+    'StartupFailureReason',
+]
 

@@ -40,17 +40,14 @@ logging.basicConfig(
 
 # Import local modules
 from lib.config import Config
-from lib.device_auth import authenticate
 from lib.audio import get_audio_devices, LEDController, VoiceFeedback
 from lib.detection import WakeWordDetector, HumanPresenceDetector
 from lib.agent import OrchestratorClient, ElevenLabsConversationClient, ContextManager
-from lib.music import MusicPlayer
-from lib.music.command_detector import VoiceCommandDetector, MusicCommand
+from lib.music import MusicModeController, update_radio_cache_background
 
 # Import setup module (optional - graceful degradation)
 try:
-    from lib.setup import SetupManager
-    from lib.setup.connectivity import ConnectivityChecker
+    from lib.setup import run_startup_sequence
     SETUP_AVAILABLE = True
 except ImportError as e:
     print(f"⚠️  Setup module not available: {e}")
@@ -251,316 +248,17 @@ class KinClient:
         self.led_controller = LEDController(enabled=led_enabled)
         self.led_controller.set_state(LEDController.STATE_BOOT)
         
-        # Determine if WiFi setup should be skipped
-        # Priority: MAC_MODE → env var (for testing) → cached config → default (false = allow setup)
-        skip_wifi_setup = False  # Default: allow WiFi setup
-        config_source = "default"  # Track where the value came from
+        # Run startup sequence (connectivity check, setup mode, authentication)
+        startup_result = await run_startup_sequence(
+            led_controller=self.led_controller,
+            voice_feedback=self.voice_feedback,
+            user_terminate_flag=self.user_terminate,
+            setup_available=SETUP_AVAILABLE,
+            logger=self.logger
+        )
         
-        # MAC_MODE: Force skip WiFi setup (NetworkManager not available on Mac)
-        if Config.MAC_MODE:
-            skip_wifi_setup = True
-            config_source = "mac_mode"
-            print(f"ℹ️  MAC_MODE: Skipping WiFi setup")
-        # Check env var override first (for testing/debugging)
-        elif os.getenv('SKIP_WIFI_SETUP'):
-            env_skip_wifi = os.getenv('SKIP_WIFI_SETUP')
-            skip_wifi_setup = env_skip_wifi.lower() == 'true'
-            config_source = "env_var"
-            print(f"ℹ️  Using SKIP_WIFI_SETUP from environment: {skip_wifi_setup}")
-        else:
-            # Check cached config from last successful authentication
-            cached_config = Config.load_device_config_cache()
-            if cached_config and cached_config.get("device"):
-                cached_skip = cached_config["device"].get("skip_wifi_setup", "false")
-                skip_wifi_setup = cached_skip.lower() == 'true' if isinstance(cached_skip, str) else bool(cached_skip)
-                config_source = "cached_config"
-                print(f"ℹ️  Using skip_wifi_setup from cached config: {skip_wifi_setup}")
-            else:
-                print(f"ℹ️  No cached config found, using default: skip_wifi_setup={skip_wifi_setup}")
-        
-        # Log final skip_wifi_setup value for monitoring
-        print("=" * 60)
-        print(f"⚙️  SKIP_WIFI_SETUP: {skip_wifi_setup}")
-        print(f"   Setup Mode: {'DISABLED' if skip_wifi_setup else 'ENABLED'}")
-        print(f"   Config Source: {config_source}")
-        print("=" * 60)
-        
-        # Structured log for monitoring/alerting
-        if self.logger:
-            self.logger.info(
-                "skip_wifi_setup_config",
-                extra={
-                    "skip_wifi_setup": skip_wifi_setup,
-                    "wifi_setup_mode": "disabled" if skip_wifi_setup else "enabled",
-                    "config_source": config_source
-                }
-            )
-        
-        pairing_code = None  # Will be set by setup if needed
-        
-        # Setup Mode - only if enabled and available
-        if not skip_wifi_setup and SETUP_AVAILABLE:
-            print("\n📡 Checking connectivity...")
-            
-            connectivity_checker = ConnectivityChecker()
-            has_internet, orchestrator_reachable = await connectivity_checker.check_full_connectivity(
-                orchestrator_retries=3
-            )
-            
-            if not has_internet:
-                print("✗ No internet connection detected")
-                
-                # Play voice feedback
-                if self.voice_feedback:
-                    self.voice_feedback.play("no_internet")
-                
-                # Setup + pairing loop - retry if pairing fails
-                # Note: Setup interface collects both WiFi credentials (for connectivity)
-                # and pairing code (for device-to-user linking). These are conceptually separate.
-                max_setup_attempts = 3
-                setup_attempt = 0
-                authenticated = False
-                
-                while setup_attempt < max_setup_attempts and not authenticated:
-                    setup_attempt += 1
-                    print(f"\n🔧 Entering setup mode (attempt {setup_attempt}/{max_setup_attempts})...")
-                    print("="*60)
-                    print("ℹ️  Note: Setup requires sudo privileges for network management.")
-                    print("   If prompted for a password, enter your Raspberry Pi user password.")
-                    print("="*60)
-                    
-                    # Start setup manager with LED controller and voice feedback
-                    # Pass shutdown flag so setup can respond to CTRL+C
-                    setup_manager = SetupManager(
-                        led_controller=self.led_controller,
-                        voice_feedback=self.voice_feedback,
-                        shutdown_flag=self.user_terminate  # Use same flag for shutdown
-                    )
-                    pairing_code, success = await setup_manager.start_setup_mode()
-                    
-                    if success and pairing_code:
-                        print(f"\n✓ WiFi connected!")
-                        print(f"  Pairing code received: {pairing_code}")
-                        print("="*60)
-                        
-                        # Note: AP is now stopped, user's device has disconnected
-                        # User won't see authentication status on web page
-                        # If auth fails, we'll restart AP so they can see error message
-                        
-                        print("\n🔐 Authenticating with pairing code...")
-                        
-                        auth_result = authenticate(pairing_code=pairing_code)
-                        if auth_result and auth_result.get("success"):
-                            authenticated = True
-                            print("✓ Authentication and pairing successful!")
-                            print("  Device is now paired and starting...")
-                            
-                            # Update LED controller with backend config
-                            if self.led_controller:
-                                self.led_controller.enabled = Config.LED_ENABLED
-                            
-                            # Clean up (HTTP server already stopped during WiFi switch)
-                            try:
-                                await setup_manager.http_server.stop()
-                            except:
-                                pass
-                        else:
-                            print("\n✗ Authentication or pairing failed")
-                            if setup_attempt < max_setup_attempts:
-                                print("  Possible reasons:")
-                                print("    - Incorrect pairing code")
-                                print("    - Pairing code expired or already used")
-                                print("    - Device not registered in admin portal")
-                                print("    - Backend service temporarily unavailable")
-                                print(f"\n  Cleaning up and restarting setup mode...")
-                                
-                                # CRITICAL: Must delete WiFi connection, otherwise device gets stuck
-                                # If WiFi stays connected, main loop won't re-enter setup mode
-                                # But device isn't authenticated, so can't start normal operation
-                                # Result: Deadlock!
-                                if setup_manager._wifi_credentials:
-                                    failed_ssid = setup_manager._wifi_credentials[0]
-                                    print(f"  Deleting WiFi connection: {failed_ssid}")
-                                    try:
-                                        import subprocess
-                                        subprocess.run(['sudo', 'nmcli', 'connection', 'delete', failed_ssid], 
-                                                     capture_output=True, timeout=5)
-                                    except Exception as e:
-                                        print(f"  Warning: Could not delete connection: {e}")
-                                
-                                # Clear credentials from manager so setup starts fresh
-                                setup_manager._wifi_credentials = None
-                                setup_manager._pairing_code = None
-                                
-                                print(f"  Please reconnect to Kin_Setup and try again")
-                                await asyncio.sleep(3)
-                            else:
-                                print(f"  Max attempts ({max_setup_attempts}) reached")
-                                await asyncio.sleep(3)
-                    else:
-                        print("\n✗ Setup failed")
-                        # Clean up HTTP server if it's still running
-                        try:
-                            await setup_manager.http_server.stop()
-                        except:
-                            pass
-                        
-                        if setup_attempt < max_setup_attempts:
-                            print(f"  Retrying... (attempt {setup_attempt + 1}/{max_setup_attempts})")
-                            await asyncio.sleep(3)
-                
-                if not authenticated:
-                    print("\n✗ Setup and authentication failed after all attempts")
-                    print("  Device will retry on next boot")
-                    print("="*60)
-                    return
-            else:
-                print("✓ Internet connection confirmed")
-                if not orchestrator_reachable:
-                    print("⚠ Warning: Orchestrator is unreachable")
-                    print("  This may be due to:")
-                    print("    - Orchestrator service is down")
-                    print("    - Network/firewall issues")
-                    print("    - Incorrect orchestrator URL")
-                    print("  Device will continue but may have limited functionality")
-                
-                # Try to authenticate without pairing code (device might already be paired)
-                auth_result = authenticate()
-                
-                if not auth_result or not auth_result.get("success"):
-                    # Authentication failed - check the reason
-                    reason = auth_result.get("reason") if auth_result else "unknown"
-                    
-                    if reason == "unpaired":
-                        # Device is authenticated but not paired - enter setup mode to collect pairing code
-                        # Note: Device already has internet, so WiFi setup is not needed for connectivity.
-                        # Setup manager will detect internet and skip WiFi/sudo setup automatically.
-                        print("⚠️  Device is not paired with a user")
-                        print("   Entering pairing mode to collect pairing code...")
-                        print("   Note: Device already has internet - no WiFi setup needed (no sudo required)")
-                        
-                        # Play voice feedback
-                        if self.voice_feedback:
-                            self.voice_feedback.play("device_not_paired")
-                        
-                        # Setup + pairing loop
-                        max_setup_attempts = 3
-                        setup_attempt = 0
-                        authenticated = False
-                        
-                        while setup_attempt < max_setup_attempts and not authenticated:
-                            setup_attempt += 1
-                            print(f"\n🔧 Entering pairing mode (attempt {setup_attempt}/{max_setup_attempts})...")
-                            print("="*60)
-                            print("ℹ️  Note: Pairing mode uses existing network connection.")
-                            print("   No sudo password required - device already has internet.")
-                            print("="*60)
-                            
-                            # Start setup manager with LED controller and voice feedback
-                            # Pass shutdown flag so setup can respond to CTRL+C
-                            setup_manager = SetupManager(
-                                led_controller=self.led_controller,
-                                voice_feedback=self.voice_feedback,
-                                shutdown_flag=self.user_terminate  # Use same flag for shutdown
-                            )
-                            pairing_code, success = await setup_manager.start_setup_mode()
-                            
-                            if success and pairing_code:
-                                print(f"\n✓ Setup complete!")
-                                print(f"  Pairing code received: {pairing_code}")
-                                print("="*60)
-                                
-                                print("\n🔐 Authenticating with pairing code...")
-                                
-                                pair_result = authenticate(pairing_code=pairing_code)
-                                if pair_result and pair_result.get("success"):
-                                    authenticated = True
-                                    print("✓ Authentication and pairing successful!")
-                                    print("  Device is now paired and starting...")
-                                    
-                                    # Update LED controller with backend config
-                                    if self.led_controller:
-                                        self.led_controller.enabled = Config.LED_ENABLED
-                                    
-                                    # Clean up
-                                    try:
-                                        await setup_manager.http_server.stop()
-                                    except:
-                                        pass
-                                else:
-                                    print("✗ Authentication failed with pairing code")
-                                    print("  Please verify the pairing code is correct")
-                                    
-                                    # Clean up before retry
-                                    try:
-                                        await setup_manager.http_server.stop()
-                                    except:
-                                        pass
-                                    
-                                    if setup_attempt < max_setup_attempts:
-                                        print("  Possible reasons:")
-                                        print("    - Incorrect pairing code")
-                                        print("    - Pairing code expired or already used")
-                                        print("    - Device not registered in admin portal")
-                                        print(f"\n  Cleaning up and restarting setup mode...")
-                                        
-                                        # Delete WiFi connection to prevent device from getting stuck
-                                        if setup_manager._wifi_credentials:
-                                            failed_ssid = setup_manager._wifi_credentials[0]
-                                            print(f"  Deleting WiFi connection: {failed_ssid}")
-                                            try:
-                                                import subprocess
-                                                subprocess.run(['sudo', 'nmcli', 'connection', 'delete', failed_ssid], 
-                                                             capture_output=True, timeout=5)
-                                            except Exception as e:
-                                                print(f"  Warning: Could not delete connection: {e}")
-                                        
-                                        # Clear credentials from manager so setup starts fresh
-                                        setup_manager._wifi_credentials = None
-                                        setup_manager._pairing_code = None
-                                        
-                                        print(f"  Please reconnect to Kin_Setup and try again")
-                                        await asyncio.sleep(3)
-                            else:
-                                print("✗ Setup failed or cancelled")
-                                
-                                # Clean up
-                                try:
-                                    await setup_manager.http_server.stop()
-                                except:
-                                    pass
-                                
-                                if setup_attempt < max_setup_attempts:
-                                    print(f"  Retrying... (attempt {setup_attempt + 1}/{max_setup_attempts})")
-                                    await asyncio.sleep(3)
-                        
-                        if not authenticated:
-                            print("\n✗ Setup and authentication failed after all attempts")
-                            print("  Device will retry on next boot")
-                            print("="*60)
-                            return
-                    else:
-                        # Other authentication error (not unpaired) - exit with error
-                        print(f"✗ Failed to authenticate device (reason: {reason})")
-                        return
-                else:
-                    # Authentication successful, device is already paired
-                    print("✓ Device authenticated and paired")
-                    
-                    # Update LED controller with backend config
-                    if self.led_controller:
-                        self.led_controller.enabled = Config.LED_ENABLED
-        else:
-            # Setup skipped, authenticate normally
-            auth_result = authenticate()
-            if not auth_result or not auth_result.get("success"):
-                reason = auth_result.get("reason") if auth_result else "unknown"
-                print(f"✗ Failed to authenticate device (reason: {reason})")
-                return
-            
-            # Update LED controller with backend config
-            if self.led_controller:
-                self.led_controller.enabled = Config.LED_ENABLED
+        if not startup_result.success:
+            return
         
         # LED controller already initialized before setup
         # Keep boot state while initializing remaining components
@@ -661,7 +359,7 @@ class KinClient:
             add_span_event("orchestrator_connected", device_id=Config.DEVICE_ID)
         
         # Update radio cache in background (don't wait for it)
-        asyncio.create_task(self._update_radio_cache_background())
+        asyncio.create_task(update_radio_cache_background(logger=self.logger))
         
         # Start wake word detection
         self.wake_detector.start()
@@ -961,195 +659,16 @@ class KinClient:
             # For reactive conversations, we're already in the trace context from _handle_conversation
             await _execute_conversation()
     
-    async def _update_radio_cache_background(self):
-        """
-        Update radio station cache in the background on startup.
-        
-        Fetches stations from Radio Browser API, verifies they're working,
-        and saves to ~/.kin_radio_cache.json for faster music playback.
-        """
-        try:
-            from lib.music.radio_browser import RadioBrowserClient, verify_stream
-            import json
-            
-            CACHE_FILE = os.path.expanduser("~/.kin_radio_cache.json")
-            GENRES = ["jazz", "classical", "rock", "pop", "country", "blues", "electronic", "ambient", "folk", "soul"]
-            STATIONS_PER_GENRE = 10  # Fewer since we're verifying
-            VERIFY_TIMEOUT = 2.0
-            
-            print("📻 Updating radio station cache (background)...")
-            
-            def fetch_cache():
-                client = RadioBrowserClient()
-                cache = {}
-                
-                # Fetch popular stations (skip verification - high-vote = likely working)
-                try:
-                    popular = client.get_top_stations(limit=30)
-                    cache["popular"] = [s.to_dict() for s in popular[:20]]
-                except Exception as e:
-                    print(f"   ⚠️ Failed to fetch popular stations: {e}")
-                    cache["popular"] = []
-                
-                # Fetch by genre with verification
-                for genre in GENRES:
-                    try:
-                        stations = client.search_by_tag(genre, limit=50)
-                        verified = []
-                        for station in stations:
-                            if verify_stream(station.url, timeout=VERIFY_TIMEOUT):
-                                verified.append(station.to_dict())
-                                if len(verified) >= STATIONS_PER_GENRE:
-                                    break
-                        cache[genre] = verified
-                    except Exception:
-                        cache[genre] = []
-                
-                # Save cache
-                with open(CACHE_FILE, 'w') as f:
-                    json.dump(cache, f, indent=2)
-                
-                total = sum(len(v) for v in cache.values())
-                return total
-            
-            loop = asyncio.get_event_loop()
-            total = await loop.run_in_executor(None, fetch_cache)
-            print(f"   ✓ Radio cache updated: {total} verified stations")
-            
-            if self.logger:
-                self.logger.info(
-                    "radio_cache_updated",
-                    extra={
-                        "total_stations": total,
-                        "device_id": Config.DEVICE_ID
-                    }
-                )
-            
-        except Exception as e:
-            print(f"   ⚠️ Radio cache update failed (non-fatal): {e}")
-            if self.logger:
-                self.logger.warning(
-                    "radio_cache_update_failed",
-                    extra={
-                        "error": str(e),
-                        "device_id": Config.DEVICE_ID
-                    }
-                )
-    
     async def _run_music_mode(self):
-        """
-        Run music playback mode with voice command control.
-        
-        This method:
-        1. Starts the music player (mpv)
-        2. Starts voice command detector
-        3. Handles commands: stop, pause, resume, volume up, volume down
-        4. Returns to wake word mode when "stop" is detected
-        """
-        music_player = None
-        voice_detector = None
-        
-        try:
-            # Set LED to indicate music mode (could add a music-specific state)
-            self.led_controller.set_state(LEDController.STATE_IDLE)
-            
-            # Start music player
-            music_player = MusicPlayer(speaker_device_index=self.speaker_device_index)
-            
-            # Get requested genre (if any)
-            genre = getattr(self, '_requested_music_genre', None)
-            
-            # Play by genre or default
-            if genre:
-                success = music_player.play_genre(genre)
-                if not success:
-                    print(f"⚠️ Genre '{genre}' not found, falling back to default")
-                    success = music_player.play_default()
-            else:
-                success = music_player.play_default()
-            
-            if not success:
-                print("✗ Failed to start music player")
-                if self.logger:
-                    self.logger.error(
-                        "music_player_start_failed",
-                        extra={
-                            "genre": genre,
-                            "user_id": Config.USER_ID,
-                            "device_id": Config.DEVICE_ID
-                        }
-                    )
-                return
-            
-            if self.logger:
-                self.logger.info(
-                    "music_mode_started",
-                    extra={
-                        "genre": genre,
-                        "station": music_player.current_station.name if music_player.current_station else None,
-                        "user_id": Config.USER_ID,
-                        "device_id": Config.DEVICE_ID
-                    }
-                )
-            
-            # Define command handler
-            def handle_command(command: MusicCommand):
-                """Handle voice commands for music control."""
-                if command == MusicCommand.PAUSE:
-                    music_player.pause()
-                elif command == MusicCommand.RESUME:
-                    music_player.resume()
-                elif command == MusicCommand.VOLUME_UP:
-                    music_player.volume_up()
-                elif command == MusicCommand.VOLUME_DOWN:
-                    music_player.volume_down()
-                # STOP is handled by detector returning
-            
-            # Start voice command detector
-            voice_detector = VoiceCommandDetector(
-                mic_device_index=self.mic_device_index,
-                on_command=handle_command
-            )
-            
-            # Run detector until STOP command
-            # The detector blocks until "stop" is detected or an error occurs
-            final_command = await voice_detector.start()
-            
-            if final_command == MusicCommand.STOP:
-                print("\n🛑 Stop command detected - exiting music mode")
-            else:
-                print("\n📻 Music mode ended")
-            
-        except Exception as e:
-            print(f"⚠️  Music mode error: {e}")
-            if self.logger:
-                self.logger.error(
-                    "music_mode_error",
-                    extra={
-                        "error": str(e),
-                        "user_id": Config.USER_ID,
-                        "device_id": Config.DEVICE_ID
-                    }
-                )
-        
-        finally:
-            # Clean up
-            if music_player:
-                music_player.stop()
-            
-            if voice_detector:
-                voice_detector.stop()
-            
-            if self.logger:
-                self.logger.info(
-                    "music_mode_ended",
-                    extra={
-                        "user_id": Config.USER_ID,
-                        "device_id": Config.DEVICE_ID
-                    }
-                )
-            
-            print("✓ Returning to wake word mode")
+        """Run music playback mode with voice command control."""
+        genre = getattr(self, '_requested_music_genre', None)
+        controller = MusicModeController(
+            mic_device_index=self.mic_device_index,
+            speaker_device_index=self.speaker_device_index,
+            led_controller=self.led_controller,
+            logger=self.logger
+        )
+        await controller.run(genre=genre)
     
     async def _handle_orchestrator_message(self, message: dict):
         """Handle messages from conversation-orchestrator"""
