@@ -1,19 +1,22 @@
-"""Wake word detection using Porcupine with Silero VAD gating"""
+"""Wake word detection using Porcupine with Silero VAD gating.
 
-import os
-import io
-import time
+Now uses AudioManager for unified audio handling with WebRTC AEC support.
+"""
+
 import asyncio
 import base64
-from collections import deque
-from difflib import SequenceMatcher
-from datetime import datetime, timezone
-from typing import Optional
+import io
+import os
+import time
 import wave
-import pvporcupine
-import sounddevice as sd
+from collections import deque
+from datetime import datetime, timezone
+from difflib import SequenceMatcher
+from typing import TYPE_CHECKING, Optional
+
 import numpy as np
 import onnxruntime as ort
+import pvporcupine
 from elevenlabs import (
     AudioFormat,
     CommitStrategy,
@@ -21,7 +24,11 @@ from elevenlabs import (
     RealtimeAudioOptions,
 )
 from elevenlabs.realtime.connection import RealtimeEvents
+
 from lib.config import Config
+
+if TYPE_CHECKING:
+    from lib.audio.manager import AudioManager
 
 # Import telemetry (optional - graceful fallback if not available)
 try:
@@ -32,26 +39,44 @@ except ImportError:
 
 
 class WakeWordDetector:
-    """Porcupine-based wake word detection with telemetry"""
+    """Porcupine-based wake word detection with telemetry.
     
-    def __init__(self, mic_device_index=None, orchestrator_client=None, presence_detector=None):
+    Now receives AEC-processed audio from AudioManager instead of
+    managing its own audio stream.
+    """
+    
+    def __init__(
+        self,
+        audio_manager: "AudioManager",
+        orchestrator_client=None,
+        presence_detector=None
+    ):
         """
         Initialize wake word detector.
         
         Args:
-            mic_device_index: Audio device index for microphone (None for default)
+            audio_manager: AudioManager for receiving AEC-processed audio
             orchestrator_client: OrchestratorClient for sending detection data (optional)
             presence_detector: HumanPresenceDetector to share audio with (optional)
         """
+        self._audio_manager = audio_manager
         self.porcupine = None
-        self.audio_stream = None
         self.detected = False
         self.running = False
-        self.mic_device_index = mic_device_index
         self.orchestrator_client = orchestrator_client
         self.presence_detector = presence_detector
         self.logger = Config.LOGGER
-        self._use_respeaker_aec = False  # Set to True in start() if ReSpeaker detected
+        
+        # Audio callback state
+        self._audio_callback_registered = False
+        
+        # -------------------------------------------------------------------------
+        # Porcupine frame buffering
+        # -------------------------------------------------------------------------
+        # AudioManager sends 320-sample chunks, but Porcupine needs 512-sample frames
+        # Buffer incoming chunks until we have enough for Porcupine
+        self._porcupine_buffer = np.array([], dtype=np.int16)
+        self._porcupine_frame_length = None  # Will be set when Porcupine is initialized
         
         # -------------------------------------------------------------------------
         # Silero VAD Gate - Reduces false positives by only processing speech
@@ -337,7 +362,7 @@ class WakeWordDetector:
                 )
     
     def start(self):
-        """Initialize Porcupine and start listening"""
+        """Initialize Porcupine and start listening via AudioManager"""
         if self.running:
             return
 
@@ -346,6 +371,8 @@ class WakeWordDetector:
 
         print(f"\n🎤 Initializing wake word detection...")
         print(f"   Wake word: '{Config.WAKE_WORD}'")
+        aec_mode = "WebRTC AEC" if self._audio_manager.has_webrtc_aec else "Hardware AEC"
+        print(f"   Audio: via AudioManager ({aec_mode})")
         
         try:
             # Initialize Porcupine with built-in keyword
@@ -355,57 +382,16 @@ class WakeWordDetector:
                 sensitivities=[0.7]  # 0.0 (least sensitive) to 1.0 (most sensitive)
             )
             
-            # Query devices for logging and error messages
-            devices = sd.query_devices()
-            
-            # Log device being used
-            if self.mic_device_index is not None:
-                dev = devices[self.mic_device_index]
-                print(f"   Using microphone: {dev['name']} (index {self.mic_device_index})")
-            else:
-                print(f"   Using default microphone")
-            
             print(f"   Required sample rate: {self.porcupine.sample_rate} Hz")
+            print(f"   Frame length: {self.porcupine.frame_length} samples")
             
-            # -------------------------------------------------------------------------
-            # Detect ReSpeaker for 6-channel AEC extraction
-            # -------------------------------------------------------------------------
-            # Check if input device supports 6 channels (ReSpeaker 4-Mic Array)
-            # If so, open all 6 channels and extract Ch0 (AEC-processed) in callback
-            input_channels = Config.CHANNELS  # Default to mono
+            # Store Porcupine frame length for buffering
+            self._porcupine_frame_length = self.porcupine.frame_length
             
-            try:
-                # Find the input device we'll use
-                if self.mic_device_index is not None:
-                    input_dev = devices[self.mic_device_index]
-                else:
-                    # Using default - check all devices for ReSpeaker
-                    input_dev = None
-                    for dev in devices:
-                        if any(kw in dev['name'].lower() for kw in ['respeaker', 'arrayuac10', 'uac1.0']):
-                            if dev['max_input_channels'] >= Config.RESPEAKER_CHANNELS:
-                                input_dev = dev
-                                break
-                
-                # Check if ReSpeaker with 6 channels
-                if input_dev and input_dev['max_input_channels'] >= Config.RESPEAKER_CHANNELS:
-                    self._use_respeaker_aec = True
-                    input_channels = Config.RESPEAKER_CHANNELS
-                    print(f"   ✓ ReSpeaker AEC: Opening {input_channels} channels, extracting Ch{Config.RESPEAKER_AEC_CHANNEL} (AEC-processed)")
-            except Exception as e:
-                print(f"   ⚠ Could not detect ReSpeaker channels: {e}")
+            # Register callback with AudioManager to receive AEC-processed audio
+            self._audio_manager.register_consumer(self._audio_callback)
+            self._audio_callback_registered = True
             
-            # Start audio stream for wake word detection
-            self.audio_stream = sd.InputStream(
-                device=self.mic_device_index,
-                channels=input_channels,
-                samplerate=self.porcupine.sample_rate,
-                blocksize=self.porcupine.frame_length,
-                dtype='int16',
-                callback=self._audio_callback
-            )
-            
-            self.audio_stream.start()
             self.running = True
             print(f"✓ Listening for wake word...")
             
@@ -414,52 +400,12 @@ class WakeWordDetector:
                     "listening_for_wake_word",
                     extra={
                         "wake_word": Config.WAKE_WORD,
+                        "has_webrtc_aec": self._audio_manager.has_webrtc_aec,
                         "user_id": Config.USER_ID,
                         "device_id": Config.DEVICE_ID
                     }
                 )
-        except sd.PortAudioError as e:
-            # Handle audio device errors with helpful message
-            error_msg = str(e)
-            if "Invalid sample rate" in error_msg or "paInvalidSampleRate" in error_msg:
-                # Get device name for error message
-                try:
-                    device_name = devices[self.mic_device_index]['name'] if self.mic_device_index is not None else 'default'
-                except:
-                    device_name = f"index {self.mic_device_index}" if self.mic_device_index is not None else "default"
                 
-                print(f"\n✗ ERROR: Microphone doesn't support required sample rate")
-                print(f"   Required: {self.porcupine.sample_rate} Hz (Porcupine requirement)")
-                print(f"   Device: {device_name}")
-                print(f"\n   Solutions:")
-                print(f"   1. Use a different USB microphone that supports 16kHz")
-                print(f"   2. Use ReSpeaker 4 Mic Array (recommended - has hardware AEC)")
-                print(f"   3. Check device supported rates with: python -m sounddevice")
-                
-                if self.logger:
-                    self.logger.error(
-                        "wake_word_unsupported_sample_rate",
-                        extra={
-                            "error": error_msg,
-                            "required_rate": self.porcupine.sample_rate,
-                            "device_index": self.mic_device_index,
-                            "user_id": Config.USER_ID
-                        }
-                    )
-            else:
-                print(f"\n✗ ERROR: Audio device error: {error_msg}")
-                if self.logger:
-                    self.logger.error(
-                        "wake_word_audio_device_error",
-                        extra={
-                            "error": error_msg,
-                            "user_id": Config.USER_ID
-                        },
-                        exc_info=True
-                    )
-            
-            self.stop()
-            raise
         except Exception as e:
             # Ensure partially-initialized resources are cleaned up
             if self.logger:
@@ -474,20 +420,21 @@ class WakeWordDetector:
             self.stop()
             raise
         
-    def _audio_callback(self, indata, frames, time_info, status):
-        """Process audio frames for wake word detection with VAD gating"""
-        if status:
-            print(f"⚠ Audio status: {status}")
+    def _audio_callback(self, audio_frame: np.ndarray):
+        """Process audio frames for wake word detection with VAD gating.
         
-        # -------------------------------------------------------------------------
-        # ReSpeaker AEC: Extract Channel 0 (AEC-processed audio)
-        # -------------------------------------------------------------------------
-        # If using ReSpeaker with 6 channels, extract only Ch0 (echo-cancelled)
-        if self._use_respeaker_aec and indata.ndim == 2 and indata.shape[1] >= Config.RESPEAKER_CHANNELS:
-            audio_frame = indata[:, Config.RESPEAKER_AEC_CHANNEL].astype(np.int16)
-        else:
-            # Standard mono input or fallback
-            audio_frame = indata[:, 0].astype(np.int16)
+        Called by AudioManager with AEC-processed mono int16 audio.
+        
+        Args:
+            audio_frame: Mono int16 audio samples from AudioManager
+        """
+        if not self.running:
+            return
+        
+        # Ensure correct dtype and shape
+        if audio_frame.ndim > 1:
+            audio_frame = audio_frame.flatten()
+        audio_frame = audio_frame.astype(np.int16)
         
         # -------------------------------------------------------------------------
         # Share audio with presence detector (if configured)
@@ -563,15 +510,36 @@ class WakeWordDetector:
                 print("⚠ VAD gate DISABLED - Porcupine processing ALL audio (higher false positive risk)")
         
         # -------------------------------------------------------------------------
-        # Ring buffer: Store VAD-passed audio for Scribe verification
+        # Buffer audio for Porcupine (needs 512 samples, AudioManager sends 320)
         # -------------------------------------------------------------------------
-        # Store a copy of the frame (avoid reference issues)
-        self._ring_buffer.append(audio_frame.copy())
+        # Skip if Porcupine not initialized yet
+        if self.porcupine is None or self._porcupine_frame_length is None:
+            return
         
-        # -------------------------------------------------------------------------
-        # Porcupine: Check for wake word (only if VAD passed or VAD disabled)
-        # -------------------------------------------------------------------------
-        keyword_index = self.porcupine.process(audio_frame)
+        # Add incoming chunk to buffer
+        self._porcupine_buffer = np.concatenate([self._porcupine_buffer, audio_frame])
+        
+        # Process complete Porcupine frames from buffer
+        keyword_index = -1  # Initialize to no detection
+        while len(self._porcupine_buffer) >= self._porcupine_frame_length:
+            # Extract one Porcupine frame
+            porcupine_frame = self._porcupine_buffer[:self._porcupine_frame_length].copy()
+            self._porcupine_buffer = self._porcupine_buffer[self._porcupine_frame_length:]
+            
+            # -------------------------------------------------------------------------
+            # Ring buffer: Store VAD-passed audio for Scribe verification
+            # -------------------------------------------------------------------------
+            # Store a copy of the frame (avoid reference issues)
+            self._ring_buffer.append(porcupine_frame.copy())
+            
+            # -------------------------------------------------------------------------
+            # Porcupine: Check for wake word (only if VAD passed or VAD disabled)
+            # -------------------------------------------------------------------------
+            keyword_index = self.porcupine.process(porcupine_frame)
+            
+            # If wake word detected, break out of loop to process it
+            if keyword_index >= 0:
+                break
         
         if keyword_index >= 0:
             print(f"\n🎯 Wake word '{Config.WAKE_WORD}' detected by Porcupine! (VAD passed)")
@@ -976,16 +944,24 @@ class WakeWordDetector:
     
     def stop(self):
         """Stop wake word detection"""
-        if self.audio_stream:
-            self.audio_stream.stop()
-            self.audio_stream.close()
-            self.audio_stream = None
+        self.running = False
         
+        # Unregister from AudioManager
+        if self._audio_callback_registered:
+            try:
+                self._audio_manager.unregister_consumer(self._audio_callback)
+            except Exception:
+                pass
+            self._audio_callback_registered = False
+        
+        # Clean up Porcupine
         if self.porcupine:
             self.porcupine.delete()
             self.porcupine = None
         
-        self.running = False
+        # Reset buffer
+        self._porcupine_buffer = np.array([], dtype=np.int16)
+        self._porcupine_frame_length = None
         
         # Scribe verification stats logging intentionally suppressed
     

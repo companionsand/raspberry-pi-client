@@ -9,14 +9,18 @@ Handles music playback mode with voice command control:
 Also provides radio cache management for faster station lookups.
 """
 
-import os
-import json
 import asyncio
-from typing import Optional
+import json
+import os
+from typing import TYPE_CHECKING, Optional
 
 from lib.config import Config
+
+from .command_detector import MusicCommand, VoiceCommandDetector
 from .player import MusicPlayer
-from .command_detector import VoiceCommandDetector, MusicCommand
+
+if TYPE_CHECKING:
+    from lib.audio.manager import AudioManager
 
 
 # Cache configuration
@@ -39,8 +43,8 @@ class MusicModeController:
     
     def __init__(
         self,
-        mic_device_index: Optional[int],
-        speaker_device_index: Optional[int],
+        audio_manager: "AudioManager",
+        speaker_device_index: Optional[int] = None,
         led_controller=None,
         logger=None
     ):
@@ -48,12 +52,12 @@ class MusicModeController:
         Initialize the music mode controller.
         
         Args:
-            mic_device_index: ALSA device index for microphone
-            speaker_device_index: ALSA device index for speaker
+            audio_manager: AudioManager for voice command detection (with AEC)
+            speaker_device_index: ALSA device index for speaker (for mpv)
             led_controller: Optional LED controller for visual feedback
             logger: Optional logger for structured logging
         """
-        self.mic_device_index = mic_device_index
+        self._audio_manager = audio_manager
         self.speaker_device_index = speaker_device_index
         self.led_controller = led_controller
         self.logger = logger
@@ -131,9 +135,9 @@ class MusicModeController:
                     self._music_player.volume_down()
                 # STOP is handled by detector returning
             
-            # Start voice command detector
+            # Start voice command detector (uses AudioManager for AEC-processed audio)
             self._voice_detector = VoiceCommandDetector(
-                mic_device_index=self.mic_device_index,
+                audio_manager=self._audio_manager,
                 on_command=handle_command
             )
             

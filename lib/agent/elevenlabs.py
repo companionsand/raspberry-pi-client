@@ -1,64 +1,60 @@
-"""ElevenLabs conversation client with telemetry"""
+"""ElevenLabs conversation client with telemetry.
 
-import json
-import base64
+Now uses AudioManager for unified audio handling with WebRTC AEC support.
+"""
+
 import asyncio
+import base64
+import json
+import os
+import ssl
 import time
 import uuid
-import ssl
-import os
-import websockets
+from typing import TYPE_CHECKING, Any, Dict, Optional
+
 import certifi
-import sounddevice as sd
 import numpy as np
 import onnxruntime as ort
-import queue
+import websockets
 from scipy import signal
-from typing import Optional, Dict, Any
-from lib.config import Config
-from lib.agent.orchestrator import OrchestratorClient
-from lib.agent.context import ContextManager
 
-# WebRTC AEC (optional feature; we still try to import so logs can say "available" vs "missing")
-WEBRTC_AEC_IMPORT_ERROR = None
-try:
-    from lib.audio.webrtc_aec import WebRTCAECProcessor
-    WEBRTC_AEC_AVAILABLE = True
-except Exception as e:
-    WebRTCAECProcessor = None  # type: ignore
-    WEBRTC_AEC_AVAILABLE = False
-    WEBRTC_AEC_IMPORT_ERROR = str(e)
+from lib.agent.context import ContextManager
+from lib.agent.orchestrator import OrchestratorClient
+from lib.config import Config
+
+if TYPE_CHECKING:
+    from lib.audio.manager import AudioManager
 
 
 class ElevenLabsConversationClient:
-    """WebSocket-based conversation client for ElevenLabs with full telemetry"""
+    """WebSocket-based conversation client for ElevenLabs with full telemetry.
     
-    def __init__(self, web_socket_url: str, agent_id: str, 
-                 mic_device_index=None, speaker_device_index=None,
-                 user_terminate_flag=None, led_controller=None):
+    Now uses AudioManager for unified audio handling with AEC support.
+    """
+    
+    def __init__(
+        self,
+        web_socket_url: str,
+        agent_id: str,
+        audio_manager: "AudioManager",
+        user_terminate_flag=None,
+        led_controller=None
+    ):
         """
         Initialize ElevenLabs conversation client.
         
         Args:
             web_socket_url: ElevenLabs WebSocket URL
             agent_id: Agent ID for this conversation
-            mic_device_index: Microphone device index (None for default)
-            speaker_device_index: Speaker device index (None for default)
+            audio_manager: AudioManager for audio input/output with AEC
             user_terminate_flag: Mutable flag [False] for user termination
             led_controller: LEDController instance for visual feedback (optional)
         """
         self.web_socket_url = web_socket_url
         self.agent_id = agent_id
-        self.mic_device_index = mic_device_index
-        self.speaker_device_index = speaker_device_index
+        self._audio_manager = audio_manager
         self.websocket = None
-        self.input_stream = None  # Microphone input stream
-        self.output_stream = None  # Speaker output stream (separate for instant abort)
-        self.stream = None  # Duplex stream for ReSpeaker (input_stream/output_stream alias to this)
         self.running = False
-        self._use_respeaker_aec = False  # Set to True in start() if ReSpeaker detected
-        self._aec_debug_last_log = 0  # Timestamp for periodic AEC debug logging
-        self._webrtc_debug_last_log = 0  # Timestamp for WebRTC AEC debug logging
         self.conversation_id = str(uuid.uuid4())
         self.elevenlabs_conversation_id = None
         self.end_reason = "normal"
@@ -66,6 +62,9 @@ class ElevenLabsConversationClient:
         self.user_terminate_flag = user_terminate_flag  # Reference to shared flag
         self.led_controller = led_controller  # LED controller for visual feedback
         self.logger = Config.LOGGER
+        
+        # Audio input queue (filled by AudioManager callback)
+        self._input_queue: asyncio.Queue = None
         
         # -------------------------------------------------------------------------
         # Silero VAD (Voice Activity Detection) - Local silence detection via ONNX
@@ -104,10 +103,6 @@ class ElevenLabsConversationClient:
         # The client just needs to stop playback and clear the queue when interrupted.
         self.audio_queue = asyncio.Queue()  # Queue for agent audio chunks
         self.playback_active = False  # Flag to stop current audio playback
-        # Callback mode queues (only used when ReSpeaker AEC is active)
-        self._input_queue = None   # Filled by PortAudio callback with mic frames
-        self._output_queue = None  # Consumed by PortAudio callback for playback
-        self._callback_remainder = None  # Store partial chunk for next callback
         
         # Dynamic VAD threshold: stricter during agent playback to filter echo
         # Normal threshold: 0.5 (sensitive, catches user speech quickly)
@@ -125,19 +120,14 @@ class ElevenLabsConversationClient:
         # Track conversation start time for status logging
         self._conversation_start_time = None
         
+        # Debug logging
+        self._aec_debug_last_log = 0
+        
         # ElevenLabs audio sample rate - detect from metadata or assume 16kHz (same as playback)
         # If audio sounds robotic/slow, ElevenLabs may be sending 24kHz - enable resampling
         self._elevenlabs_sample_rate = None  # Will be detected from metadata or default to 16kHz
         self._playback_sample_rate = Config.SAMPLE_RATE  # 16kHz for ReSpeaker
         self._resampling_enabled = False  # Disable by default - enable if audio sounds wrong
-        
-        # -------------------------------------------------------------------------
-        # WebRTC AEC3 (Advanced Echo Cancellation) - Optional Software AEC
-        # -------------------------------------------------------------------------
-        # WebRTC AEC provides superior echo cancellation beyond hardware AEC
-        # Uses Ch0 (beamformed mic) + Ch5 (playback loopback) for adaptive filtering
-        self.webrtc_aec_processor = None  # Initialized in start() if enabled
-        self._use_webrtc_aec = False  # Set to True in start() if WebRTC AEC is enabled and available
         
         # -------------------------------------------------------------------------
         # Client Tools - Music playback triggers conversation end
@@ -147,292 +137,41 @@ class ElevenLabsConversationClient:
         self._music_mode_requested = False  # Set True when play_music tool is called
         self._music_genre = None  # Genre requested for music playback (from tool parameters)
         
-        # Agent speech monitoring for Ch5 RMS (detect when agent stops speaking)
+        # Agent speech monitoring (detect when agent stops speaking)
         self._agent_speaking = False
         self._agent_silence_start = None
         self._agent_silence_threshold_ms = 500  # Wait 500ms of silence before ending
         
         
     async def start(self, orchestrator_client: OrchestratorClient):
-        """Start a conversation session"""
+        """Start a conversation session using AudioManager for audio I/O."""
         logger = self.logger
         print(f"\n💬 Starting conversation...")
         print(f"   Agent ID: {self.agent_id}")
         print(f"   Conversation ID: {self.conversation_id}")
-        # -------------------------------------------------------------------------
-        # AEC mode banner (VERY IMPORTANT for debugging deployments)
-        # -------------------------------------------------------------------------
-        # NOTE: When running under systemd, `export USE_WEBRTC_AEC=true` in an SSH shell
-        # will NOT affect the service unless it's set in the unit/env file. We print both
-        # the raw env var and Config-parsed boolean so it's obvious what the process sees.
-        raw_use_webrtc = os.getenv("USE_WEBRTC_AEC")
-        raw_delay = os.getenv("WEBRTC_AEC_STREAM_DELAY_MS")
-        raw_ns = os.getenv("WEBRTC_AEC_NS_LEVEL")
-        raw_agc = os.getenv("WEBRTC_AEC_AGC_MODE")
-        print("   🔧 AEC CONFIG:")
-        print(f"      - USE_WEBRTC_AEC env: {raw_use_webrtc!r} -> Config.USE_WEBRTC_AEC={Config.USE_WEBRTC_AEC}")
-        print(f"      - WebRTC library available: {WEBRTC_AEC_AVAILABLE} (import_error={WEBRTC_AEC_IMPORT_ERROR!r})")
-        print(f"      - WEBRTC_AEC_STREAM_DELAY_MS env: {raw_delay!r} -> {Config.WEBRTC_AEC_STREAM_DELAY_MS}ms")
-        print(f"      - WEBRTC_AEC_NS_LEVEL env: {raw_ns!r} -> {Config.WEBRTC_AEC_NS_LEVEL}")
-        print(f"      - WEBRTC_AEC_AGC_MODE env: {raw_agc!r} -> {Config.WEBRTC_AEC_AGC_MODE}")
+        
+        # Log AudioManager status
+        aec_mode = "WebRTC AEC" if self._audio_manager.has_webrtc_aec else "Hardware AEC"
+        print(f"   Audio: via AudioManager ({aec_mode})")
         
         # Add API key to WebSocket URL
         ws_url = f"{self.web_socket_url}&api_key={Config.ELEVENLABS_API_KEY}"
-        
-        # Output device
-        output_device = self.speaker_device_index
-        
-        # Log device being used
-        if self.mic_device_index is not None or self.speaker_device_index is not None:
-            devices = sd.query_devices()
-            if self.mic_device_index is not None:
-                mic_dev = devices[self.mic_device_index]
-                print(f"   Microphone: {mic_dev['name']} (index {self.mic_device_index})")
-            if self.speaker_device_index is not None:
-                speaker_dev = devices[self.speaker_device_index]
-                print(f"   Speaker: {speaker_dev['name']} (index {self.speaker_device_index})")
-        else:
-            print(f"   Audio: Using default devices")
         
         # Create SSL context
         ssl_context = ssl.create_default_context(cafile=certifi.where())
         
         try:
-            # -------------------------------------------------------------------------
-            # Detect ReSpeaker for 6-channel AEC extraction
-            # -------------------------------------------------------------------------
-            # Check if input device supports 6 channels (ReSpeaker 4-Mic Array)
-            # If so, open all 6 channels and extract Ch0 (AEC-processed) in code
-            input_channels = Config.CHANNELS  # Default to mono
+            # Create async queue for receiving audio from AudioManager
+            self._input_queue = asyncio.Queue()
             
-            # Track device indices for duplex stream
-            # IMPORTANT: Use ALSA device names instead of numeric indices to route
-            # through /etc/asound.conf (which includes softvol control)
-            # When mic_device_index/speaker_device_index are None, use ALSA "default"
-            respeaker_input_device = self.mic_device_index  # Will be "default" if None
-            respeaker_output_device = output_device  # Will be "default" if None
-            
-            try:
-                devices = sd.query_devices()
-                
-                # Find ReSpeaker INPUT device (6+ input channels)
-                if self.mic_device_index is not None:
-                    input_dev = devices[self.mic_device_index]
-                    respeaker_input_device = self.mic_device_index
-                else:
-                    # Scan for ReSpeaker input device
-                    input_dev = None
-                    for idx, dev in enumerate(devices):
-                        if any(kw in dev['name'].lower() for kw in ['respeaker', 'arrayuac10', 'uac1.0']):
-                            if dev['max_input_channels'] >= Config.RESPEAKER_CHANNELS:
-                                input_dev = dev
-                                # CRITICAL: WebRTC AEC needs all 6 channels (Ch0 mic + Ch5 ref)
-                                # ALSA default only provides Ch0, so we must bypass ALSA when WebRTC is enabled
-                                if Config.USE_WEBRTC_AEC and WEBRTC_AEC_AVAILABLE:
-                                    respeaker_input_device = idx  # Use hardware device directly to get all 6 channels
-                                else:
-                                    respeaker_input_device = None  # Use ALSA default (only Ch0 needed for hardware AEC)
-                                break
-                
-                # Check if ReSpeaker with 6 channels
-                if input_dev and input_dev['max_input_channels'] >= Config.RESPEAKER_CHANNELS:
-                    self._use_respeaker_aec = True
-                    input_channels = Config.RESPEAKER_CHANNELS
-                    
-                    # Keep respeaker_output_device as None to use ALSA default (softvol)
-                    # Don't scan for hardware output device index
-                    
-                    if respeaker_input_device is not None:
-                        print(f"   ✓ ReSpeaker detected: Opening {input_channels} channels")
-                        print(f"   ✓ Using hardware device {respeaker_input_device} (bypasses ALSA to access all channels for WebRTC AEC)")
-                    else:
-                        print(f"   ✓ ReSpeaker detected: Opening {input_channels} channels")
-                        print(f"   ✓ Using ALSA default (routes through /etc/asound.conf with softvol)")
-            except Exception as e:
-                print(f"   ⚠ Could not detect ReSpeaker channels: {e}")
-            
-            # -------------------------------------------------------------------------
-            # WebRTC AEC Initialization (if enabled and ReSpeaker detected)
-            # -------------------------------------------------------------------------
-            if Config.USE_WEBRTC_AEC and WEBRTC_AEC_AVAILABLE and self._use_respeaker_aec:
+            # Register callback with AudioManager to receive AEC-processed audio
+            def audio_callback(audio_frame: np.ndarray):
                 try:
-                    print(f"\n🎯 Initializing WebRTC AEC3...")
-                    
-                    # Initialize WebRTC AEC processor
-                    self.webrtc_aec_processor = WebRTCAECProcessor(
-                        sample_rate=Config.SAMPLE_RATE,
-                        channels=Config.CHANNELS,
-                        stream_delay_ms=Config.WEBRTC_AEC_STREAM_DELAY_MS,
-                        ns_level=Config.WEBRTC_AEC_NS_LEVEL,
-                        agc_mode=Config.WEBRTC_AEC_AGC_MODE,
-                    )
-                    
-                    # Start processor (initializes internal state)
-                    self.webrtc_aec_processor.start()
-                    self._use_webrtc_aec = True
-                    
-                    print(f"✓ WebRTC AEC enabled:")
-                    print(f"   - Using Ch{Config.RESPEAKER_AEC_CHANNEL} (beamformed mic) + Ch{Config.RESPEAKER_REFERENCE_CHANNEL} (playback ref)")
-                    print(f"   - Stream delay: {Config.WEBRTC_AEC_STREAM_DELAY_MS}ms")
-                    print(f"   - Noise suppression: {Config.WEBRTC_AEC_NS_LEVEL}")
-                    print(f"   - AGC mode: {Config.WEBRTC_AEC_AGC_MODE}")
-                    
-                    # Apply ReSpeaker tuning: Disable hardware AEC/AGC/NS to avoid conflicts with WebRTC
-                    # Keep beamforming active (FREEZEONOFF=0) for directional audio
-                    try:
-                        from lib.audio.respeaker import find as find_respeaker
-                        respeaker_dev = find_respeaker()
-                        if respeaker_dev:
-                            print(f"\n📊 Applying ReSpeaker tuning for WebRTC AEC...")
-                            print(f"   - Disabling hardware AEC (ECHOONOFF=0)")
-                            print(f"   - Disabling hardware AGC (AGCONOFF=0)")
-                            print(f"   - Disabling hardware NS (CNIONOFF=0, STATNOISEONOFF=0, NONSTATNOISEONOFF=0)")
-                            print(f"   - Keeping beamforming ACTIVE (FREEZEONOFF=0)")
-                            
-                            # Disable hardware processing to let WebRTC handle it
-                            respeaker_dev.write('ECHOONOFF', 0)  # Disable hardware AEC
-                            respeaker_dev.write('AGCONOFF', 0)  # Disable hardware AGC
-                            respeaker_dev.write('CNIONOFF', 0)  # Disable Comfort Noise Injection
-                            respeaker_dev.write('TRANSIENTONOFF', 0)  # Disable Transient Suppression
-                            respeaker_dev.write('STATNOISEONOFF', 0)  # Disable Stationary Noise Suppression
-                            respeaker_dev.write('NONSTATNOISEONOFF', 0)  # Disable Non-stationary Noise Suppression
-                            respeaker_dev.write('FREEZEONOFF', 0)  # 0 = beamforming enabled (counterintuitive!)
-                            
-                            # Verify settings
-                            echo_off = respeaker_dev.read('ECHOONOFF')
-                            agc_off = respeaker_dev.read('AGCONOFF')
-                            freeze = respeaker_dev.read('FREEZEONOFF')
-                            print(f"✓ ReSpeaker tuned: ECHOONOFF={echo_off}, AGCONOFF={agc_off}, FREEZEONOFF={freeze}")
-                            
-                            respeaker_dev.close()
-                    except Exception as e:
-                        print(f"⚠️  Could not apply ReSpeaker tuning: {e}")
-                        print(f"   WebRTC AEC will still work, but may have suboptimal performance")
-                    
-                except Exception as e:
-                    print(f"⚠️  Failed to initialize WebRTC AEC: {e}")
-                    print(f"   Falling back to hardware AEC (Ch{Config.RESPEAKER_AEC_CHANNEL} only)")
-                    self._use_webrtc_aec = False
-                    self.webrtc_aec_processor = None
-            else:
-                # Be explicit about why WebRTC isn't active (this is the #1 field-debug issue)
-                if not Config.USE_WEBRTC_AEC:
-                    print("ℹ️  WebRTC AEC: DISABLED (set USE_WEBRTC_AEC=true to enable)")
-                elif not WEBRTC_AEC_AVAILABLE:
-                    print("⚠️  WebRTC AEC: REQUESTED but NOT AVAILABLE (library import failed)")
-                    print(f"   import_error={WEBRTC_AEC_IMPORT_ERROR!r}")
-                    print("   Fix: install into the same venv/runtime as agent-launcher, then restart")
-                elif not self._use_respeaker_aec:
-                    print("⚠️  WebRTC AEC: REQUESTED but ReSpeaker 6ch capture is NOT active")
-                    print("   Fix: ensure ReSpeaker is detected with 6 input channels")
+                    self._input_queue.put_nowait(audio_frame.copy())
+                except asyncio.QueueFull:
+                    pass  # Drop frame if queue is full
             
-            # Final mode line for the logs (so you can grep 1 line)
-            if self._use_webrtc_aec:
-                print("   ✅ AEC MODE: WEBRTC_AEC3 (Ch0 mic + Ch5 ref)")
-            elif self._use_respeaker_aec:
-                print("   ✅ AEC MODE: RESPEAKER_HW (Ch0 mic only)")
-            else:
-                print("   ⚠️  AEC MODE: NONE")
-            
-            # -------------------------------------------------------------------------
-            # Open audio streams: Duplex for ReSpeaker, separate for other devices
-            # -------------------------------------------------------------------------
-            # ReSpeaker requires a duplex stream for proper multi-channel capture.
-            # Separate streams cause Ch1-5 to be zero (hardware loopback issue).
-            if self._use_respeaker_aec:
-                # Duplex stream: 6-channel input, mono output (fixes AEC reference signal)
-                # Input and output may be different device indices!
-                # Use callback-based I/O so PortAudio handles full-duplex safely.
-                self._input_queue = queue.Queue()
-                # Unbounded queue to prevent dropping chunks (which causes audio jumps)
-                # Queue will naturally drain as callback consumes audio
-                self._output_queue = queue.Queue()
-
-                def audio_callback(indata, outdata, frames, time_info, status):
-                    """PortAudio callback for full-duplex ReSpeaker capture/playback."""
-                    # Push captured audio to queue for async sender
-                    try:
-                        self._input_queue.put_nowait(indata.copy())
-                    except queue.Full:
-                        # Drop oldest frame if we're lagging to keep latency low
-                        try:
-                            self._input_queue.get_nowait()
-                        except queue.Empty:
-                            pass
-                        self._input_queue.put_nowait(indata.copy())
-
-                    # Pull next playback chunk (mono) or output silence
-                    # PortAudio callback needs exactly 'frames' samples (typically 512)
-                    outdata[:] = 0  # Start with silence
-                    frames_written = 0
-                    remainder_chunk = None
-                    
-                    # First, use any remainder from previous callback if it exists
-                    if hasattr(self, '_callback_remainder') and self._callback_remainder is not None:
-                        remainder_chunk = self._callback_remainder
-                        self._callback_remainder = None
-                    
-                    while frames_written < len(outdata):
-                        # Use remainder first, then get from queue
-                        if remainder_chunk is not None:
-                            out_chunk = remainder_chunk
-                            remainder_chunk = None
-                        else:
-                            try:
-                                out_chunk = self._output_queue.get_nowait()
-                            except queue.Empty:
-                                break  # No more audio, fill rest with silence
-                        
-                        # Ensure shape (frames,) for mono
-                        if out_chunk.ndim == 2:
-                            out_chunk = out_chunk.flatten()
-                        elif out_chunk.ndim != 1:
-                            out_chunk = out_chunk.flatten()
-                        
-                        # Copy into PortAudio buffer
-                        remaining = len(outdata) - frames_written
-                        frames_to_copy = min(len(out_chunk), remaining)
-                        outdata[frames_written:frames_written + frames_to_copy, 0] = out_chunk[:frames_to_copy]
-                        frames_written += frames_to_copy
-                        
-                        # If chunk was larger than remaining space, save remainder for next callback
-                        if len(out_chunk) > frames_to_copy:
-                            self._callback_remainder = out_chunk[frames_to_copy:]
-                self.stream = sd.Stream(
-                    device=(respeaker_input_device, respeaker_output_device),
-                    samplerate=Config.SAMPLE_RATE,
-                    channels=(input_channels, Config.CHANNELS),
-                    dtype='int16',
-                    blocksize=Config.CHUNK_SIZE,
-                    callback=audio_callback
-                )
-                self.stream.start()
-                # Duplex stream handles BOTH input (6ch) and output (1ch)
-                # Using the same stream for I/O avoids "Device unavailable" errors
-                # since ReSpeaker can only be opened once
-                self.input_stream = self.stream
-                self.output_stream = self.stream  # Same stream - duplex handles both
-                device_label = f"ALSA default" if respeaker_input_device is None else f"devices ({respeaker_input_device}, {respeaker_output_device})"
-                print(f"   ✓ ReSpeaker: Duplex stream (6ch in, 1ch out) on {device_label} [callback mode]")
-            else:
-                # Non-ReSpeaker: Use separate streams (original behavior)
-                self.input_stream = sd.InputStream(
-                    device=self.mic_device_index,
-                    samplerate=Config.SAMPLE_RATE,
-                    channels=input_channels,
-                    dtype='int16',
-                    blocksize=Config.CHUNK_SIZE
-                )
-                self.input_stream.start()
-                
-                self.output_stream = sd.OutputStream(
-                    device=output_device,
-                    samplerate=Config.SAMPLE_RATE,
-                    channels=Config.CHANNELS,
-                    dtype='int16',
-                    blocksize=Config.CHUNK_SIZE
-                )
-                self.output_stream.start()
+            self._audio_manager.register_consumer(audio_callback)
             
             # Connect to WebSocket
             async with websockets.connect(ws_url, ssl=ssl_context) as websocket:
@@ -527,93 +266,34 @@ class ElevenLabsConversationClient:
             await self.stop(orchestrator_client)
     
     async def _send_audio(self):
-        """Send microphone audio to WebSocket"""
+        """Send microphone audio to WebSocket.
+        
+        Audio is received from AudioManager via async queue, already AEC-processed.
+        """
         logger = self.logger
         try:
             while self.running:
-                # Read audio from microphone
-                if self._use_respeaker_aec:
-                    # Callback mode: grab frames from PortAudio callback queue
-                    try:
-                        audio_data = await asyncio.get_running_loop().run_in_executor(
-                            None, self._input_queue.get
-                        )
-                    except Exception as e:
-                        print(f"✗ Input queue error: {e}")
-                        self.end_reason = "network_failure"
-                        self.running = False
-                        break
-                else:
-                    audio_data, _ = self.input_stream.read(Config.CHUNK_SIZE)
+                # Get audio from AudioManager (already AEC-processed)
+                try:
+                    audio_data = await asyncio.wait_for(
+                        self._input_queue.get(),
+                        timeout=0.1
+                    )
+                except asyncio.TimeoutError:
+                    continue
+                except Exception as e:
+                    print(f"✗ Input queue error: {e}")
+                    self.end_reason = "network_failure"
+                    self.running = False
+                    break
                 
-                # -------------------------------------------------------------------------
-                # Channel Debug Logging: Show RMS for all 6 channels (every 3 seconds)
-                # -------------------------------------------------------------------------
-                if self._use_respeaker_aec and audio_data.ndim == 2 and audio_data.shape[1] >= Config.RESPEAKER_CHANNELS:
-                    now = time.time()
-                    if now - self._aec_debug_last_log >= 3.0:
-                        self._aec_debug_last_log = now
-                        # Debug: Log actual audio data shape and dtype (if enabled)
-                        if hasattr(Config, 'SHOW_AEC_DEBUG_LOGS') and Config.SHOW_AEC_DEBUG_LOGS:
-                            print(f"🔍 [AEC DEBUG] audio_data shape={audio_data.shape}, dtype={audio_data.dtype}, ndim={audio_data.ndim}")
-                        # Calculate RMS for each channel
-                        ch_rms = []
-                        for ch in range(min(6, audio_data.shape[1])):
-                            rms = np.sqrt(np.mean(audio_data[:, ch].astype(float) ** 2)) / 32768.0
-                            ch_rms.append(rms)
-                        # Show channel activity
-                        is_playing = self.playback_active or self.audio_queue.qsize() > 0
-                        status = "PLAYING" if is_playing else "IDLE"
-                        webrtc_status = "WebRTC ON" if self._use_webrtc_aec else "HW AEC"
-                        if hasattr(Config, 'SHOW_AEC_DEBUG_LOGS') and Config.SHOW_AEC_DEBUG_LOGS:
-                            print(f"📊 [AEC DEBUG] [{status}] [{webrtc_status}] Ch0={ch_rms[0]:.4f} | Ch1={ch_rms[1]:.4f} | Ch2={ch_rms[2]:.4f} | Ch3={ch_rms[3]:.4f} | Ch4={ch_rms[4]:.4f} | Ch5={ch_rms[5]:.4f} | Using: Ch{Config.RESPEAKER_AEC_CHANNEL}")
-                        else:
-                            print(f"📊 [CHANNELS] [{status}] [{webrtc_status}] Ch0={ch_rms[0]:.4f} | Ch1={ch_rms[1]:.4f} | Ch2={ch_rms[2]:.4f} | Ch3={ch_rms[3]:.4f} | Ch4={ch_rms[4]:.4f} | Ch5={ch_rms[5]:.4f}")
+                # Ensure correct shape (mono, int16)
+                if audio_data.ndim > 1:
+                    audio_data = audio_data.flatten()
+                audio_data = audio_data.astype(np.int16)
                 
-                # -------------------------------------------------------------------------
-                # Channel Extraction and WebRTC AEC Processing
-                # -------------------------------------------------------------------------
-                # ReSpeaker provides 6 channels:
-                # - Ch0: Beamformed output (used as mic input)
-                # - Ch1-4: Raw microphones
-                # - Ch5: Playback loopback (used as reference for AEC)
-                
-                if self._use_respeaker_aec and audio_data.ndim == 2 and audio_data.shape[1] >= Config.RESPEAKER_CHANNELS:
-                    # Extract Ch0 (beamformed mic) and Ch5 (reference)
-                    mic_channel = audio_data[:, Config.RESPEAKER_AEC_CHANNEL].copy()
-                    ref_channel = audio_data[:, Config.RESPEAKER_REFERENCE_CHANNEL].copy()
-                    
-                    # WebRTC AEC Processing - ALWAYS process when enabled
-                    # The reference signal (Ch5) will be ~0 when nothing is playing,
-                    # which WebRTC AEC handles correctly (nothing to cancel).
-                    # We must NOT skip processing based on playback_active because:
-                    # 1. Echo persists after playback ends (~300ms room reverb)
-                    # 2. AEC needs continuous stream to maintain filter adaptation
-                    if self._use_webrtc_aec and self.webrtc_aec_processor:
-                        try:
-                            # Always process through AEC - ref_channel naturally zeros when silent
-                            processed_mic = self.webrtc_aec_processor.process_chunk(
-                                mic_channel, ref_channel
-                            )
-                            audio_data = processed_mic.reshape(-1, 1)
-                            
-                            # Debug logging (every 3 seconds)
-                            now = time.time()
-                            if now - self._webrtc_debug_last_log >= 3.0:
-                                self._webrtc_debug_last_log = now
-                                mic_rms = np.sqrt(np.mean(mic_channel.astype(float) ** 2)) / 32768.0
-                                ref_rms = np.sqrt(np.mean(ref_channel.astype(float) ** 2)) / 32768.0
-                                out_rms = np.sqrt(np.mean(processed_mic.astype(float) ** 2)) / 32768.0
-                                is_playing = self.playback_active or self.audio_queue.qsize() > 0
-                                status = "PLAYING" if is_playing else "IDLE"
-                                print(f"🎙️  [WebRTC AEC] [{status}] Mic={mic_rms:.4f}, Ref={ref_rms:.4f}, Out={out_rms:.4f}")
-                        except Exception as e:
-                            print(f"⚠️  WebRTC AEC processing error: {e}")
-                            # Fallback to raw mic on error
-                            audio_data = mic_channel.reshape(-1, 1)
-                    else:
-                        # WebRTC AEC not enabled - use Ch0 only (beamformed, no software AEC)
-                        audio_data = mic_channel.reshape(-1, 1)
+                # Reshape for processing
+                audio_data = audio_data.reshape(-1, 1)
                 
                 # -------------------------------------------------------------------------
                 # Voice Activity Detection (VAD) - Detect if user is speaking
@@ -697,12 +377,14 @@ class ElevenLabsConversationClient:
                 audio_b64 = base64.b64encode(audio_data.tobytes()).decode('utf-8')
                 message = {"user_audio_chunk": audio_b64}
                 
-                # Debug: Log what we're sending to ElevenLabs (every 3 seconds, synced with AEC debug)
+                # Debug: Log what we're sending to ElevenLabs (every 3 seconds)
                 now = time.time()
-                if self._use_respeaker_aec and (now - self._aec_debug_last_log) < 0.1:  # Log right after AEC debug
+                if now - self._aec_debug_last_log >= 3.0:
+                    self._aec_debug_last_log = now
                     sent_rms = np.sqrt(np.mean(audio_data.astype(float) ** 2)) / 32768.0
                     if Config.SHOW_ELEVENLABS_AUDIO_CHUNK_LOGS:
-                        print(f"📤 [SENT TO 11LABS] shape={audio_data.shape} RMS={sent_rms:.4f} (extracted from Ch{Config.RESPEAKER_AEC_CHANNEL})")
+                        aec_mode = "WebRTC" if self._audio_manager.has_webrtc_aec else "HW AEC"
+                        print(f"📤 [SENT TO 11LABS] shape={audio_data.shape} RMS={sent_rms:.4f} ({aec_mode})")
                 
                 try:
                     await asyncio.wait_for(
@@ -809,7 +491,7 @@ class ElevenLabsConversationClient:
             self.running = False
     
     async def _play_audio(self):
-        """Play audio chunks from queue to output stream"""
+        """Play audio chunks from queue via AudioManager."""
         logger = self.logger
         try:
             while self.running:
@@ -832,12 +514,8 @@ class ElevenLabsConversationClient:
                 self.playback_active = True
                 
                 # Write in small chunks (256 samples = ~16ms at 16kHz) for fast response
-                # Small chunks also help with callback buffering (callback needs 512 samples per call)
                 sub_chunk_size = 256
                 interrupted = False
-                
-                # Get event loop for running blocking write in executor
-                loop = asyncio.get_running_loop()
                 
                 for i in range(0, len(audio_array), sub_chunk_size):
                     # Check if barge-in occurred
@@ -850,39 +528,19 @@ class ElevenLabsConversationClient:
                         interrupted = True
                         break
                     
-                    # Write small chunk - run in executor to avoid blocking event loop
+                    # Write small chunk via AudioManager
                     chunk = audio_array[i:i+sub_chunk_size]
                     try:
-                        if self.output_stream and self.output_stream.active:
-                            if self._use_respeaker_aec:
-                                # Callback mode: queue chunk for PortAudio callback
-                                # Ensure chunk is 1D array (mono)
-                                if chunk.ndim > 1:
-                                    chunk = chunk.flatten()
-                                # Queue chunk for callback (unbounded queue, no dropping)
-                                # This ensures sequential playback without jumps
-                                self._output_queue.put_nowait(chunk)
-                                
-                                # Small yield to ensure queue stays filled (callback consumes at ~512 samples/call)
-                                await asyncio.sleep(0)
-                            else:
-                                # Run blocking write in thread pool with timeout
-                                await asyncio.wait_for(
-                                    loop.run_in_executor(None, self.output_stream.write, chunk),
-                                    timeout=2.0  # 2 second timeout for audio write
-                                )
-                    except asyncio.TimeoutError:
-                        print(f"⚠️ Audio write timeout - audio device may be stuck")
-                        if logger:
-                            logger.warning(
-                                "audio_write_timeout",
-                                extra={
-                                    "conversation_id": self.conversation_id,
-                                    "user_id": Config.USER_ID,
-                                    "device_id": Config.DEVICE_ID
-                                }
-                            )
-                        # Don't break - try to continue, the device might recover
+                        # Ensure chunk is 1D array (mono)
+                        if chunk.ndim > 1:
+                            chunk = chunk.flatten()
+                        
+                        # Queue chunk for playback via AudioManager
+                        self._audio_manager.play(chunk)
+                        
+                        # Yield to event loop
+                        await asyncio.sleep(0)
+                        
                     except Exception as e:
                         if logger:
                             logger.debug(
@@ -893,9 +551,6 @@ class ElevenLabsConversationClient:
                                 }
                             )
                         break
-                    
-                    # Yield to event loop (already yielded in run_in_executor, but be explicit)
-                    await asyncio.sleep(0)
                 
                 if interrupted:
                     print(f"   [DEBUG] Audio playback interrupted mid-chunk")
@@ -1129,17 +784,8 @@ class ElevenLabsConversationClient:
                         except asyncio.QueueEmpty:
                             break
                     
-                    # Clear callback queue if using ReSpeaker AEC (callback mode)
-                    callback_cleared = 0
-                    if self._use_respeaker_aec and self._output_queue:
-                        while not self._output_queue.empty():
-                            try:
-                                self._output_queue.get_nowait()
-                                callback_cleared += 1
-                            except queue.Empty:
-                                break
-                        # Also clear any remainder chunk
-                        self._callback_remainder = None
+                    # Clear AudioManager playback queue
+                    am_cleared = self._audio_manager.clear_playback_queue()
                     
                     # Reset chunk count for next agent turn
                     self._chunk_count = 0
@@ -1148,10 +794,7 @@ class ElevenLabsConversationClient:
                     if self.led_controller:
                         self.led_controller.set_state(self.led_controller.STATE_CONVERSATION)
                     
-                    if callback_cleared > 0:
-                        print(f"   ✓ Cleared {cleared_count} queued audio chunks + {callback_cleared} callback chunks, ready for user input")
-                    else:
-                        print(f"   ✓ Cleared {cleared_count} queued audio chunks, ready for user input")
+                    print(f"   ✓ Cleared {cleared_count} queued audio chunks + {am_cleared} playback chunks, ready for user input")
                     self.last_audio_time = time.time()  # Reset silence timer
                 
                 elif data.get('type') == 'agent_response_correction_event' or 'agent_response_correction_event' in data:
@@ -1460,24 +1103,13 @@ class ElevenLabsConversationClient:
         """Stop the conversation"""
         self.running = False
         
-        # Stop WebRTC AEC processor if running
-        if self._use_webrtc_aec and self.webrtc_aec_processor:
-            try:
-                self.webrtc_aec_processor.stop()
-                print("✓ WebRTC AEC processor stopped")
-            except Exception as e:
-                print(f"⚠️  Error stopping WebRTC AEC: {e}")
+        # Clear AudioManager playback queue to stop any pending audio
+        if self._audio_manager:
+            self._audio_manager.clear_playback_queue()
         
-        # Stop and close audio streams
-        # Handle duplex case (ReSpeaker) where input_stream and output_stream are the same object
-        if self.input_stream:
-            self.input_stream.stop()
-            self.input_stream.close()
-        
-        if self.output_stream and self.output_stream is not self.input_stream:
-            # Only close output_stream if it's a separate object (non-ReSpeaker case)
-            self.output_stream.stop()
-            self.output_stream.close()
+        # Note: We don't unregister from AudioManager here because
+        # the callback reference is local to start() and will be garbage collected.
+        # AudioManager continues running for other consumers (wake word, etc.)
         
         # Send conversation end notification
         await orchestrator_client.send_conversation_end(

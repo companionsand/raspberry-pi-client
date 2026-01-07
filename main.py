@@ -40,7 +40,7 @@ logging.basicConfig(
 
 # Import local modules
 from lib.config import Config
-from lib.audio import get_audio_devices, LEDController, VoiceFeedback
+from lib.audio import AudioManager, get_audio_devices, LEDController, VoiceFeedback
 from lib.detection import WakeWordDetector, HumanPresenceDetector
 from lib.agent import OrchestratorClient, ElevenLabsConversationClient, ContextManager
 from lib.music import MusicModeController, update_radio_cache_background
@@ -92,6 +92,7 @@ class KinClient:
     """Main application controller with full telemetry and LED feedback"""
     
     def __init__(self):
+        self.audio_manager = None  # Unified audio manager
         self.wake_detector = None
         self.presence_detector = None  # Will be initialized after runtime config is loaded
         self.context_manager = ContextManager()
@@ -323,6 +324,14 @@ class KinClient:
             else:
                 self.voice_feedback.play("startup")
         
+        # Initialize AudioManager for unified audio handling with AEC
+        print("\n🔊 Initializing AudioManager...")
+        self.audio_manager = AudioManager(use_webrtc_aec=Config.USE_WEBRTC_AEC)
+        if not self.audio_manager.start():
+            print("✗ AudioManager failed to start")
+            self.led_controller.set_state(LEDController.STATE_ERROR)
+            return
+        
         # Initialize human presence detector first (so we can pass it to wake word detector)
         print("\n📊 Initializing human presence detector...")
         self.presence_detector = HumanPresenceDetector(
@@ -333,10 +342,10 @@ class KinClient:
             event_loop=asyncio.get_event_loop()  # Pass main event loop for async operations
         )
         
-        # Initialize wake word detector with detected microphone
-        # Pass presence_detector so they can share the audio stream
+        # Initialize wake word detector with AudioManager
+        # Pass presence_detector so they can share audio
         self.wake_detector = WakeWordDetector(
-            mic_device_index=self.mic_device_index,
+            audio_manager=self.audio_manager,
             orchestrator_client=self.orchestrator_client,
             presence_detector=self.presence_detector
         )
@@ -603,12 +612,11 @@ class KinClient:
             # Show conversation state (pulsating green - active conversation)
             self.led_controller.set_state(LEDController.STATE_CONVERSATION)
             
-            # Start ElevenLabs conversation
+            # Start ElevenLabs conversation with AudioManager
             client = ElevenLabsConversationClient(
                 web_socket_url, 
                 agent_id,
-                mic_device_index=self.mic_device_index,
-                speaker_device_index=self.speaker_device_index,
+                audio_manager=self.audio_manager,
                 user_terminate_flag=self.user_terminate,
                 led_controller=self.led_controller  # Pass LED controller for audio-reactive feedback
             )
@@ -663,7 +671,7 @@ class KinClient:
         """Run music playback mode with voice command control."""
         genre = getattr(self, '_requested_music_genre', None)
         controller = MusicModeController(
-            mic_device_index=self.mic_device_index,
+            audio_manager=self.audio_manager,
             speaker_device_index=self.speaker_device_index,
             led_controller=self.led_controller,
             logger=self.logger
@@ -787,6 +795,10 @@ class KinClient:
         # Stop presence detector
         if self.presence_detector:
             self.presence_detector.cleanup()
+        
+        # Stop AudioManager
+        if self.audio_manager:
+            self.audio_manager.stop()
         
         # Disconnect from orchestrator
         await self.orchestrator_client.disconnect()

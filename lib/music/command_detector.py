@@ -5,18 +5,18 @@ Detects voice commands using VAD + Scribe ASR + fuzzy matching.
 Supports: stop, pause, resume, volume up, volume down
 
 Uses a rolling buffer to capture trailing audio for better transcription.
+Now uses AudioManager for unified audio handling with WebRTC AEC support.
 """
 
-import os
-import time
 import asyncio
 import base64
+import os
 from collections import deque
-from typing import Optional, Callable
 from enum import Enum
+from typing import TYPE_CHECKING, Callable, Optional
+
 import numpy as np
 import onnxruntime as ort
-import sounddevice as sd
 from elevenlabs import (
     AudioFormat,
     CommitStrategy,
@@ -24,7 +24,11 @@ from elevenlabs import (
     RealtimeAudioOptions,
 )
 from elevenlabs.realtime.connection import RealtimeEvents
+
 from lib.config import Config
+
+if TYPE_CHECKING:
+    from lib.audio.manager import AudioManager
 
 # Try to import rapidfuzz, fall back to fuzzywuzzy
 try:
@@ -69,42 +73,43 @@ class VoiceCommandDetector:
     Detects voice commands for music control using VAD-gated Scribe transcription.
     
     This detector:
-    1. Maintains a rolling 2s audio buffer
-    2. Uses VAD to detect speech
-    3. When speech ends, sends trailing 2s to Scribe
-    4. Fuzzy matches transcript against command patterns
+    1. Receives AEC-processed audio from AudioManager
+    2. Maintains a rolling 2s audio buffer
+    3. Uses VAD to detect speech
+    4. When speech ends, sends trailing 2s to Scribe
+    5. Fuzzy matches transcript against command patterns
     """
     
     def __init__(
         self,
-        mic_device_index: Optional[int] = None,
+        audio_manager: "AudioManager",
         on_command: Optional[Callable[[MusicCommand], None]] = None
     ):
         """
         Initialize voice command detector.
         
         Args:
-            mic_device_index: Microphone device index (None for default)
+            audio_manager: AudioManager instance for receiving processed audio
             on_command: Callback function when command is detected
         """
-        self.mic_device_index = mic_device_index
+        self._audio_manager = audio_manager
         self.on_command = on_command
         self.running = False
         self.last_command = MusicCommand.NONE
-        self.audio_stream = None
         self.logger = Config.LOGGER
         
         # Audio settings
         self.sample_rate = Config.SAMPLE_RATE  # 16kHz
-        self.chunk_size = Config.CHUNK_SIZE  # 512 samples
+        self.chunk_size = Config.CHUNK_SIZE  # 320 samples
         
-        # ReSpeaker AEC detection
-        self._use_respeaker_aec = False
+        # Audio queue for receiving from AudioManager
+        self._audio_queue: asyncio.Queue = None
+        self._audio_callback = None  # Store callback reference for cleanup
         
         # -------------------------------------------------------------------------
         # Rolling buffer: 2s of audio (for trailing context)
         # At 16kHz, 2s = 32000 samples
-        # With 512 samples/chunk, that's ~63 chunks
+        # With 320 samples/chunk, that's 100 chunks
         # -------------------------------------------------------------------------
         self._rolling_buffer_seconds = 2.0
         self._rolling_buffer_samples = int(self.sample_rate * self._rolling_buffer_seconds)
@@ -159,52 +164,50 @@ class VoiceCommandDetector:
         
         print("🎤 Voice command detector started")
         print("   Commands: stop, pause, resume, volume up, volume down")
+        aec_mode = "WebRTC AEC" if self._audio_manager.has_webrtc_aec else "Hardware AEC"
+        print(f"   Audio: via AudioManager ({aec_mode})")
         
         if self.logger:
             self.logger.info(
                 "voice_command_detector_started",
-                extra={"device_id": Config.DEVICE_ID}
+                extra={
+                    "device_id": Config.DEVICE_ID,
+                    "has_webrtc_aec": self._audio_manager.has_webrtc_aec
+                }
             )
         
         try:
-            # Detect ReSpeaker for AEC channel extraction
-            input_channels = Config.CHANNELS
-            try:
-                devices = sd.query_devices()
-                input_dev = None
-                for dev in devices:
-                    if any(kw in dev['name'].lower() for kw in ['respeaker', 'arrayuac10', 'uac1.0']):
-                        if dev['max_input_channels'] >= Config.RESPEAKER_CHANNELS:
-                            input_dev = dev
-                            break
-                
-                if input_dev and input_dev['max_input_channels'] >= Config.RESPEAKER_CHANNELS:
-                    self._use_respeaker_aec = True
-                    input_channels = Config.RESPEAKER_CHANNELS
-                    print(f"   ✓ Using ReSpeaker Ch{Config.RESPEAKER_AEC_CHANNEL} for voice detection")
-            except Exception as e:
-                print(f"   ⚠️  Device detection error: {e}")
+            # Create async queue for receiving audio from AudioManager
+            self._audio_queue = asyncio.Queue()
             
-            # Start audio stream
-            self.audio_stream = sd.InputStream(
-                device=self.mic_device_index,
-                channels=input_channels,
-                samplerate=self.sample_rate,
-                blocksize=self.chunk_size,
-                dtype='int16'
-            )
-            self.audio_stream.start()
+            # Register callback with AudioManager
+            def audio_callback(audio_frame: np.ndarray):
+                # Check if queue is still valid (might be None if stopped)
+                if self._audio_queue is None:
+                    return
+                try:
+                    self._audio_queue.put_nowait(audio_frame.copy())
+                except asyncio.QueueFull:
+                    pass  # Drop frame if queue is full
+            
+            self._audio_callback = audio_callback
+            self._audio_manager.register_consumer(audio_callback)
             
             # Main detection loop
             while self.running:
-                # Read audio frame
-                audio_data, _ = self.audio_stream.read(self.chunk_size)
+                # Get audio frame from AudioManager (already AEC-processed)
+                try:
+                    audio_frame = await asyncio.wait_for(
+                        self._audio_queue.get(),
+                        timeout=0.1
+                    )
+                except asyncio.TimeoutError:
+                    continue
                 
-                # Extract channel for ReSpeaker
-                if self._use_respeaker_aec and audio_data.ndim == 2 and audio_data.shape[1] >= Config.RESPEAKER_CHANNELS:
-                    audio_frame = audio_data[:, Config.RESPEAKER_AEC_CHANNEL].astype(np.int16)
-                else:
-                    audio_frame = audio_data[:, 0].astype(np.int16) if audio_data.ndim == 2 else audio_data.astype(np.int16)
+                # Ensure correct shape
+                if audio_frame.ndim > 1:
+                    audio_frame = audio_frame.flatten()
+                audio_frame = audio_frame.astype(np.int16)
                 
                 # Always add to rolling buffer
                 self._rolling_buffer.append(audio_frame.copy())
@@ -264,7 +267,7 @@ class VoiceCommandDetector:
             return MusicCommand.NONE
             
         finally:
-            self._cleanup_stream()
+            self._cleanup()
     
     async def _process_vad(self, audio_frame: np.ndarray) -> bool:
         """Run VAD on audio frame and return True if speech detected."""
@@ -451,17 +454,17 @@ class VoiceCommandDetector:
     def stop(self):
         """Stop the detector (called externally)."""
         self.running = False
-        self._cleanup_stream()
+        self._cleanup()
     
-    def _cleanup_stream(self):
-        """Clean up audio stream."""
-        if self.audio_stream:
+    def _cleanup(self):
+        """Clean up resources."""
+        # Unregister callback from AudioManager
+        if self._audio_callback:
             try:
-                self.audio_stream.stop()
-                self.audio_stream.close()
-            except:
+                self._audio_manager.unregister_consumer(self._audio_callback)
+            except Exception:
                 pass
-            self.audio_stream = None
+            self._audio_callback = None
         
         # Reset state
         self._vad_state = np.zeros((2, 1, 128), dtype=np.float32)
@@ -469,6 +472,7 @@ class VoiceCommandDetector:
         self._is_speaking = False
         self._speech_frame_count = 0
         self._silence_frames = 0
+        self._audio_queue = None
 
 
 # Backwards compatibility alias
