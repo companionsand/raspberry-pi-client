@@ -95,6 +95,9 @@ class Config:
     # Environment
     ENV = os.getenv("ENV", "production")
     
+    # Voice feedback quiet hours (8pm-10am) - set to "false" to always play startup message
+    VOICE_FEEDBACK_QUIET_HOURS_ENABLED = os.getenv("VOICE_FEEDBACK_QUIET_HOURS_ENABLED", "true").lower() == "true"
+    
     # =========================================================================
     # MAC DEVELOPMENT MODE
     # =========================================================================

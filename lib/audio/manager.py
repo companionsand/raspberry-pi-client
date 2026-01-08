@@ -84,6 +84,8 @@ class AudioManager:
         # Device detection state
         self._has_respeaker = False
         self._input_channels = Config.CHANNELS
+        self._respeaker_device_index: Optional[int] = None
+        self._respeaker_alsa_card: Optional[int] = None
         
         # Debug logging
         self._last_debug_log = 0
@@ -246,16 +248,34 @@ class AudioManager:
         
         for idx, dev in enumerate(devices):
             if any(kw in dev['name'].lower() for kw in ['respeaker', 'arrayuac10', 'uac1.0']):
-                if dev['max_input_channels'] >= Config.RESPEAKER_CHANNELS:
+                # Always capture all 6 channels for simplicity and flexibility
+                # - Hardware AEC: extract Ch0 (AEC-processed)
+                # - WebRTC AEC: extract Ch0 (mic) and Ch5 (reference)
+                # Check that device supports both input (6ch) and output (1ch)
+                if (dev['max_input_channels'] >= Config.RESPEAKER_CHANNELS and 
+                    dev['max_output_channels'] >= Config.CHANNELS):
                     self._has_respeaker = True
+                    # Always use 6 channels - simpler and works for both AEC modes
                     self._input_channels = Config.RESPEAKER_CHANNELS
+                    self._respeaker_device_index = idx
+                    
+                    # Get ALSA card number for direct ALSA device string access
+                    from lib.audio.device_detection import get_alsa_card_number
+                    self._respeaker_alsa_card = get_alsa_card_number(dev['name'])
+                    
                     print(f"✓ ReSpeaker detected: {dev['name']}")
-                    print(f"   Input channels: {self._input_channels}")
+                    print(f"   PortAudio device index: {idx}")
+                    if self._respeaker_alsa_card is not None:
+                        print(f"   ALSA card number: {self._respeaker_alsa_card}")
+                    print(f"   Input channels: {self._input_channels} (always capture all channels)")
+                    print(f"   Output channels: {dev['max_output_channels']}")
                     return
         
         # Fallback to mono
         self._has_respeaker = False
         self._input_channels = Config.CHANNELS
+        self._respeaker_device_index = None
+        self._respeaker_alsa_card = None
         print("⚠️  ReSpeaker not detected - using default audio device")
     
     def _init_webrtc_aec(self) -> None:
@@ -288,7 +308,16 @@ class AudioManager:
             self._aec_processor = None
     
     def _configure_respeaker_for_webrtc(self) -> None:
-        """Configure ReSpeaker DSP for WebRTC AEC mode (disable hardware AEC)."""
+        """
+        Configure ReSpeaker DSP for WebRTC AEC mode (disable hardware AEC).
+        
+        Note: ReSpeaker configuration is NOT persistent - settings are lost when:
+        - Device is unplugged/replugged
+        - System reboots
+        - Device is power cycled
+        
+        This configuration must be applied each time the application starts.
+        """
         try:
             from lib.audio.respeaker import find as find_respeaker
             respeaker_dev = find_respeaker()
@@ -304,6 +333,8 @@ class AudioManager:
                 respeaker_dev.write('FREEZEONOFF', 0)  # Keep beamforming enabled
                 respeaker_dev.close()
                 print("✓ ReSpeaker tuned for WebRTC AEC")
+                # Small delay to ensure USB device is fully released before opening audio stream
+                time.sleep(0.1)
         except Exception as e:
             print(f"⚠️  Could not configure ReSpeaker: {e}")
     
@@ -311,21 +342,33 @@ class AudioManager:
         """Open duplex audio stream."""
         # Use ALSA default device (None) - routes through /etc/asound.conf
         # For WebRTC AEC, we need hardware device to access all 6 channels
+        # CRITICAL: Use ALSA device strings (hw:CARD,DEVICE) instead of PortAudio indices
+        # to avoid PortAudio's card mapping issues
         input_device = None
         output_device = None
         
-        if self._use_webrtc_aec and self._has_respeaker:
-            # Find ReSpeaker hardware device index for 6-channel capture
-            devices = sd.query_devices()
-            for idx, dev in enumerate(devices):
-                if any(kw in dev['name'].lower() for kw in ['respeaker', 'arrayuac10', 'uac1.0']):
-                    if dev['max_input_channels'] >= Config.RESPEAKER_CHANNELS:
-                        input_device = idx
-                        break
-            # Output still uses ALSA default (for softvol)
+        if self._has_respeaker:
+            # Always use ALSA default (None) for both input and output when ReSpeaker is detected.
+            # This routes through /etc/asound.conf which:
+            # - Uses respeaker_6ch for input (always captures all 6 channels via dsnoop)
+            # - Uses respeaker_out/dmix for output (allows mpv to share the device)
+            # 
+            # Always capturing 6 channels simplifies the code:
+            # - Hardware AEC: extract Ch0 (AEC-processed audio)
+            # - WebRTC AEC: extract Ch0 (mic) and Ch5 (reference)
+            # 
+            # Using ALSA default allows both AudioManager and mpv to share the device.
+            input_device = None
             output_device = None
-            print(f"   Using hardware device {input_device} for 6-channel capture")
-            print(f"   Using ALSA default for output (softvol)")
+            print(f"   Using ALSA default routing (through /etc/asound.conf)")
+            print(f"   Input: 6-channel capture via respeaker_6ch (always all channels)")
+            print(f"   Output: 1-channel playback via respeaker_out/dmix (allows mpv sharing)")
+        else:
+            # Use ALSA default routing (None, None) - goes through /etc/asound.conf
+            # This works for hardware AEC mode where ALSA extracts Ch0
+            input_device = None
+            output_device = None
+            print(f"   Using ALSA default routing (through /etc/asound.conf)")
         
         self._stream = sd.Stream(
             device=(input_device, output_device),

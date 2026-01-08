@@ -314,15 +314,18 @@ class KinClient:
             self.voice_feedback.speaker_device_index = self.speaker_device_index
         
         # Play startup message now that speaker device is configured
-        # Skip during quiet hours (8pm-10am) to avoid noise
+        # Skip during quiet hours (8pm-10am) to avoid noise (if enabled)
         if self.voice_feedback:
-            current_hour = datetime.now().hour
-            is_quiet_hours = current_hour >= 20 or current_hour < 10
+            should_skip = False
+            if Config.VOICE_FEEDBACK_QUIET_HOURS_ENABLED:
+                current_hour = datetime.now().hour
+                is_quiet_hours = current_hour >= 20 or current_hour < 10
+                if is_quiet_hours:
+                    if self.logger:
+                        self.logger.info("[Main] Skipping startup voice feedback (quiet hours: 8pm-10am)")
+                    should_skip = True
             
-            if is_quiet_hours:
-                if self.logger:
-                    self.logger.info("[Main] Skipping startup voice feedback (quiet hours: 8pm-10am)")
-            else:
+            if not should_skip:
                 self.voice_feedback.play("startup")
         
         # Initialize AudioManager for unified audio handling with AEC
