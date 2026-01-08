@@ -224,6 +224,11 @@ class Config:
         
         # Note: SAMPLE_RATE is hardcoded (16000 Hz) - not configurable
         
+        # Save radio stations to local cache (for offline use and music playback)
+        radio_stations = config_data.get("radio_stations")
+        if radio_stations:
+            cls._save_radio_cache(radio_stations)
+        
         print(f"✓ Runtime configuration loaded")
         print(f"   Wake Word: {cls.WAKE_WORD}")
         print(f"   Sample Rate: {cls.SAMPLE_RATE} Hz")
@@ -233,6 +238,9 @@ class Config:
         print(f"   Wake Word ASR Similarity Threshold: {cls.WAKE_WORD_ASR_SIMILARITY_THRESHOLD}")
         print(f"   Presence Detection Threshold: {cls.HUMAN_PRESENCE_DETECTION_SCORE_THRESHOLD}")
         print(f"   YAMNet Weights Loaded: {len(cls.YAMNET_WEIGHTS)} events")
+        if radio_stations:
+            total_stations = sum(len(v) for v in radio_stations.values())
+            print(f"   Radio Stations: {total_stations} stations cached")
         if cls.DEFAULT_REACTIVE_AGENT_ID:
             print(f"   Default Reactive Agent: Cached (fast wake word response)")
         else:
@@ -256,6 +264,28 @@ class Config:
             print(f"✓ ReSpeaker config saved to {config_file} (will apply on next restart)")
         except Exception as e:
             print(f"⚠️  Could not save ReSpeaker config: {e}")
+    
+    @classmethod
+    def _save_radio_cache(cls, stations: dict):
+        """
+        Save radio stations to local cache file for offline use.
+        
+        The music player (StationRegistry) reads from this file.
+        Stations are fetched by the server and included in device config.
+        
+        Args:
+            stations: Dict of stations by genre/category
+        """
+        import json
+        
+        cache_file = os.path.expanduser("~/.kin_radio_cache.json")
+        
+        try:
+            with open(cache_file, 'w') as f:
+                json.dump(stations, f, indent=2)
+            # Silent save - main print statement shows station count
+        except Exception as e:
+            print(f"⚠️  Could not save radio cache: {e}")
     
     @classmethod
     def save_device_config_cache(cls, config_data: dict):

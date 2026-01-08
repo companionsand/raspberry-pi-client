@@ -374,9 +374,8 @@ class KinClient:
         if TELEMETRY_AVAILABLE:
             add_span_event("orchestrator_connected", device_id=Config.DEVICE_ID)
         
-        # Update radio cache in background (don't wait for it)
-        radio_task = asyncio.create_task(update_radio_cache_background(logger=self.logger))
-        self._background_tasks.append(radio_task)
+        # Note: Radio cache is now fetched by the server and included in device config.
+        # The cache is saved to ~/.kin_radio_cache.json during Config.load_runtime_config()
         
         # Start wake word detection
         self.wake_detector.start()
