@@ -2,6 +2,7 @@
 
 from .player import MusicPlayer, DEFAULT_STREAM_URL
 from .stations import StationRegistry, Station
+from .mode import MusicModeController, update_radio_cache_background
 
 # VoiceCommandDetector has heavy dependencies (onnxruntime, elevenlabs)
 # Import it lazily only when needed
@@ -20,6 +21,8 @@ get_stop_detector = get_voice_command_detector
 
 __all__ = [
     "MusicPlayer",
+    "MusicModeController",
+    "update_radio_cache_background",
     "StationRegistry", 
     "Station",
     "get_voice_command_detector",

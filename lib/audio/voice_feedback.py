@@ -5,7 +5,6 @@ Provides voice guidance during device startup, connectivity checks, and WiFi set
 Uses pre-recorded audio files for consistent, reliable feedback.
 """
 
-import os
 import logging
 import wave
 from typing import Optional

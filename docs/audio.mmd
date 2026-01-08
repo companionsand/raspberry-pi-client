@@ -1,0 +1,44 @@
+%% Audio Architecture Diagram for Kin AI Raspberry Pi Client
+%% Shows unified AudioManager architecture with AEC
+
+flowchart TB
+    MIC["Microphones"]
+    SPK["Loudspeaker"]
+    
+    AM["AudioManager"]
+    
+    MUSIC["MusicPlayer<br/>mpv subprocess"]
+    CONV["Conversation"]
+    WAKE["WakeWordDetector"]
+    CMD["VoiceCommandDetector"]
+
+    %% Input flow: Microphones → AudioManager
+    MIC --> AM
+    
+    %% Output flow: AudioManager → Consumers
+    AM --> |"Input audio"| WAKE
+    AM --> |"Input audio"| CMD
+    AM --> |"Input audio"| CONV
+    
+    %% Playback connections
+    CONV --> |"Playback audio"| AM
+    AM --> SPK
+    MUSIC --> SPK
+    
+    %% Echo Cancellation reference signal (ReSpeaker Ch5 loopback)
+    %% Speaker output (conversation + music) is captured as reference for AEC
+    SPK --> |"Reference signal<br/>(Ch5 loopback)"| AM
+
+    %% Styling
+    classDef hardware fill:#4a5568,stroke:#2d3748,color:#fff
+    classDef playback fill:#38a169,stroke:#276749,color:#fff
+    classDef recording fill:#2b6cb0,stroke:#2c5282,color:#fff
+    classDef conversation fill:#c53030,stroke:#9b2c2c,color:#fff
+    classDef manager fill:#805ad5,stroke:#6b46c1,color:#fff
+    
+    class MIC,SPK hardware
+    class MUSIC playback
+    class WAKE,CMD recording
+    class CONV conversation
+    class AM manager
+

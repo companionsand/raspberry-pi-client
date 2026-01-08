@@ -1,0 +1,30 @@
+stateDiagram-v2
+    [*] --> Boot
+    Boot --> SetupMode: No Internet
+    Boot --> Authentication: Has Internet
+    Boot --> DevMode: Missing Credentials
+    
+    SetupMode --> Authentication: WiFi + Pairing Code
+    SetupMode --> SetupMode: Retry on Failure
+    
+    Authentication --> Idle: Success
+    Authentication --> SetupMode: Unpaired
+    Authentication --> Error: Failed
+    
+    Idle --> WakeWordDetected: Wake Word
+    Idle --> Conversation: Proactive Message
+    
+    WakeWordDetected --> Conversation: Agent Details
+    WakeWordDetected --> Error: Timeout
+    
+    Conversation --> MusicMode: Music Request
+    Conversation --> Idle: End
+    
+    MusicMode --> Idle: Stop Command
+    
+    Error --> Idle: Recovery
+    Error --> Shutdown: Fatal
+    
+    Idle --> Shutdown: SIGINT/SIGTERM
+    Shutdown --> [*]
+
