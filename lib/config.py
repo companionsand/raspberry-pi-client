@@ -28,7 +28,7 @@ class Config:
     # Audio settings (ALSA-only, single ReSpeaker device for both capture and playback)
     SAMPLE_RATE = 16000  # 16kHz for both capture and playback (hardcoded)
     CHANNELS = 1  # Mono output (ReSpeaker AEC expects mono reference)
-    CHUNK_SIZE = 320  # ~20ms frames (multiple of 160 for WebRTC AEC, was 512/32ms)
+    CHUNK_SIZE = 480  # ~30ms frames (multiple of 160 for WebRTC AEC, balance between latency and overflow prevention)
     
     # ReSpeaker 4-Mic Array channel configuration
     # The ReSpeaker outputs 6 channels: Ch0 = AEC-processed, Ch1-4 = raw mics, Ch5 = reference

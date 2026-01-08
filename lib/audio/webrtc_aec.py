@@ -5,12 +5,12 @@ to process audio in real-time streaming chunks. It handles:
 - Echo cancellation using reference signal (playback loopback)
 - Noise suppression (configurable 0-3)
 - Automatic Gain Control (configurable adaptive/fixed)
-- 320-sample chunks (20ms @ 16kHz) split into 2x 160-sample WebRTC frames
+- Configurable chunk sizes (must be multiple of 160 samples for WebRTC's 10ms frames)
 
 Architecture:
-- Input: 320-sample chunks (mic + reference)
-- Processing: Split into 2x 160-sample chunks for WebRTC (10ms frames)
-- Output: 320-sample processed chunk
+- Input: N-sample chunks (mic + reference), where N is a multiple of 160
+- Processing: Split into 160-sample chunks for WebRTC (10ms frames)
+- Output: N-sample processed chunk
 
 Reference implementation: pipipi/tests/test_aec_webrtc.py
 """
@@ -28,11 +28,11 @@ class WebRTCAECProcessor:
     """
     Real-time WebRTC AEC3 processor for streaming audio.
     
-    Processes audio in 320-sample chunks (20ms @ 16kHz), splitting internally
-    into 2x 160-sample chunks for WebRTC AEC3 (which requires 10ms frames).
+    Processes audio in configurable chunk sizes (must be multiple of 160 samples),
+    splitting internally into 160-sample chunks for WebRTC AEC3 (which requires 10ms frames).
     
     Usage:
-        processor = WebRTCAECProcessor(stream_delay_ms=100, ns_level=1, agc_mode=2)
+        processor = WebRTCAECProcessor(chunk_size=480, stream_delay_ms=100, ns_level=1, agc_mode=2)
         processor.start()  # Initialize processor state
         
         # In audio loop:
@@ -45,6 +45,7 @@ class WebRTCAECProcessor:
         self,
         sample_rate: int = 16000,
         channels: int = 1,
+        chunk_size: int = 320,
         stream_delay_ms: int = 100,
         ns_level: int = 1,
         agc_mode: int = 2,
@@ -56,10 +57,14 @@ class WebRTCAECProcessor:
         Args:
             sample_rate: Sample rate in Hz (default: 16000)
             channels: Number of channels (default: 1, mono)
+            chunk_size: Chunk size in samples (must be multiple of 160, default: 320)
             stream_delay_ms: Delay between playback and capture in milliseconds (50-200ms typical for USB)
             ns_level: Noise suppression level [0-3] (0=off, 1=moderate, 3=max)
             agc_mode: AGC mode [1=adaptive digital, 2=fixed digital]
             enable_vad: Enable Voice Activity Detection (default: True)
+        
+        Raises:
+            ValueError: If chunk_size is not a multiple of 160
         """
         if AudioProcessor is None:
             raise ImportError(
@@ -77,17 +82,26 @@ class WebRTCAECProcessor:
         # WebRTC requires 10ms frames (160 samples @ 16kHz)
         self.webrtc_frame_size = 160
         
-        # We process 320-sample chunks (20ms) = 2x WebRTC frames
-        self.chunk_size = 320
+        # Validate chunk size is a multiple of 160
+        if chunk_size % self.webrtc_frame_size != 0:
+            raise ValueError(
+                f"chunk_size must be a multiple of {self.webrtc_frame_size} "
+                f"(WebRTC frame size), got {chunk_size}"
+            )
+        
+        self.chunk_size = chunk_size
+        self.num_frames = chunk_size // self.webrtc_frame_size
         
         # Initialize processor (will be set in start())
         self.processor: Optional[AudioProcessor] = None
         self.is_started = False
         
+        chunk_ms = (chunk_size / sample_rate) * 1000
         print(f"✓ WebRTC AEC initialized:")
         print(f"   - Sample rate: {sample_rate}Hz")
-        print(f"   - Chunk size: {self.chunk_size} samples (20ms)")
+        print(f"   - Chunk size: {self.chunk_size} samples ({chunk_ms:.1f}ms)")
         print(f"   - WebRTC frame size: {self.webrtc_frame_size} samples (10ms)")
+        print(f"   - Frames per chunk: {self.num_frames}")
         print(f"   - Stream delay: {stream_delay_ms}ms")
         print(f"   - Noise suppression level: {ns_level}")
         print(f"   - AGC mode: {agc_mode} ({'adaptive' if agc_mode == 1 else 'fixed digital'})")
@@ -137,16 +151,16 @@ class WebRTCAECProcessor:
     
     def process_chunk(self, mic_chunk: np.ndarray, ref_chunk: np.ndarray) -> np.ndarray:
         """
-        Process a single 320-sample chunk (20ms @ 16kHz) through WebRTC AEC.
+        Process a single chunk through WebRTC AEC.
         
-        Internally splits the chunk into 2x 160-sample frames for WebRTC processing.
+        Internally splits the chunk into 160-sample frames for WebRTC processing.
         
         Args:
-            mic_chunk: Microphone audio chunk (320 samples, int16)
-            ref_chunk: Reference audio chunk (320 samples, int16) - playback loopback
+            mic_chunk: Microphone audio chunk (must match chunk_size, int16)
+            ref_chunk: Reference audio chunk (must match chunk_size, int16) - playback loopback
         
         Returns:
-            Processed audio chunk (320 samples, int16) with echo cancelled
+            Processed audio chunk (same size as input, int16) with echo cancelled
         
         Raises:
             RuntimeError: If processor not started or chunk size mismatch
@@ -164,7 +178,7 @@ class WebRTCAECProcessor:
                 f"ref_chunk size mismatch: expected {self.chunk_size}, got {len(ref_chunk)}"
             )
         
-        # Process in 2x 160-sample chunks (10ms frames for WebRTC)
+        # Process in 160-sample chunks (10ms frames for WebRTC)
         processed_frames = []
         
         for i in range(0, self.chunk_size, self.webrtc_frame_size):
@@ -186,7 +200,7 @@ class WebRTCAECProcessor:
             processed_frame = np.frombuffer(processed_bytes, dtype=np.int16)
             processed_frames.append(processed_frame)
         
-        # Concatenate 2x 160-sample frames back into 320-sample chunk
+        # Concatenate frames back into original chunk size
         processed_chunk = np.concatenate(processed_frames)
         
         return processed_chunk

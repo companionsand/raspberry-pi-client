@@ -83,6 +83,11 @@ class AudioManager:
         self._consumers: List[Callable[[np.ndarray], None]] = []
         self._consumers_lock = threading.Lock()
         
+        # Audio distribution queue and thread (non-blocking consumer callbacks)
+        self._audio_distribution_queue: queue.Queue = queue.Queue(maxsize=10)  # Limit queue size to prevent memory buildup
+        self._distribution_thread: Optional[threading.Thread] = None
+        self._stop_distribution_event = threading.Event()
+        
         # Output queue for playback
         self._output_queue: queue.Queue = queue.Queue()
         self._output_remainder: Optional[np.ndarray] = None
@@ -97,6 +102,12 @@ class AudioManager:
         self._last_debug_log = 0
         self._debug_interval = 3.0  # Log every 3 seconds
         self._first_frame_debug = True  # One-time debug for audio format
+        
+        # Status warning rate limiting
+        self._last_input_status_warning = 0
+        self._last_output_status_warning = 0
+        self._status_warning_interval = 5.0  # Only log status warnings every 5 seconds
+        self._status_warning_count = 0  # Count warnings between logs
         
         # Logger
         self._logger = Config.LOGGER
@@ -146,6 +157,9 @@ class AudioManager:
                 # Start watchdog
                 self._start_watchdog()
                 
+                # Start audio distribution thread (non-blocking consumer callbacks)
+                self._start_distribution_thread()
+                
                 print("✓ AudioManager started")
                 
                 if self._logger:
@@ -179,9 +193,10 @@ class AudioManager:
                 return
             
             print("🛑 Stopping AudioManager...")
-            # Stop watchdog FIRST to prevent race conditions during cleanup
+            # Stop watchdog and distribution thread FIRST to prevent race conditions during cleanup
             self._is_running = False
             self._stop_watchdog()
+            self._stop_distribution_thread()
             self._cleanup()
             print("✓ AudioManager stopped")
             
@@ -312,6 +327,7 @@ class AudioManager:
             self._aec_processor = WebRTCAECProcessor(
                 sample_rate=Config.SAMPLE_RATE,
                 channels=Config.CHANNELS,
+                chunk_size=Config.CHUNK_SIZE,
                 stream_delay_ms=Config.WEBRTC_AEC_STREAM_DELAY_MS,
                 ns_level=Config.WEBRTC_AEC_NS_LEVEL,
                 agc_mode=Config.WEBRTC_AEC_AGC_MODE,
@@ -429,8 +445,19 @@ class AudioManager:
         if self._callback_count == 1:
             print(f"🎤 Input callback started (indata.shape={indata.shape})")
         
+        # Rate-limit status warnings to avoid console spam (which worsens the problem)
         if status:
-            print(f"⚠️  AudioManager input status: {status}")
+            now = time.time()
+            self._status_warning_count += 1
+            
+            # Only log every N seconds to avoid slowing down the callback
+            if now - self._last_input_status_warning >= self._status_warning_interval:
+                if self._status_warning_count > 1:
+                    print(f"⚠️  AudioManager input status: {status} (occurred {self._status_warning_count} times in last {self._status_warning_interval:.0f}s)")
+                else:
+                    print(f"⚠️  AudioManager input status: {status}")
+                self._last_input_status_warning = now
+                self._status_warning_count = 0
         
         # Update watchdog timestamp
         self._last_callback_time = time.time()
@@ -438,18 +465,24 @@ class AudioManager:
         # Process input
         processed_audio = self._process_input(indata)
         
-        # Distribute to consumers
-        with self._consumers_lock:
-            for callback in self._consumers:
-                try:
-                    callback(processed_audio)
-                except Exception as e:
-                    print(f"⚠️  Consumer callback error: {e}")
+        # Enqueue for non-blocking distribution to consumers
+        # Use non-blocking put to avoid blocking the audio callback if queue is full
+        try:
+            self._audio_distribution_queue.put_nowait(processed_audio.copy())
+        except queue.Full:
+            # Queue is full - drop this frame to prevent blocking
+            # This is better than blocking the audio callback
+            pass
     
     def _output_callback(self, outdata, frames, time_info, status):
         """Output stream callback (playback)."""
+        # Rate-limit status warnings to avoid console spam
         if status:
-            print(f"⚠️  AudioManager output status: {status}")
+            now = time.time()
+            # Only log every N seconds
+            if now - self._last_output_status_warning >= self._status_warning_interval:
+                print(f"⚠️  AudioManager output status: {status}")
+                self._last_output_status_warning = now
         
         # Fill output buffer
         self._process_output(outdata)
@@ -479,13 +512,12 @@ class AudioManager:
         # =====================================================================
         processed_audio = self._process_input(indata)
         
-        # Distribute to consumers
-        with self._consumers_lock:
-            for callback in self._consumers:
-                try:
-                    callback(processed_audio)
-                except Exception as e:
-                    print(f"⚠️  Consumer callback error: {e}")
+        # Enqueue for non-blocking distribution to consumers
+        try:
+            self._audio_distribution_queue.put_nowait(processed_audio.copy())
+        except queue.Full:
+            # Queue is full - drop this frame to prevent blocking
+            pass
         
         # =====================================================================
         # OUTPUT PROCESSING
@@ -623,6 +655,43 @@ class AudioManager:
         self._watchdog_thread = threading.Thread(target=self._watchdog_loop, daemon=True)
         self._watchdog_thread.start()
         print("✓ AudioManager watchdog started")
+    
+    def _start_distribution_thread(self) -> None:
+        """Start the audio distribution thread for non-blocking consumer callbacks."""
+        self._stop_distribution_event.clear()
+        self._distribution_thread = threading.Thread(target=self._distribution_loop, daemon=True)
+        self._distribution_thread.start()
+        print("✓ AudioManager distribution thread started")
+    
+    def _stop_distribution_thread(self) -> None:
+        """Stop the audio distribution thread."""
+        if self._distribution_thread:
+            self._stop_distribution_event.set()
+            self._distribution_thread.join(timeout=1.0)
+            self._distribution_thread = None
+    
+    def _distribution_loop(self) -> None:
+        """Pull audio from queue and distribute to consumers (non-blocking)."""
+        while not self._stop_distribution_event.is_set():
+            try:
+                # Get audio from queue with timeout to allow checking stop event
+                try:
+                    processed_audio = self._audio_distribution_queue.get(timeout=0.1)
+                except queue.Empty:
+                    continue
+                
+                # Distribute to all consumers
+                with self._consumers_lock:
+                    for callback in self._consumers:
+                        try:
+                            callback(processed_audio)
+                        except Exception as e:
+                            print(f"⚠️  Consumer callback error: {e}")
+                            
+            except Exception as e:
+                # Log but continue - don't let one error stop distribution
+                print(f"⚠️  Audio distribution error: {e}")
+                time.sleep(0.01)  # Brief pause before retrying
 
     def _stop_watchdog(self) -> None:
         """Stop the watchdog thread."""
@@ -711,6 +780,13 @@ class AudioManager:
         
         # Clear queues
         self.clear_playback_queue()
+        
+        # Clear audio distribution queue
+        while not self._audio_distribution_queue.empty():
+            try:
+                self._audio_distribution_queue.get_nowait()
+            except queue.Empty:
+                break
         
         # Clear consumers
         with self._consumers_lock:
