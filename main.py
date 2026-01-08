@@ -107,6 +107,9 @@ class KinClient:
         self.conversation_start_time = None
         self.conversation_trace_context = None
         
+        # Track background tasks for proper cleanup
+        self._background_tasks = []
+        
         # Audio device indices (will be set after detection)
         self.mic_device_index = None
         self.speaker_device_index = None
@@ -372,7 +375,8 @@ class KinClient:
             add_span_event("orchestrator_connected", device_id=Config.DEVICE_ID)
         
         # Update radio cache in background (don't wait for it)
-        asyncio.create_task(update_radio_cache_background(logger=self.logger))
+        radio_task = asyncio.create_task(update_radio_cache_background(logger=self.logger))
+        self._background_tasks.append(radio_task)
         
         # Start wake word detection
         self.wake_detector.start()

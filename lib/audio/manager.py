@@ -64,10 +64,16 @@ class AudioManager:
             use_webrtc_aec = Config.USE_WEBRTC_AEC
         self._use_webrtc_aec = use_webrtc_aec and WEBRTC_AEC_AVAILABLE
         
-        # Stream state
-        self._stream: Optional[sd.Stream] = None
+        # Stream state (separate streams for ALSA asym compatibility)
+        self._input_stream: Optional[sd.InputStream] = None
+        self._output_stream: Optional[sd.OutputStream] = None
         self._is_running = False
         self._lock = threading.Lock()
+        
+        # Watchdog state
+        self._last_callback_time = 0.0
+        self._watchdog_thread = None
+        self._stop_watchdog_event = threading.Event()
         
         # AEC processor
         self._aec_processor: Optional[WebRTCAECProcessor] = None
@@ -90,6 +96,7 @@ class AudioManager:
         # Debug logging
         self._last_debug_log = 0
         self._debug_interval = 3.0  # Log every 3 seconds
+        self._first_frame_debug = True  # One-time debug for audio format
         
         # Logger
         self._logger = Config.LOGGER
@@ -131,10 +138,14 @@ class AudioManager:
                 if self._use_webrtc_aec and self._has_respeaker:
                     self._init_webrtc_aec()
                 
-                # Open duplex stream
+                # Open separate input/output streams
                 self._open_stream()
                 
                 self._is_running = True
+                
+                # Start watchdog
+                self._start_watchdog()
+                
                 print("✓ AudioManager started")
                 
                 if self._logger:
@@ -168,7 +179,9 @@ class AudioManager:
                 return
             
             print("🛑 Stopping AudioManager...")
+            # Stop watchdog FIRST to prevent race conditions during cleanup
             self._is_running = False
+            self._stop_watchdog()
             self._cleanup()
             print("✓ AudioManager stopped")
             
@@ -244,32 +257,42 @@ class AudioManager:
     
     def _detect_respeaker(self) -> None:
         """Detect ReSpeaker device and configure channels."""
-        devices = sd.query_devices()
+        # Retry detection a few times to handle intermittent USB initialization delays
+        max_attempts = 3
         
-        for idx, dev in enumerate(devices):
-            if any(kw in dev['name'].lower() for kw in ['respeaker', 'arrayuac10', 'uac1.0']):
-                # Always capture all 6 channels for simplicity and flexibility
-                # - Hardware AEC: extract Ch0 (AEC-processed)
-                # - WebRTC AEC: extract Ch0 (mic) and Ch5 (reference)
-                # Check that device supports both input (6ch) and output (1ch)
-                if (dev['max_input_channels'] >= Config.RESPEAKER_CHANNELS and 
-                    dev['max_output_channels'] >= Config.CHANNELS):
-                    self._has_respeaker = True
-                    # Always use 6 channels - simpler and works for both AEC modes
-                    self._input_channels = Config.RESPEAKER_CHANNELS
-                    self._respeaker_device_index = idx
-                    
-                    # Get ALSA card number for direct ALSA device string access
-                    from lib.audio.device_detection import get_alsa_card_number
-                    self._respeaker_alsa_card = get_alsa_card_number(dev['name'])
-                    
-                    print(f"✓ ReSpeaker detected: {dev['name']}")
-                    print(f"   PortAudio device index: {idx}")
-                    if self._respeaker_alsa_card is not None:
-                        print(f"   ALSA card number: {self._respeaker_alsa_card}")
-                    print(f"   Input channels: {self._input_channels} (always capture all channels)")
-                    print(f"   Output channels: {dev['max_output_channels']}")
-                    return
+        for attempt in range(max_attempts):
+            devices = sd.query_devices()
+            
+            for idx, dev in enumerate(devices):
+                if any(kw in dev['name'].lower() for kw in ['respeaker', 'arrayuac10', 'uac1.0']):
+                    # Always capture all 6 channels for simplicity and flexibility
+                    # - Hardware AEC: extract Ch0 (AEC-processed)
+                    # - WebRTC AEC: extract Ch0 (mic) and Ch5 (reference)
+                    # Check that device supports both input (6ch) and output (1ch)
+                    if (dev['max_input_channels'] >= Config.RESPEAKER_CHANNELS and 
+                        dev['max_output_channels'] >= Config.CHANNELS):
+                        self._has_respeaker = True
+                        # Always use 6 channels - simpler and works for both AEC modes
+                        self._input_channels = Config.RESPEAKER_CHANNELS
+                        self._respeaker_device_index = idx
+                        
+                        # Get ALSA card number for direct ALSA device string access
+                        from lib.audio.device_detection import get_alsa_card_number
+                        self._respeaker_alsa_card = get_alsa_card_number(dev['name'])
+                        
+                        print(f"✓ ReSpeaker detected: {dev['name']}")
+                        print(f"   PortAudio device index: {idx}")
+                        if self._respeaker_alsa_card is not None:
+                            print(f"   ALSA card number: {self._respeaker_alsa_card}")
+                        print(f"   Input channels: {self._input_channels} (always capture all channels)")
+                        print(f"   Output channels: {dev['max_output_channels']}")
+                        return
+            
+            # If not found, wait briefly before retrying
+            if attempt < max_attempts - 1:
+                # Only log retry if we're actually looking for it
+                print(f"ℹ️  ReSpeaker not found, retrying detection ({attempt + 1}/{max_attempts})...")
+                time.sleep(1.0)
         
         # Fallback to mono
         self._has_respeaker = False
@@ -370,21 +393,66 @@ class AudioManager:
             output_device = None
             print(f"   Using ALSA default routing (through /etc/asound.conf)")
         
-        self._stream = sd.Stream(
-            device=(input_device, output_device),
+        # Open separate input and output streams (ALSA asym compatibility)
+        print("📡 Opening separate input/output streams for ALSA asym compatibility...")
+        
+        # Input stream
+        self._input_stream = sd.InputStream(
+            device=input_device,
             samplerate=Config.SAMPLE_RATE,
-            channels=(self._input_channels, Config.CHANNELS),
+            channels=self._input_channels,
             dtype='int16',
             blocksize=Config.CHUNK_SIZE,
-            callback=self._audio_callback
+            callback=self._input_callback
         )
-        self._stream.start()
+        self._input_stream.start()
+        print(f"✓ Input stream opened: {self._input_channels} channels @ {Config.SAMPLE_RATE} Hz")
         
-        print(f"✓ Audio stream opened:")
-        print(f"   Sample rate: {Config.SAMPLE_RATE} Hz")
-        print(f"   Block size: {Config.CHUNK_SIZE} samples")
-        print(f"   Input channels: {self._input_channels}")
-        print(f"   Output channels: {Config.CHANNELS}")
+        # Output stream
+        self._output_stream = sd.OutputStream(
+            device=output_device,
+            samplerate=Config.SAMPLE_RATE,
+            channels=Config.CHANNELS,
+            dtype='int16',
+            blocksize=Config.CHUNK_SIZE,
+            callback=self._output_callback
+        )
+        self._output_stream.start()
+        print(f"✓ Output stream opened: {Config.CHANNELS} channels @ {Config.SAMPLE_RATE} Hz")
+    
+    def _input_callback(self, indata, frames, time_info, status):
+        """Input stream callback (capture)."""
+        # DIAGNOSTIC: Print on first callback
+        if not hasattr(self, '_callback_count'):
+            self._callback_count = 0
+        self._callback_count += 1
+        if self._callback_count == 1:
+            print(f"🎤 Input callback started (indata.shape={indata.shape})")
+        
+        if status:
+            print(f"⚠️  AudioManager input status: {status}")
+        
+        # Update watchdog timestamp
+        self._last_callback_time = time.time()
+        
+        # Process input
+        processed_audio = self._process_input(indata)
+        
+        # Distribute to consumers
+        with self._consumers_lock:
+            for callback in self._consumers:
+                try:
+                    callback(processed_audio)
+                except Exception as e:
+                    print(f"⚠️  Consumer callback error: {e}")
+    
+    def _output_callback(self, outdata, frames, time_info, status):
+        """Output stream callback (playback)."""
+        if status:
+            print(f"⚠️  AudioManager output status: {status}")
+        
+        # Fill output buffer
+        self._process_output(outdata)
     
     def _audio_callback(self, indata, outdata, frames, time_info, status):
         """
@@ -393,8 +461,18 @@ class AudioManager:
         1. Capture input → extract channels → AEC → distribute to consumers
         2. Output queue → speaker
         """
+        # DIAGNOSTIC: Print on first callback to confirm it's being called
+        if not hasattr(self, '_callback_count'):
+            self._callback_count = 0
+        self._callback_count += 1
+        if self._callback_count == 1:
+            print(f"🎤 DIAGNOSTIC: Audio callback IS being called (indata.shape={indata.shape})")
+        
         if status:
             print(f"⚠️  AudioManager status: {status}")
+        
+        # Update watchdog timestamp
+        self._last_callback_time = time.time()
         
         # =====================================================================
         # INPUT PROCESSING
@@ -424,6 +502,17 @@ class AudioManager:
         Returns:
             Mono int16 array, AEC-processed if enabled.
         """
+        start_time = time.time()
+        
+        # Diagnostic logging for first frame (to debug intermittent missing stats)
+        if self._first_frame_debug:
+            self._first_frame_debug = False
+            print(f"🎤 First audio frame: shape={indata.shape}, dtype={indata.dtype}, "
+                  f"respeaker={self._has_respeaker}, channels={self._input_channels}")
+            
+            if self._has_respeaker and (indata.ndim != 2 or indata.shape[1] < Config.RESPEAKER_CHANNELS):
+                print(f"⚠️  ReSpeaker detected but audio format incorrect for channel extraction!")
+        
         # Extract channels for ReSpeaker
         if self._has_respeaker and indata.ndim == 2 and indata.shape[1] >= Config.RESPEAKER_CHANNELS:
             mic_channel = indata[:, Config.RESPEAKER_AEC_CHANNEL].copy()
@@ -433,21 +522,37 @@ class AudioManager:
             self._log_channel_debug(indata, mic_channel, ref_channel)
             
             # WebRTC AEC processing
+            result = None
             if self._aec_processor is not None:
                 try:
-                    processed = self._aec_processor.process_chunk(mic_channel, ref_channel)
-                    return processed
+                    result = self._aec_processor.process_chunk(mic_channel, ref_channel)
                 except Exception as e:
                     print(f"⚠️  AEC processing error: {e}")
-                    return mic_channel
+                    result = mic_channel
             else:
                 # Hardware AEC only - return Ch0
-                return mic_channel
+                result = mic_channel
+            
+            # Performance check
+            duration = (time.time() - start_time) * 1000  # ms
+            if duration > 15.0:  # Warning threshold (block size is 20ms)
+                print(f"⚠️  AudioManager CPU spike: input processing took {duration:.1f}ms")
+            
+            return result
         else:
             # Non-ReSpeaker: return first channel as mono
+            result = None
             if indata.ndim == 2:
-                return indata[:, 0].astype(np.int16)
-            return indata.flatten().astype(np.int16)
+                result = indata[:, 0].astype(np.int16)
+            else:
+                result = indata.flatten().astype(np.int16)
+            
+            # Performance check
+            duration = (time.time() - start_time) * 1000  # ms
+            if duration > 15.0:
+                print(f"⚠️  AudioManager CPU spike: input processing took {duration:.1f}ms")
+            
+            return result
     
     def _process_output(self, outdata: np.ndarray) -> None:
         """
@@ -511,15 +616,91 @@ class AudioManager:
         print(f"📊 [AudioManager] [{status}] [{aec_mode}] " +
               " | ".join(f"Ch{i}={rms:.4f}" for i, rms in enumerate(ch_rms)))
     
+    def _start_watchdog(self) -> None:
+        """Start the audio stream watchdog thread."""
+        self._stop_watchdog_event.clear()
+        self._last_callback_time = time.time()  # Reset time
+        self._watchdog_thread = threading.Thread(target=self._watchdog_loop, daemon=True)
+        self._watchdog_thread.start()
+        print("✓ AudioManager watchdog started")
+
+    def _stop_watchdog(self) -> None:
+        """Stop the watchdog thread."""
+        if self._watchdog_thread:
+            self._stop_watchdog_event.set()
+            self._watchdog_thread.join(timeout=1.0)
+            self._watchdog_thread = None
+
+    def _watchdog_loop(self) -> None:
+        """Monitor audio stream health and restart if frozen."""
+        TIMEOUT_SECONDS = 10.0  # Increased from 5.0s to avoid false positives
+        CHECK_INTERVAL = 1.0
+        
+        while not self._stop_watchdog_event.is_set():
+            time.sleep(CHECK_INTERVAL)
+            
+            # Check if stream is frozen
+            time_since_last = time.time() - self._last_callback_time
+            if time_since_last > TIMEOUT_SECONDS and self._is_running:
+                print(f"⚠️  AudioManager frozen (no callback for {time_since_last:.1f}s) - Restarting stream...")
+                
+                # Double check we haven't been stopped while waiting
+                if self._stop_watchdog_event.is_set() or not self._is_running:
+                    return
+                
+                # Restart stream logic
+                # Note: We can't call stop()/start() directly because of lock recursion potential
+                # and we're in a background thread.
+                try:
+                    # 1. Close existing streams
+                    if self._input_stream:
+                        try:
+                            self._input_stream.stop()
+                            self._input_stream.close()
+                        except Exception:
+                            pass
+                        self._input_stream = None
+                    
+                    if self._output_stream:
+                        try:
+                            self._output_stream.stop()
+                            self._output_stream.close()
+                        except Exception:
+                            pass
+                        self._output_stream = None
+                    
+                    # 2. Re-detect device (in case it was unplugged/reset)
+                    try:
+                        self._detect_respeaker()
+                    except Exception as e:
+                        print(f"⚠️  Watchdog re-detection failed: {e}")
+                    
+                    # 3. Re-open streams
+                    self._open_stream()
+                    self._last_callback_time = time.time()  # Reset timer
+                    print("✓ AudioManager streams restarted by watchdog")
+                except Exception as e:
+                    print(f"✗ Watchdog failed to restart stream: {e}")
+                    # Back off to avoid tight loop
+                    time.sleep(5.0)
+
     def _cleanup(self) -> None:
         """Clean up resources."""
-        if self._stream:
+        if self._input_stream:
             try:
-                self._stream.stop()
-                self._stream.close()
+                self._input_stream.stop()
+                self._input_stream.close()
             except Exception:
                 pass
-            self._stream = None
+            self._input_stream = None
+        
+        if self._output_stream:
+            try:
+                self._output_stream.stop()
+                self._output_stream.close()
+            except Exception:
+                pass
+            self._output_stream = None
         
         if self._aec_processor:
             try:
