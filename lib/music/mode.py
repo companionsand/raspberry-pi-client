@@ -3,8 +3,9 @@ Music Mode Controller
 
 Handles music playback mode with voice command control:
 - Starts the music player (mpv)
-- Listens for voice commands: stop, pause, resume, volume up, volume down
-- Returns to wake word mode when "stop" is detected
+- Listens for voice commands: stop, pause, resume, volume up, volume down, next, previous
+- Listens for wake word to start a conversation
+- Returns to wake word mode when "stop" is detected or wake word triggers
 
 Also provides radio cache management for faster station lookups.
 """
@@ -12,6 +13,7 @@ Also provides radio cache management for faster station lookups.
 import asyncio
 import json
 import os
+from enum import Enum
 from typing import TYPE_CHECKING, Optional
 
 from lib.config import Config
@@ -21,6 +23,14 @@ from .player import MusicPlayer
 
 if TYPE_CHECKING:
     from lib.audio.manager import AudioManager
+
+
+class MusicExitReason(Enum):
+    """Reason why music mode ended"""
+    STOP_COMMAND = "stop_command"  # User said "stop"
+    WAKE_WORD = "wake_word"        # User said wake word - start conversation
+    ERROR = "error"                # Error occurred
+    EXTERNAL = "external"          # Stopped externally
 
 
 # Cache configuration
@@ -37,8 +47,12 @@ class MusicModeController:
     """
     Controller for music playback mode.
     
-    Manages the music player and voice command detection,
-    handling the full music mode lifecycle.
+    Manages the music player, voice command detection, and wake word detection.
+    Handles the full music mode lifecycle.
+    
+    Exit conditions:
+    - "stop" voice command: Returns to idle mode
+    - Wake word detected: Starts a new conversation
     """
     
     def __init__(
@@ -64,24 +78,32 @@ class MusicModeController:
         
         self._music_player: Optional[MusicPlayer] = None
         self._voice_detector: Optional[VoiceCommandDetector] = None
+        self._wake_word_detector = None
+        self._exit_reason: MusicExitReason = MusicExitReason.EXTERNAL
     
-    async def run(self, genre: Optional[str] = None) -> None:
+    async def run(self, genre: Optional[str] = None, wake_word_detector=None) -> MusicExitReason:
         """
-        Run music playback mode until stop command is received.
+        Run music playback mode until stop command or wake word is detected.
         
         This method:
         1. Sets LED to music visualization state
         2. Registers callback to sync LEDs with music via Ch5 (reference channel)
         3. Starts the music player with requested genre
-        4. Starts voice command detector
-        5. Handles commands until "stop" is detected
+        4. Starts voice command detector AND wake word detector
+        5. Handles commands until "stop" is detected or wake word triggers
         6. Cleans up resources
         
         Args:
             genre: Optional genre to play (e.g., "jazz", "rock")
+            wake_word_detector: WakeWordDetector instance to listen for wake word during music
+        
+        Returns:
+            MusicExitReason indicating why music mode ended
         """
         # Music LED callback for reference channel audio
         self._music_led_callback = None
+        self._wake_word_detector = wake_word_detector
+        self._exit_reason = MusicExitReason.EXTERNAL
         
         try:
             # Set LED to music mode and register callback for music visualization
@@ -134,9 +156,14 @@ class MusicModeController:
                     }
                 )
             
+            # Track if a music command was matched (for wake word priority)
+            self._command_matched = False
+            
             # Define command handler
             def handle_command(command: MusicCommand) -> None:
                 """Handle voice commands for music control."""
+                self._command_matched = True  # Mark that we matched a command
+                
                 if command == MusicCommand.PAUSE:
                     self._music_player.pause()
                 elif command == MusicCommand.RESUME:
@@ -149,24 +176,44 @@ class MusicModeController:
                     self._music_player.play_next()
                 elif command == MusicCommand.PREVIOUS:
                     self._music_player.play_previous()
+                
+                # Clear wake word detection if a command was matched (command takes priority)
+                if self._wake_word_detector and self._wake_word_detector.detected:
+                    print("   (Music command takes priority over wake word)")
+                    self._wake_word_detector.detected = False
                 # STOP is handled by detector returning
+            
+            # Start wake word detector if provided
+            if self._wake_word_detector:
+                # Reset detection state and start listening
+                self._wake_word_detector.detected = False
+                self._wake_word_detector.start()
+                print("✓ Wake word detector active during music mode")
             
             # Start voice command detector (uses AudioManager for AEC-processed audio)
             self._voice_detector = VoiceCommandDetector(
                 audio_manager=self._audio_manager,
-                on_command=handle_command
+                on_command=handle_command,
+                wake_word_detector=self._wake_word_detector  # Pass for wake word checking
             )
             
-            # Run detector until STOP command
+            # Run detector until STOP command or wake word
             final_command = await self._voice_detector.start()
             
+            # Determine exit reason
             if final_command == MusicCommand.STOP:
                 print("\n🛑 Stop command detected - exiting music mode")
+                self._exit_reason = MusicExitReason.STOP_COMMAND
+            elif self._wake_word_detector and self._wake_word_detector.detected:
+                print("\n🎯 Wake word detected - exiting music mode for conversation")
+                self._exit_reason = MusicExitReason.WAKE_WORD
             else:
                 print("\n📻 Music mode ended")
+                self._exit_reason = MusicExitReason.EXTERNAL
                 
         except Exception as e:
             print(f"⚠️  Music mode error: {e}")
+            self._exit_reason = MusicExitReason.ERROR
             if self.logger:
                 self.logger.error(
                     "music_mode_error",
@@ -184,15 +231,21 @@ class MusicModeController:
                 self.logger.info(
                     "music_mode_ended",
                     extra={
+                        "exit_reason": self._exit_reason.value,
                         "user_id": Config.USER_ID,
                         "device_id": Config.DEVICE_ID
                     }
                 )
             
-            print("✓ Returning to wake word mode")
+            if self._exit_reason == MusicExitReason.WAKE_WORD:
+                print("✓ Starting conversation...")
+            else:
+                print("✓ Returning to wake word mode")
+        
+        return self._exit_reason
     
     def _cleanup(self) -> None:
-        """Clean up music player, voice detector, and LED resources."""
+        """Clean up music player, voice detector, wake word detector, and LED resources."""
         # Unregister music LED callback
         if self._music_led_callback:
             self._audio_manager.unregister_ref_channel_consumer(self._music_led_callback)
@@ -205,6 +258,11 @@ class MusicModeController:
         if self._voice_detector:
             self._voice_detector.stop()
             self._voice_detector = None
+        
+        # Stop wake word detector (but don't destroy it - main.py owns it)
+        if self._wake_word_detector:
+            self._wake_word_detector.stop()
+            # Don't set to None - main.py will reuse it
 
 
 async def update_radio_cache_background(logger=None) -> int:

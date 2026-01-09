@@ -82,12 +82,14 @@ class VoiceCommandDetector:
     3. Uses VAD to detect speech
     4. When speech ends, sends trailing 2s to Scribe
     5. Fuzzy matches transcript against command patterns
+    6. Also monitors wake word detector (if provided) and exits if triggered
     """
     
     def __init__(
         self,
         audio_manager: "AudioManager",
-        on_command: Optional[Callable[[MusicCommand], None]] = None
+        on_command: Optional[Callable[[MusicCommand], None]] = None,
+        wake_word_detector=None
     ):
         """
         Initialize voice command detector.
@@ -95,12 +97,15 @@ class VoiceCommandDetector:
         Args:
             audio_manager: AudioManager instance for receiving processed audio
             on_command: Callback function when command is detected
+            wake_word_detector: Optional WakeWordDetector to check for wake word during music
         """
         self._audio_manager = audio_manager
         self.on_command = on_command
+        self._wake_word_detector = wake_word_detector
         self.running = False
         self.last_command = MusicCommand.NONE
         self.logger = Config.LOGGER
+        self._exited_by_wake_word = False  # Track if we exited due to wake word
         
         # Audio settings
         self.sample_rate = Config.SAMPLE_RATE  # 16kHz
@@ -240,7 +245,7 @@ class VoiceCommandDetector:
                                 if command != MusicCommand.NONE:
                                     self.last_command = command
                                     
-                                    # Call callback
+                                    # Call callback (this also clears wake word if needed)
                                     if self.on_command:
                                         self.on_command(command)
                                     
@@ -248,10 +253,25 @@ class VoiceCommandDetector:
                                     if command == MusicCommand.STOP:
                                         self.running = False
                                         return command
+                                else:
+                                    # No music command matched - check if wake word was detected
+                                    if self._wake_word_detector and self._wake_word_detector.detected:
+                                        print("   🎯 No music command matched, but wake word detected!")
+                                        self._exited_by_wake_word = True
+                                        self.running = False
+                                        return MusicCommand.NONE
                             
                             # Reset state
                             self._is_speaking = False
                             self._speech_frame_count = 0
+                
+                # Check for wake word detection (even outside of speech processing)
+                # This catches "Hey Kin" said clearly without additional speech
+                if self._wake_word_detector and self._wake_word_detector.detected and not self._is_speaking:
+                    print("\n🎯 Wake word detected during music - exiting for conversation")
+                    self._exited_by_wake_word = True
+                    self.running = False
+                    return MusicCommand.NONE
                 
                 # Small delay to prevent busy loop
                 await asyncio.sleep(0.001)

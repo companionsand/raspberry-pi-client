@@ -140,7 +140,7 @@ class ElevenLabsConversationClient:
         # Agent speech monitoring (detect when agent stops speaking)
         self._agent_speaking = False
         self._agent_silence_start = None
-        self._agent_silence_threshold_ms = 500  # Wait 500ms of silence before ending
+        self._agent_silence_threshold_ms = 1000  # Wait 1000ms of silence before ending
         
         
     async def start(self, orchestrator_client: OrchestratorClient):
@@ -1009,7 +1009,7 @@ class ElevenLabsConversationClient:
         """
         Wait for agent to stop speaking by monitoring Ch5 (playback reference) RMS.
         
-        Returns when 500ms of silence is detected on Ch5.
+        Returns when 1000ms of silence is detected on Ch5.
         """
         # Give agent time to start speaking (the "Let me play some music" response)
         await asyncio.sleep(0.2)
@@ -1030,7 +1030,7 @@ class ElevenLabsConversationClient:
                     if silence_start is None:
                         silence_start = time.time()
                     
-                    # Check if we've had 500ms of silence
+                    # Check if we've had enough silence (1000ms)
                     silence_duration_ms = (time.time() - silence_start) * 1000
                     if silence_duration_ms >= self._agent_silence_threshold_ms:
                         self._agent_speaking = False
