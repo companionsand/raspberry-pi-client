@@ -1,4 +1,4 @@
-.PHONY: help install setup run generate-voice-messages test-voice-messages check-uv gui
+.PHONY: help install setup run generate-voice-messages test-voice-messages check-uv gui web
 
 # Default target
 help:
@@ -40,6 +40,10 @@ run: check-uv
 gui: check-uv
 	@echo "Running Kin AI GUI..."
 	uv run gui.py
+
+web: check-uv
+	@echo "Running Kin AI Web Dashboard..."
+	uv run web.py
 
 # Generate voice message files
 generate-voice-messages: check-uv

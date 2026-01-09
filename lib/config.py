@@ -109,6 +109,14 @@ class Config:
     # - ReSpeaker tuning
     MAC_MODE = os.getenv("MAC_MODE", "false").lower() == "true"
     
+    # =========================================================================
+    # WEB DASHBOARD CONFIGURATION
+    # =========================================================================
+    # Hostname for mDNS discovery (e.g., "kin" -> "kin.local")
+    WEB_HOSTNAME = os.getenv("WEB_HOSTNAME", "kin")
+    # Port for the web dashboard server
+    WEB_PORT = int(os.getenv("WEB_PORT", "8080"))
+    
     @classmethod
     def validate(cls):
         """Validate required configuration.
