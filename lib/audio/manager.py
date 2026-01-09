@@ -510,8 +510,6 @@ class AudioManager:
         print("📡 Opening separate input/output streams for ALSA asym compatibility...")
         
         # Input stream
-        # Use 'high' latency to prevent input overflow on Raspberry Pi USB audio
-        # This gives more buffer headroom before the callback must process data
         self._input_stream = sd.InputStream(
             device=input_device,
             samplerate=Config.SAMPLE_RATE,
@@ -525,8 +523,6 @@ class AudioManager:
         print(f"✓ Input stream opened: {self._input_channels} channels @ {Config.SAMPLE_RATE} Hz (latency=high)")
         
         # Output stream
-        # Use 'high' latency to prevent output underflow on Raspberry Pi USB audio
-        # This gives more time to fill the buffer before playback starves
         self._output_stream = sd.OutputStream(
             device=output_device,
             samplerate=Config.SAMPLE_RATE,
