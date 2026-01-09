@@ -46,12 +46,8 @@ from lib.agent import OrchestratorClient, ElevenLabsConversationClient, ContextM
 from lib.music import MusicModeController, update_radio_cache_background
 
 # Import setup module (optional - graceful degradation)
-try:
-    from lib.setup import run_startup_sequence
-    SETUP_AVAILABLE = True
-except ImportError as e:
-    print(f"⚠️  Setup module not available: {e}")
-    SETUP_AVAILABLE = False
+from lib.setup import run_startup_sequence
+
 
 # Import telemetry (optional - graceful degradation)
 try:
@@ -258,7 +254,6 @@ class KinClient:
             led_controller=self.led_controller,
             voice_feedback=self.voice_feedback,
             user_terminate_flag=self.user_terminate,
-            setup_available=SETUP_AVAILABLE,
             logger=self.logger
         )
         
@@ -827,10 +822,43 @@ class KinClient:
 # =============================================================================
 
 def main():
-    """Application entry point"""
+    """Application entry point (legacy KinClient)"""
     # Run the client
     client = KinClient()
     asyncio.run(client.run())
+
+
+def main_engine():
+    """
+    Application entry point using KinEngine.
+    
+    This is the new recommended entry point that uses the modular
+    KinEngine with signal-based event distribution.
+    """
+    from lib.engine import KinEngine
+    from lib.signals import TextSignal
+    
+    engine = KinEngine()
+    
+    # Subscribe to TextSignals for console output
+    def cli_text_handler(signal: TextSignal):
+        """Print TextSignals to console with appropriate formatting."""
+        prefixes = {
+            "debug": "🔍",
+            "info": "ℹ️ ",
+            "warning": "⚠️ ",
+            "error": "✗",
+        }
+        prefix = prefixes.get(signal.level, "•")
+        print(f"{prefix} [{signal.category}] {signal.message}")
+    
+    engine.signal_bus.subscribe(
+        signal_type=TextSignal,
+        callback=cli_text_handler
+    )
+    
+    # Run the engine
+    asyncio.run(engine.run())
 
 
 if __name__ == "__main__":

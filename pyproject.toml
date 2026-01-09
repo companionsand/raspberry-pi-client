@@ -34,6 +34,8 @@ dependencies = [
     "onnxruntime>=1.16.0",
     # ElevenLabs Scribe v2 for wake word verification
     "elevenlabs>=1.0.0",
+    "pyqt5>=5.15.11",
+    "pyqtgraph>=0.14.0",
 ]
 
 [build-system]

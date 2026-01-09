@@ -23,12 +23,16 @@ Usage:
 import queue
 import threading
 import time
-from typing import Callable, List, Optional
+from typing import TYPE_CHECKING, Callable, List, Optional
 
 import numpy as np
 import sounddevice as sd
 
 from lib.config import Config
+from lib.signals.ring_buffer import RingBuffer
+
+if TYPE_CHECKING:
+    from lib.signals.bus import SignalBus
 
 # WebRTC AEC (optional)
 try:
@@ -52,12 +56,13 @@ class AudioManager:
     Handles AEC transparently - consumers receive clean, echo-cancelled audio.
     """
     
-    def __init__(self, use_webrtc_aec: bool = None):
+    def __init__(self, use_webrtc_aec: bool = None, signal_bus: Optional["SignalBus"] = None):
         """
         Initialize AudioManager.
         
         Args:
             use_webrtc_aec: Enable WebRTC AEC. If None, uses Config.USE_WEBRTC_AEC.
+            signal_bus: Optional SignalBus for publishing audio signals.
         """
         # AEC configuration
         if use_webrtc_aec is None:
@@ -111,6 +116,20 @@ class AudioManager:
         
         # Logger
         self._logger = Config.LOGGER
+        
+        # Signal bus for publishing audio events (optional)
+        self._signal_bus: Optional["SignalBus"] = signal_bus
+        
+        # Ring buffers for visualization (10 seconds of audio each)
+        # These store audio for GUI/debugging access without affecting the main audio flow
+        buffer_size = Config.SAMPLE_RATE * 10  # 10 seconds at 16kHz = 160,000 samples
+        self._aec_input_buffer = RingBuffer(buffer_size, channels=1, dtype=np.int16)
+        self._agent_output_buffer = RingBuffer(buffer_size, channels=1, dtype=np.int16)
+        self._raw_input_buffer: Optional[RingBuffer] = None  # Lazily initialized if ReSpeaker detected
+        
+        # RMS calculation for scalar signals (computed in distribution thread)
+        self._last_rms_publish_time = 0.0
+        self._rms_publish_interval = 0.05  # Publish RMS every 50ms
     
     @property
     def is_running(self) -> bool:
@@ -126,6 +145,36 @@ class AudioManager:
     def has_webrtc_aec(self) -> bool:
         """Check if WebRTC AEC is active."""
         return self._use_webrtc_aec and self._aec_processor is not None
+    
+    def set_signal_bus(self, signal_bus: "SignalBus") -> None:
+        """Set or update the signal bus."""
+        self._signal_bus = signal_bus
+    
+    def get_audio_window(self, stream: str, seconds: float) -> np.ndarray:
+        """
+        Get recent audio from a stream's ring buffer.
+        
+        This provides zero-copy access (when possible) to recent audio
+        for visualization or analysis.
+        
+        Args:
+            stream: Stream name ("aec_input", "agent_output", "raw_input")
+            seconds: Duration of audio to retrieve
+            
+        Returns:
+            NumPy array of audio samples
+        """
+        buffers = {
+            "aec_input": self._aec_input_buffer,
+            "agent_output": self._agent_output_buffer,
+            "raw_input": self._raw_input_buffer,
+        }
+        
+        buffer = buffers.get(stream)
+        if buffer is None:
+            return np.array([], dtype=np.int16)
+        
+        return buffer.get_window_seconds(seconds, Config.SAMPLE_RATE)
     
     def start(self) -> bool:
         """
@@ -251,6 +300,9 @@ class AudioManager:
         if audio.ndim > 1:
             audio = audio.flatten()
         
+        # Write to agent output ring buffer for visualization
+        self._agent_output_buffer.write(audio)
+        
         self._output_queue.put(audio)
     
     def clear_playback_queue(self) -> int:
@@ -294,6 +346,10 @@ class AudioManager:
                         # Get ALSA card number for direct ALSA device string access
                         from lib.audio.device_detection import get_alsa_card_number
                         self._respeaker_alsa_card = get_alsa_card_number(dev['name'])
+                        
+                        # Initialize raw input ring buffer for 6-channel capture
+                        buffer_size = Config.SAMPLE_RATE * 10  # 10 seconds
+                        self._raw_input_buffer = RingBuffer(buffer_size, channels=6, dtype=np.int16)
                         
                         print(f"✓ ReSpeaker detected: {dev['name']}")
                         print(f"   PortAudio device index: {idx}")
@@ -461,6 +517,10 @@ class AudioManager:
         
         # Update watchdog timestamp
         self._last_callback_time = time.time()
+        
+        # Write raw input to ring buffer (if ReSpeaker with 6 channels)
+        if self._raw_input_buffer is not None and indata.ndim == 2:
+            self._raw_input_buffer.write(indata)
         
         # Process input
         processed_audio = self._process_input(indata)
@@ -679,6 +739,23 @@ class AudioManager:
                     processed_audio = self._audio_distribution_queue.get(timeout=0.1)
                 except queue.Empty:
                     continue
+                
+                # Write to AEC input ring buffer for visualization
+                self._aec_input_buffer.write(processed_audio)
+                
+                # Publish RMS signal periodically (every 50ms)
+                now = time.time()
+                if self._signal_bus is not None and (now - self._last_rms_publish_time) >= self._rms_publish_interval:
+                    self._last_rms_publish_time = now
+                    # Calculate RMS (normalized to 0-1 range for int16)
+                    rms = np.sqrt(np.mean(processed_audio.astype(np.float32) ** 2)) / 32768.0
+                    from lib.signals.base import ScalarSignal
+                    self._signal_bus.publish(ScalarSignal(
+                        timestamp=time.monotonic(),
+                        source="audio_manager",
+                        name="input_rms",
+                        value=float(rms)
+                    ))
                 
                 # Distribute to all consumers
                 with self._consumers_lock:

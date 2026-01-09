@@ -1,4 +1,4 @@
-.PHONY: help install setup run generate-voice-messages test-voice-messages check-uv
+.PHONY: help install setup run generate-voice-messages test-voice-messages check-uv gui
 
 # Default target
 help:
@@ -36,6 +36,10 @@ setup: install
 run: check-uv
 	@echo "Running Kin AI Raspberry Pi Client..."
 	uv run main.py
+
+gui: check-uv
+	@echo "Running Kin AI GUI..."
+	uv run gui.py
 
 # Generate voice message files
 generate-voice-messages: check-uv

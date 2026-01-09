@@ -222,7 +222,6 @@ async def run_startup_sequence(
     led_controller,
     voice_feedback,
     user_terminate_flag: List[bool],
-    setup_available: bool = True,
     logger=None
 ) -> StartupResult:
     """
