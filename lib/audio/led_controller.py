@@ -203,6 +203,11 @@ class LEDController:
             # MUSIC: Audio-reactive visualization - no animation loop needed
             # LEDs will be updated directly by update_music_leds()
             # Start with a base color to show music mode is active
+            # Reset music tracking state
+            self._music_energy_history = []
+            self._music_smoothed_energy = 0.0
+            self._music_peak_brightness = 0.0
+            self._music_last_beat_time = 0.0
             self._start_animation(self._music_idle_loop)
     
     # -------------------------------------------------------------------------
@@ -625,8 +630,8 @@ class LEDController:
         """
         Update LEDs based on music energy from Ch5 (playback reference channel).
         
-        Creates colorful, energetic visualization that reacts to music playback.
-        Color cycles through warm tones visible through the red-tinted ReSpeaker glass.
+        Uses beat detection and energy tracking for reactive visualization.
+        Color shifts based on audio intensity, not time.
         
         Args:
             ref_audio: numpy array of int16 audio samples from Ch5 (playback loopback)
@@ -639,69 +644,123 @@ class LEDController:
         if self.current_state != self.STATE_MUSIC:
             return
         
+        # Initialize tracking state if needed
+        if not hasattr(self, '_music_energy_history'):
+            self._music_energy_history = []  # Recent energy values for beat detection
+            self._music_smoothed_energy = 0.0  # Smoothed baseline
+            self._music_peak_brightness = 0.0  # For decay effect
+            self._music_last_beat_time = 0.0  # For beat cooldown
+        
         # Calculate RMS energy from reference audio
         rms = np.sqrt(np.mean(ref_audio.astype(float) ** 2))
         
         # Skip if silence/very quiet (no music playing or between tracks)
-        # Music typically has higher baseline than speech
-        if rms < 800:
-            # Let the idle animation handle quiet periods
+        if rms < 600:
+            # Decay peak brightness when silent
+            self._music_peak_brightness *= 0.85
+            if self._music_peak_brightness < 0.05:
+                # Let idle animation handle extended silence
+                return
+            # Show fading glow
+            brightness = self._music_peak_brightness
+            color = self._rgb_to_int_with_brightness(self.COLORS['music_1'], brightness)
+            self.pixel_ring.mono(color)
             return
         
-        # Stop idle animation when music is playing (we're handling LEDs directly)
+        # Stop idle animation when music is playing
         if self.animation_task and not self.animation_task.done():
             self.animation_task.cancel()
             self.animation_task = None
         
         # -------------------------------------------------------------------------
-        # Calculate brightness from music energy
+        # Beat Detection - detect sudden energy increases
         # -------------------------------------------------------------------------
         
-        # Normalize: music streams typically peak around 20000-30000 RMS
-        normalized_energy = min(rms / 25000.0, 1.0)
+        # Update smoothed baseline (slow adaptation)
+        self._music_smoothed_energy = self._music_smoothed_energy * 0.95 + rms * 0.05
         
-        # Apply gamma curve for punchier visual response to beats
-        # Lower gamma = more responsive to quiet parts, higher = only react to loud
-        normalized_energy = normalized_energy ** 1.2
+        # Keep history for local average (last ~10 frames = ~300ms)
+        self._music_energy_history.append(rms)
+        if len(self._music_energy_history) > 10:
+            self._music_energy_history.pop(0)
         
-        # Map to brightness range: 15% (base) to 100% (peak)
-        brightness = 0.15 + (0.85 * normalized_energy)
-        brightness = max(0.15, min(1.0, brightness))
+        local_avg = sum(self._music_energy_history) / len(self._music_energy_history)
+        
+        # Beat detection: current energy significantly above recent average
+        beat_threshold = max(local_avg * 1.4, self._music_smoothed_energy * 1.3)
+        is_beat = rms > beat_threshold
+        
+        # Beat cooldown (prevent rapid flashing, ~100ms between beats)
+        now = time.time()
+        if is_beat and (now - self._music_last_beat_time) < 0.08:
+            is_beat = False
+        
+        if is_beat:
+            self._music_last_beat_time = now
         
         # -------------------------------------------------------------------------
-        # Color cycling for fun effect
+        # Brightness calculation - much more reactive
         # -------------------------------------------------------------------------
         
-        # Cycle through colors based on time (creates flowing effect)
-        t = time.time()
-        color_phase = (t * 1.5) % 3.0  # Complete cycle every 2 seconds
+        # Normalize current energy (typical music peaks 15000-25000)
+        normalized_energy = min(rms / 18000.0, 1.0)
         
-        # Blend between colors for smooth transitions
-        if color_phase < 1.0:
-            # Blend music_1 (orange) -> music_2 (pink)
-            blend = color_phase
+        # Apply strong gamma for punch (quiet = dim, loud = bright)
+        normalized_energy = normalized_energy ** 0.7  # Lower gamma = more reactive
+        
+        # Base brightness from energy
+        instant_brightness = 0.05 + (0.95 * normalized_energy)
+        
+        # On beat: flash to full brightness
+        if is_beat:
+            self._music_peak_brightness = 1.0
+        else:
+            # Fast decay from peaks (creates punch effect)
+            self._music_peak_brightness = max(
+                self._music_peak_brightness * 0.75,  # Fast decay
+                instant_brightness
+            )
+        
+        brightness = max(0.05, min(1.0, self._music_peak_brightness))
+        
+        # -------------------------------------------------------------------------
+        # Color based on energy level (not time) - reacts to music!
+        # -------------------------------------------------------------------------
+        
+        # Use energy level to pick color (low=warm, high=hot)
+        if normalized_energy < 0.3:
+            # Low energy: warm orange
+            base_color = self.COLORS['music_1']  # Orange
+        elif normalized_energy < 0.6:
+            # Medium energy: blend orange -> pink
+            blend = (normalized_energy - 0.3) / 0.3
             c1 = self.COLORS['music_1']
             c2 = self.COLORS['music_2']
-        elif color_phase < 2.0:
-            # Blend music_2 (pink) -> music_3 (gold)
-            blend = color_phase - 1.0
-            c1 = self.COLORS['music_2']
-            c2 = self.COLORS['music_3']
+            base_color = (
+                int(c1[0] * (1 - blend) + c2[0] * blend),
+                int(c1[1] * (1 - blend) + c2[1] * blend),
+                int(c1[2] * (1 - blend) + c2[2] * blend)
+            )
+        elif normalized_energy < 0.85:
+            # High energy: pink/magenta
+            base_color = self.COLORS['music_2']  # Pink
         else:
-            # Blend music_3 (gold) -> music_1 (orange)
-            blend = color_phase - 2.0
-            c1 = self.COLORS['music_3']
-            c2 = self.COLORS['music_1']
+            # Peak energy: bright gold flash
+            base_color = self.COLORS['music_3']  # Gold
         
-        # Linear interpolation between colors
-        r = int(c1[0] * (1 - blend) + c2[0] * blend)
-        g = int(c1[1] * (1 - blend) + c2[1] * blend)
-        b = int(c1[2] * (1 - blend) + c2[2] * blend)
+        # On beat: flash white-ish for extra punch
+        if is_beat and normalized_energy > 0.4:
+            # Add white to the color for flash effect
+            base_color = (
+                min(255, base_color[0] + 60),
+                min(255, base_color[1] + 60),
+                min(255, base_color[2] + 40)
+            )
         
         # Apply brightness
-        r = int(r * brightness)
-        g = int(g * brightness)
-        b = int(b * brightness)
+        r = int(base_color[0] * brightness)
+        g = int(base_color[1] * brightness)
+        b = int(base_color[2] * brightness)
         
         # Set all LEDs to this color
         color_int = (r << 16) | (g << 8) | b
