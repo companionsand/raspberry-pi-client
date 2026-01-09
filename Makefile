@@ -39,6 +39,8 @@ run: check-uv
 
 gui: check-uv
 	@echo "Running Kin AI GUI..."
+	@echo "Note: GUI requires PyQt5. Installing GUI dependencies..."
+	uv sync --extra gui
 	uv run gui.py
 
 web: check-uv

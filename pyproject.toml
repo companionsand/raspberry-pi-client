@@ -34,8 +34,6 @@ dependencies = [
     "onnxruntime>=1.16.0",
     # ElevenLabs Scribe v2 for wake word verification
     "elevenlabs>=1.0.0",
-    "pyqt5>=5.15.11",
-    "pyqtgraph>=0.14.0",
     # Web dashboard
     "fastapi>=0.115.0",
     "uvicorn[standard]>=0.32.0",
@@ -47,6 +45,13 @@ requires = ["hatchling"]
 build-backend = "hatchling.build"
 
 [project.optional-dependencies]
+gui = [
+    # GUI dependencies (only needed for gui.py, not web.py)
+    # Note: PyQt5 may not be available on all platforms (e.g., aarch64 Linux)
+    # Use web.py instead if PyQt5 installation fails
+    "pyqt5>=5.15.11",
+    "pyqtgraph>=0.14.0",
+]
 led = [
     # LED control for ReSpeaker (optional, requires Linux/spidev)
     "pixel-ring>=0.1.0",

@@ -726,8 +726,6 @@ dependencies = [
     { name = "pvporcupine" },
     { name = "pyaudio" },
     { name = "pyjwt" },
-    { name = "pyqt5" },
-    { name = "pyqtgraph" },
     { name = "python-dotenv" },
     { name = "pyusb" },
     { name = "requests" },
@@ -739,6 +737,10 @@ dependencies = [
 ]
 
 [package.optional-dependencies]
+gui = [
+    { name = "pyqt5" },
+    { name = "pyqtgraph" },
+]
 led = [
     { name = "pixel-ring" },
 ]
@@ -763,8 +765,8 @@ requires-dist = [
     { name = "pvporcupine", specifier = ">=3.0.0" },
     { name = "pyaudio", specifier = ">=0.2.11" },
     { name = "pyjwt", specifier = ">=2.8.0" },
-    { name = "pyqt5", specifier = ">=5.15.11" },
-    { name = "pyqtgraph", specifier = ">=0.14.0" },
+    { name = "pyqt5", marker = "extra == 'gui'", specifier = ">=5.15.11" },
+    { name = "pyqtgraph", marker = "extra == 'gui'", specifier = ">=0.14.0" },
     { name = "python-dotenv", specifier = ">=1.0.0" },
     { name = "pyusb", specifier = ">=1.2.1" },
     { name = "requests", specifier = ">=2.31.0" },
@@ -774,7 +776,7 @@ requires-dist = [
     { name = "websockets", specifier = ">=12.0" },
     { name = "zeroconf", specifier = ">=0.136.0" },
 ]
-provides-extras = ["led", "webrtc-aec"]
+provides-extras = ["gui", "led", "webrtc-aec"]
 
 [[package]]
 name = "mpmath"

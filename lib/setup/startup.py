@@ -237,7 +237,6 @@ async def run_startup_sequence(
         led_controller: LED controller for visual feedback
         voice_feedback: Voice feedback controller
         user_terminate_flag: Mutable flag (list) for shutdown detection
-        setup_available: Whether the setup module is available
         logger: Optional logger for structured logging
         
     Returns:
@@ -264,7 +263,7 @@ async def run_startup_sequence(
         )
     
     # Setup Mode - only if enabled and available
-    if not skip_wifi_setup and setup_available:
+    if not skip_wifi_setup:
         print("\n📡 Checking connectivity...")
         
         connectivity_checker = ConnectivityChecker()
