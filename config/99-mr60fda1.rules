@@ -1,0 +1,30 @@
+# =============================================================================
+# udev rules for MR60FDA1 mmWave Radar Sensor
+# =============================================================================
+#
+# This creates a symlink /dev/radar0 for the MR60FDA1 sensor for consistent
+# device access regardless of USB enumeration order.
+#
+# Installation:
+#   sudo cp 99-mr60fda1.rules /etc/udev/rules.d/
+#   sudo udevadm control --reload-rules
+#   sudo udevadm trigger
+#
+# The MR60FDA1 uses a CH340 USB-to-Serial chip (common on many USB adapters)
+# Vendor ID: 1a86, Product ID: 7523
+#
+# Note: This rule matches ANY CH340 USB-Serial adapter. If you have multiple
+# CH340 devices, you may need to use additional attributes (e.g., serial number
+# or USB port path) to distinguish them.
+# =============================================================================
+
+# CH340 USB-to-Serial adapter (commonly used with MR60FDA1)
+SUBSYSTEM=="tty", ATTRS{idVendor}=="1a86", ATTRS{idProduct}=="7523", SYMLINK+="radar0", MODE="0666", GROUP="dialout"
+
+# Alternative: Match by USB path if you have multiple CH340 devices
+# Uncomment and modify the KERNELS path based on your setup:
+# SUBSYSTEM=="tty", KERNELS=="1-1.2", SYMLINK+="radar0", MODE="0666", GROUP="dialout"
+
+# For debugging - find your device attributes with:
+#   udevadm info -a -n /dev/ttyUSB0 | grep -E "ATTRS{idVendor}|ATTRS{idProduct}|KERNELS"
+

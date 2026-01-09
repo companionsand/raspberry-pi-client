@@ -50,6 +50,14 @@ from lib.elevenlabs import ElevenLabsConversationClient
 from lib.local_storage import ContextManager
 from lib.presence_detection import HumanPresenceDetector
 
+# Import radar sensor (optional - graceful degradation)
+try:
+    from lib.radar_sensor import MR60FDA1Sensor, FallState
+    RADAR_SENSOR_AVAILABLE = True
+except ImportError as e:
+    print(f"⚠️  Radar sensor module not available: {e}")
+    RADAR_SENSOR_AVAILABLE = False
+
 # Import WiFi setup module (optional - graceful degradation)
 try:
     from lib.wifi_setup import WiFiSetupManager
@@ -117,6 +125,9 @@ class KinClient:
         self.mic_device_index = None
         self.speaker_device_index = None
         self.has_hardware_aec = False
+        
+        # Radar sensor for fall detection & presence (optional)
+        self.radar_sensor = None
         
         # Activity tracking for wrapper idle monitoring
         self.activity_file = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", ".last_activity")
@@ -196,6 +207,40 @@ class KinClient:
         # Resume presence detection
         if self.presence_detector and not self.presence_detector.running:
             self.presence_detector.start()
+    
+    def _handle_fall_detection(self, fall_state):
+        """
+        Handle fall detection alert from radar sensor.
+        
+        Called from radar sensor thread when fall is detected.
+        Can trigger proactive conversation or emergency alert.
+        """
+        if not RADAR_SENSOR_AVAILABLE:
+            return
+        
+        severity = "suspected" if fall_state == FallState.SUSPECTED else "confirmed"
+        print(f"\n🚨 FALL DETECTED ({severity.upper()})")
+        
+        if self.logger:
+            self.logger.warning(
+                "fall_detection_callback",
+                extra={
+                    "severity": severity,
+                    "conversation_active": self.conversation_active,
+                    "device_id": Config.DEVICE_ID
+                }
+            )
+        
+        # For confirmed falls during non-conversation, could trigger voice check-in
+        # Example: "Are you okay? I detected a possible fall."
+        if fall_state == FallState.CONFIRMED and not self.conversation_active:
+            if self.voice_feedback:
+                # Play fall detection audio (add this file to voice_feedback)
+                # self.voice_feedback.play("fall_detected")
+                pass
+            
+            # Could also trigger a proactive conversation here
+            # self.wake_detector.detected = True  # Force conversation start
     
     async def run(self):
         """Main application loop"""
@@ -626,6 +671,22 @@ class KinClient:
             orchestrator_client=self.orchestrator_client,
             event_loop=asyncio.get_event_loop()  # Pass main event loop for async operations
         )
+        
+        # Initialize radar sensor for fall detection & presence (optional hardware)
+        if RADAR_SENSOR_AVAILABLE:
+            print("\n📡 Initializing mmWave radar sensor...")
+            self.radar_sensor = MR60FDA1Sensor(
+                port=None,  # Auto-detect
+                on_fall=self._handle_fall_detection,
+                orchestrator_client=self.orchestrator_client,
+                event_loop=asyncio.get_event_loop(),
+                logger=self.logger
+            )
+            if self.radar_sensor.start():
+                print("✓ Radar sensor initialized (fall detection + presence)")
+            else:
+                print("⚠️  Radar sensor not available - continuing without")
+                self.radar_sensor = None
         
         # Initialize wake word detector with detected microphone
         # Pass presence_detector so they can share the audio stream
@@ -1060,6 +1121,10 @@ class KinClient:
         # Stop presence detector
         if self.presence_detector:
             self.presence_detector.cleanup()
+        
+        # Stop radar sensor
+        if self.radar_sensor:
+            self.radar_sensor.cleanup()
         
         # Disconnect from orchestrator
         await self.orchestrator_client.disconnect()

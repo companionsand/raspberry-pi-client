@@ -990,7 +990,9 @@ class OrchestratorClient:
         self,
         probability: float,
         detected_at: str,
-        top_events: list
+        top_events: list,
+        radar_state: Optional[int] = None,
+        fused_confidence: Optional[float] = None
     ) -> bool:
         """Send human presence detection data to orchestrator (async).
         
@@ -998,6 +1000,8 @@ class OrchestratorClient:
             probability: Weighted probability score (0-100 scale)
             detected_at: ISO timestamp when presence was detected
             top_events: List of top contributing events with percent_contribution
+            radar_state: Optional radar presence state (0=none, 1=stationary, 2=moving)
+            fused_confidence: Optional combined confidence from sensor fusion
             
         Returns:
             True if sent successfully, False otherwise
@@ -1020,6 +1024,11 @@ class OrchestratorClient:
             "top_events": top_events
         }
         
+        # Include radar data if available (sensor fusion)
+        if radar_state is not None:
+            message["radar_state"] = radar_state
+            message["fused_confidence"] = fused_confidence
+        
         try:
             # Inject telemetry context if available
             if TELEMETRY_AVAILABLE:
@@ -1033,6 +1042,8 @@ class OrchestratorClient:
                     extra={
                         "probability": probability,
                         "top_events_count": len(top_events),
+                        "radar_state": radar_state,
+                        "fused_confidence": fused_confidence,
                         "user_id": Config.USER_ID,
                         "device_id": Config.DEVICE_ID
                     }
@@ -1045,6 +1056,81 @@ class OrchestratorClient:
                     "send_presence_detection_failed",
                     extra={
                         "error": str(e),
+                        "user_id": Config.USER_ID,
+                        "device_id": Config.DEVICE_ID
+                    },
+                    exc_info=True
+                )
+            return False
+    
+    async def send_fall_detection(
+        self,
+        severity: str,
+        detected_at: str,
+        movement_intensity: int,
+        stationary_duration: int
+    ) -> bool:
+        """Send fall detection alert to orchestrator.
+        
+        Args:
+            severity: "suspected" or "confirmed"
+            detected_at: ISO timestamp when fall was detected
+            movement_intensity: Movement intensity 0-100
+            stationary_duration: Seconds user has been stationary
+            
+        Returns:
+            True if sent successfully, False otherwise
+        """
+        if not self.is_connection_alive():
+            if self.logger:
+                self.logger.warning(
+                    "send_fall_detection_failed_disconnected",
+                    extra={
+                        "severity": severity,
+                        "user_id": Config.USER_ID,
+                        "device_id": Config.DEVICE_ID
+                    }
+                )
+            return False
+        
+        message = {
+            "type": "fall_detection",
+            "severity": severity,
+            "detected_at": detected_at,
+            "movement_intensity": movement_intensity,
+            "stationary_duration_seconds": stationary_duration
+        }
+        
+        try:
+            # Inject telemetry context if available
+            if TELEMETRY_AVAILABLE:
+                inject_trace_context(message)
+            
+            await self.websocket.send(json.dumps(message))
+            
+            print(f"✓ Fall detection alert sent: {severity}")
+            
+            if self.logger:
+                self.logger.warning(
+                    "fall_detection_sent",
+                    extra={
+                        "severity": severity,
+                        "movement_intensity": movement_intensity,
+                        "stationary_duration": stationary_duration,
+                        "user_id": Config.USER_ID,
+                        "device_id": Config.DEVICE_ID
+                    }
+                )
+            return True
+            
+        except Exception as e:
+            print(f"✗ Failed to send fall detection: {e}")
+            if self.logger:
+                self.logger.error(
+                    "send_fall_detection_failed",
+                    extra={
+                        "error": str(e),
+                        "severity": severity,
                         "user_id": Config.USER_ID,
                         "device_id": Config.DEVICE_ID
                     },
