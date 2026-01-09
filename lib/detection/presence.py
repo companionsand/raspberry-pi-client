@@ -508,9 +508,13 @@ class HumanPresenceDetector:
         num_contributing = len(contributing_classes)
         
         if weighted_score >= self.threshold:
-            # Human detected - show green indicator
-            top_3 = [f"{name} ({prob:.2f})" for name, prob, _ in contributing_classes[:3]]
-            print(f"[{timestamp}] 🟢 Presence: {weighted_score:.3f} (DETECTED) | {num_contributing} events | Top: {', '.join(top_3) if top_3 else 'none'}")
+            # Human detected - show green indicator with presence and busy info
+            top_3_presence = [f"{name} ({prob:.2f})" for name, prob, _ in contributing_classes[:3]]
+            top_3_busy = [f"{name} ({prob:.2f})" for name, prob, _ in contributing_busy_classes[:3]]
+            
+            busy_events_info = f" | BusyTop: {', '.join(top_3_busy)}" if top_3_busy else ""
+            
+            print(f"[{timestamp}] 🟢 Presence: {weighted_score:.3f} (DETECTED) | {num_contributing} events | Top: {', '.join(top_3_presence) if top_3_presence else 'none'} | Busy: {busy_score:.3f}{busy_events_info}")
         else:
             # Below threshold - show grey indicator with top classes for tuning (if debug logs enabled)
             if Config.SHOW_PRESENCE_DETECTION_DEBUG_LOGS:
