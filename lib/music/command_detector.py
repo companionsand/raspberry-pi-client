@@ -51,6 +51,8 @@ class MusicCommand(Enum):
     RESUME = "resume"
     VOLUME_UP = "volume_up"
     VOLUME_DOWN = "volume_down"
+    NEXT = "next"
+    PREVIOUS = "previous"
     NONE = "none"
 
 
@@ -62,6 +64,8 @@ COMMAND_PATTERNS = {
     MusicCommand.RESUME: ["resume", "play", "continue", "unpause", "keep playing", "go on"],
     MusicCommand.VOLUME_UP: ["volume up", "louder", "turn it up", "raise volume", "increase volume", "more volume"],
     MusicCommand.VOLUME_DOWN: ["volume down", "quieter", "turn it down", "lower volume", "decrease volume", "less volume"],
+    MusicCommand.NEXT: ["next", "next station", "skip", "next one", "change station", "different station"],
+    MusicCommand.PREVIOUS: ["previous", "previous station", "go back", "last station", "back", "last one"],
 }
 
 # Minimum fuzzy match score to accept (0-100)
@@ -163,7 +167,7 @@ class VoiceCommandDetector:
         self.last_command = MusicCommand.NONE
         
         print("🎤 Voice command detector started")
-        print("   Commands: stop, pause, resume, volume up, volume down")
+        print("   Commands: stop, pause, resume, volume up/down, next, previous")
         aec_mode = "WebRTC AEC" if self._audio_manager.has_webrtc_aec else "Hardware AEC"
         print(f"   Audio: via AudioManager ({aec_mode})")
         

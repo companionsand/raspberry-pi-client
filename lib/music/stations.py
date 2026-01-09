@@ -167,3 +167,45 @@ class StationRegistry:
     def get_cache_stats(self) -> Dict[str, int]:
         """Get cache statistics"""
         return {genre: len(stations) for genre, stations in self._cache.items()}
+    
+    def get_stations_for_genre(self, genre: str) -> List[Station]:
+        """
+        Get all stations for a genre, sorted by quality.
+        
+        Used for next/previous station navigation.
+        Returns cached stations first, then curated fallbacks.
+        
+        Args:
+            genre: Genre name (e.g., "jazz", "rock", "popular")
+            
+        Returns:
+            List of Station objects sorted by quality (best first)
+        """
+        genre_lower = genre.lower().strip() if genre else "popular"
+        stations = []
+        
+        # Get from cache first
+        if genre_lower in self._cache and self._cache[genre_lower]:
+            for entry in self._cache[genre_lower]:
+                stations.append(self._station_from_cache(entry))
+        
+        # Add curated fallbacks if not enough stations
+        if genre_lower in CURATED_STATIONS:
+            for curated in CURATED_STATIONS[genre_lower]:
+                # Avoid duplicates by URL
+                if not any(s.url == curated.url for s in stations):
+                    stations.append(curated)
+        
+        # If still empty, use default stations
+        if not stations:
+            if "popular" in self._cache and self._cache["popular"]:
+                for entry in self._cache["popular"]:
+                    stations.append(self._station_from_cache(entry))
+            for curated in CURATED_STATIONS.get("default", []):
+                if not any(s.url == curated.url for s in stations):
+                    stations.append(curated)
+        
+        # Sort by quality (best first)
+        stations.sort(key=lambda s: s.quality_score, reverse=True)
+        
+        return stations

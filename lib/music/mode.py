@@ -145,6 +145,10 @@ class MusicModeController:
                     self._music_player.volume_up()
                 elif command == MusicCommand.VOLUME_DOWN:
                     self._music_player.volume_down()
+                elif command == MusicCommand.NEXT:
+                    self._music_player.play_next()
+                elif command == MusicCommand.PREVIOUS:
+                    self._music_player.play_previous()
                 # STOP is handled by detector returning
             
             # Start voice command detector (uses AudioManager for AEC-processed audio)
