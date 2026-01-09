@@ -689,7 +689,7 @@ class KinClient:
         # Run music mode with wake word detector active
         exit_reason = await controller.run(
             genre=genre,
-            wake_word_detector=self.wake_word_detector
+            wake_word_detector=self.wake_detector
         )
         
         # If exited due to wake word, start a conversation
