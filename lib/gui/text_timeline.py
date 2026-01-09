@@ -41,12 +41,12 @@ class TextTimelineWidget(QWidget):
         "audio": "#FFFF00",        # Yellow
     }
     
-    # Level to prefix/color mapping
+    # Level to prefix/color mapping (ASCII symbols for reliable rendering)
     LEVEL_PREFIXES = {
-        "debug": ("🔍", "#666666"),
-        "info": ("ℹ️", "#FFFFFF"),
-        "warning": ("⚠️", "#FFA500"),
-        "error": ("✗", "#FF0000"),
+        "debug": ("[D]", "#666666"),
+        "info": ("[I]", "#FFFFFF"),
+        "warning": ("[W]", "#FFA500"),
+        "error": ("[E]", "#FF0000"),
     }
     
     def __init__(

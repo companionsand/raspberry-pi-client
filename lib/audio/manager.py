@@ -158,12 +158,28 @@ class AudioManager:
         for visualization or analysis.
         
         Args:
-            stream: Stream name ("aec_input", "agent_output", "raw_input")
+            stream: Stream name:
+                - "aec_input": Echo-cancelled microphone input (mono)
+                - "agent_output": Audio sent via play() method (mono)
+                - "raw_input": Raw 6-channel ReSpeaker input
+                - "speaker_loopback": Channel 5 from ReSpeaker (actual speaker output)
             seconds: Duration of audio to retrieve
             
         Returns:
             NumPy array of audio samples
         """
+        # Handle speaker_loopback specially - extract channel 5 from raw_input
+        if stream == "speaker_loopback":
+            if self._raw_input_buffer is None:
+                return np.array([], dtype=np.int16)
+            
+            raw_data = self._raw_input_buffer.get_window_seconds(seconds, Config.SAMPLE_RATE)
+            if len(raw_data) == 0 or raw_data.ndim != 2:
+                return np.array([], dtype=np.int16)
+            
+            # Extract channel 5 (playback loopback from ReSpeaker)
+            return raw_data[:, Config.RESPEAKER_REFERENCE_CHANNEL].copy()
+        
         buffers = {
             "aec_input": self._aec_input_buffer,
             "agent_output": self._agent_output_buffer,
@@ -175,6 +191,33 @@ class AudioManager:
             return np.array([], dtype=np.int16)
         
         return buffer.get_window_seconds(seconds, Config.SAMPLE_RATE)
+    
+    def get_stream_last_write_time(self, stream: str) -> float:
+        """
+        Get the timestamp of when data was last written to a stream.
+        
+        Useful for detecting stale data (e.g., agent_output when not speaking).
+        
+        Args:
+            stream: Stream name (aec_input, agent_output, raw_input, speaker_loopback)
+            
+        Returns:
+            Monotonic timestamp of last write, or 0.0 if no writes yet
+        """
+        if stream == "speaker_loopback":
+            stream = "raw_input"  # speaker_loopback is derived from raw_input
+        
+        buffers = {
+            "aec_input": self._aec_input_buffer,
+            "agent_output": self._agent_output_buffer,
+            "raw_input": self._raw_input_buffer,
+        }
+        
+        buffer = buffers.get(stream)
+        if buffer is None:
+            return 0.0
+        
+        return buffer.last_write_time
     
     def start(self) -> bool:
         """

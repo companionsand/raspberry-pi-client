@@ -96,6 +96,13 @@ def main():
     # Set application style
     app.setStyle("Fusion")
     
+    # Set a sensible default font (avoid Monospace warning on macOS)
+    from PyQt5.QtGui import QFont
+    if sys.platform == "darwin":
+        app.setFont(QFont("Monaco", 12))
+    else:
+        app.setFont(QFont("DejaVu Sans Mono", 10))
+    
     # Create and show main window
     window = KinGUIApp(engine)
     window.show()

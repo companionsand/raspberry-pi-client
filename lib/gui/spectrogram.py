@@ -166,6 +166,9 @@ class SpectrogramWidget(QWidget):
             dtype=np.float32
         ) - 80  # Initialize to -80 dB (silence)
         
+        # Track when we last processed data (for detecting stale buffers)
+        self._last_processed_write_time: float = 0.0
+        
         self._setup_ui()
         self._setup_fft_worker()
     
@@ -254,15 +257,28 @@ class SpectrogramWidget(QWidget):
         
         # Immediately update display with cleared data
         self.image_item.setImage(self.spectrogram_data.T)
+        
+        # Reset tracking for the new stream
+        self._last_processed_write_time = 0.0
     
     def update_display(self) -> None:
         """
         Update the spectrogram display with latest audio.
         
         Called by timer in main app (~30 FPS).
+        Only processes audio if there's fresh data since last update.
         """
+        # Check if there's fresh data
+        last_write_time = self.engine.get_stream_last_write_time(self.stream_name)
+        
+        if last_write_time <= self._last_processed_write_time:
+            # No new data - don't update (spectrogram stays static)
+            return
+        
+        # Have fresh data - update tracking
+        self._last_processed_write_time = last_write_time
+        
         # Get recent audio from engine (enough for one FFT window + some extra)
-        # We want ~50ms of audio for each update
         audio = self.engine.get_audio_window(self.stream_name, 0.1)
         
         if len(audio) > 0:

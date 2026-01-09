@@ -178,6 +178,20 @@ class KinEngine:
         import numpy as np
         return np.array([], dtype=np.int16)
     
+    def get_stream_last_write_time(self, stream: str) -> float:
+        """
+        Get when data was last written to a stream.
+        
+        Args:
+            stream: Stream name
+            
+        Returns:
+            Monotonic timestamp of last write, or 0.0 if none
+        """
+        if self.audio_manager:
+            return self.audio_manager.get_stream_last_write_time(stream)
+        return 0.0
+    
     def _setup_signal_handlers(self) -> None:
         """Setup OS signal handlers (only works from main thread)."""
         import threading

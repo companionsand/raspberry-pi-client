@@ -9,6 +9,7 @@ Provides efficient circular buffer storage for audio streams with:
 """
 
 import threading
+import time
 from typing import Optional
 
 import numpy as np
@@ -59,6 +60,9 @@ class RingBuffer:
         
         # Track total samples written (for debugging/stats)
         self._total_written = 0
+        
+        # Track when last write occurred (for detecting stale data)
+        self._last_write_time: float = 0.0
     
     @property
     def capacity(self) -> int:
@@ -74,6 +78,11 @@ class RingBuffer:
     def total_written(self) -> int:
         """Get total samples written since creation."""
         return self._total_written
+    
+    @property
+    def last_write_time(self) -> float:
+        """Get timestamp of last write (monotonic clock)."""
+        return self._last_write_time
     
     def write(self, data: np.ndarray) -> int:
         """
@@ -128,9 +137,10 @@ class RingBuffer:
                     self._buffer[start_idx:, :] = data[:first_chunk, :]
                     self._buffer[:second_chunk, :] = data[first_chunk:, :]
             
-            # Update write position
+            # Update write position and timestamp
             self._write_pos += samples
             self._total_written += samples
+            self._last_write_time = time.monotonic()
         
         return samples
     

@@ -50,7 +50,8 @@ class KinGUIApp(QMainWindow):
     
     AUDIO_STREAMS = [
         ("aec_input", "Echo-Cancelled Input"),
-        ("agent_output", "Agent Output"),
+        ("speaker_loopback", "Speaker Output (Loopback)"),
+        ("agent_output", "Agent Output (play() only)"),
         ("raw_input", "Raw Input (6ch)"),
     ]
     
@@ -143,7 +144,7 @@ class KinGUIApp(QMainWindow):
         self.stream_selector_right = QComboBox()
         for stream_id, stream_name in self.AUDIO_STREAMS:
             self.stream_selector_right.addItem(stream_name, stream_id)
-        self.stream_selector_right.setCurrentIndex(1)  # agent_output
+        self.stream_selector_right.setCurrentIndex(2)  # agent_output
         self.stream_selector_right.currentIndexChanged.connect(self._on_right_stream_changed)
         layout.addWidget(self.stream_selector_right)
         
@@ -158,17 +159,15 @@ class KinGUIApp(QMainWindow):
     
     def _setup_signal_subscriptions(self) -> None:
         """Subscribe to signals from KinEngine."""
-        # Connect Qt signals for thread-safe updates
-        self.text_signal_received.connect(self._handle_text_signal)
-        self.scalar_signal_received.connect(self._handle_scalar_signal)
+        # Connect Qt signals with QueuedConnection for cross-thread safety
+        self.text_signal_received.connect(self._handle_text_signal, Qt.QueuedConnection)
+        self.scalar_signal_received.connect(self._handle_scalar_signal, Qt.QueuedConnection)
         
-        # Subscribe to TextSignals
+        # Subscribe to signals from engine
         self.engine.signal_bus.subscribe(
             signal_type=TextSignal,
             callback=lambda s: self.text_signal_received.emit(s)
         )
-        
-        # Subscribe to ScalarSignals
         self.engine.signal_bus.subscribe(
             signal_type=ScalarSignal,
             callback=lambda s: self.scalar_signal_received.emit(s)
