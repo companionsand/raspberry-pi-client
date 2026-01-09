@@ -1,0 +1,965 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Kin AI Dashboard</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;600&family=Outfit:wght@300;400;500;600&display=swap" rel="stylesheet">
+    <style>
+        :root {
+            --bg-primary: #0a0a0f;
+            --bg-secondary: #12121a;
+            --bg-tertiary: #1a1a24;
+            --bg-panel: #15151f;
+            --border-color: #2a2a3a;
+            --text-primary: #e8e8f0;
+            --text-secondary: #8888a0;
+            --text-muted: #555566;
+            --accent-cyan: #00d4ff;
+            --accent-magenta: #ff00aa;
+            --accent-green: #00ff88;
+            --accent-yellow: #ffcc00;
+            --accent-orange: #ff6600;
+            --accent-red: #ff3366;
+            --shadow-glow: 0 0 20px rgba(0, 212, 255, 0.1);
+        }
+        
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+        
+        body {
+            font-family: 'Outfit', -apple-system, sans-serif;
+            background: var(--bg-primary);
+            color: var(--text-primary);
+            min-height: 100vh;
+            overflow-x: hidden;
+        }
+        
+        /* Background gradient */
+        body::before {
+            content: '';
+            position: fixed;
+            top: 0;
+            left: 0;
+            right: 0;
+            bottom: 0;
+            background: 
+                radial-gradient(ellipse at 20% 20%, rgba(0, 212, 255, 0.05) 0%, transparent 50%),
+                radial-gradient(ellipse at 80% 80%, rgba(255, 0, 170, 0.05) 0%, transparent 50%);
+            pointer-events: none;
+            z-index: -1;
+        }
+        
+        /* Header */
+        header {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            padding: 16px 24px;
+            background: var(--bg-secondary);
+            border-bottom: 1px solid var(--border-color);
+        }
+        
+        .logo {
+            display: flex;
+            align-items: center;
+            gap: 12px;
+        }
+        
+        .logo-icon {
+            width: 36px;
+            height: 36px;
+            background: linear-gradient(135deg, var(--accent-cyan), var(--accent-magenta));
+            border-radius: 10px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            font-size: 18px;
+        }
+        
+        .logo h1 {
+            font-size: 20px;
+            font-weight: 600;
+            letter-spacing: -0.5px;
+        }
+        
+        .logo h1 span {
+            color: var(--accent-cyan);
+        }
+        
+        .header-controls {
+            display: flex;
+            align-items: center;
+            gap: 16px;
+        }
+        
+        .connection-status {
+            display: flex;
+            align-items: center;
+            gap: 8px;
+            font-size: 13px;
+            color: var(--text-secondary);
+        }
+        
+        .status-dot {
+            width: 8px;
+            height: 8px;
+            border-radius: 50%;
+            background: var(--accent-red);
+            transition: background 0.3s;
+        }
+        
+        .status-dot.connected {
+            background: var(--accent-green);
+            box-shadow: 0 0 8px var(--accent-green);
+        }
+        
+        .btn {
+            font-family: 'Outfit', sans-serif;
+            font-size: 14px;
+            font-weight: 500;
+            padding: 10px 18px;
+            border: none;
+            border-radius: 8px;
+            cursor: pointer;
+            transition: all 0.2s;
+            display: flex;
+            align-items: center;
+            gap: 8px;
+        }
+        
+        .btn-primary {
+            background: linear-gradient(135deg, var(--accent-cyan), var(--accent-magenta));
+            color: white;
+        }
+        
+        .btn-primary:hover {
+            transform: translateY(-1px);
+            box-shadow: 0 4px 20px rgba(0, 212, 255, 0.3);
+        }
+        
+        .btn-primary:active {
+            transform: translateY(0);
+        }
+        
+        /* Main layout */
+        main {
+            display: grid;
+            grid-template-columns: 1fr 1fr;
+            grid-template-rows: auto auto auto;
+            gap: 16px;
+            padding: 16px;
+            max-width: 1800px;
+            margin: 0 auto;
+        }
+        
+        /* Panels */
+        .panel {
+            background: var(--bg-panel);
+            border: 1px solid var(--border-color);
+            border-radius: 12px;
+            overflow: hidden;
+        }
+        
+        .panel-header {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            padding: 12px 16px;
+            background: var(--bg-tertiary);
+            border-bottom: 1px solid var(--border-color);
+        }
+        
+        .panel-title {
+            font-size: 13px;
+            font-weight: 600;
+            text-transform: uppercase;
+            letter-spacing: 0.5px;
+            color: var(--text-secondary);
+        }
+        
+        .panel-content {
+            padding: 12px;
+        }
+        
+        /* Selects */
+        select {
+            font-family: 'Outfit', sans-serif;
+            font-size: 13px;
+            padding: 6px 12px;
+            background: var(--bg-secondary);
+            border: 1px solid var(--border-color);
+            border-radius: 6px;
+            color: var(--text-primary);
+            cursor: pointer;
+            outline: none;
+        }
+        
+        select:focus {
+            border-color: var(--accent-cyan);
+        }
+        
+        /* Spectrogram */
+        .spectrogram-container {
+            position: relative;
+            height: 200px;
+            background: var(--bg-secondary);
+            border-radius: 8px;
+            overflow: hidden;
+        }
+        
+        .spectrogram-canvas {
+            width: 100%;
+            height: 100%;
+        }
+        
+        .spectrogram-overlay {
+            position: absolute;
+            bottom: 8px;
+            left: 8px;
+            font-family: 'JetBrains Mono', monospace;
+            font-size: 11px;
+            color: var(--text-muted);
+            background: rgba(0, 0, 0, 0.6);
+            padding: 4px 8px;
+            border-radius: 4px;
+        }
+        
+        /* Transcripts */
+        .transcript-panel {
+            grid-column: span 2;
+        }
+        
+        .transcript-container {
+            display: grid;
+            grid-template-columns: 1fr 1fr;
+            gap: 16px;
+        }
+        
+        .transcript-column {
+            min-height: 120px;
+            max-height: 200px;
+            overflow-y: auto;
+        }
+        
+        .transcript-column h3 {
+            font-size: 12px;
+            font-weight: 500;
+            color: var(--text-secondary);
+            margin-bottom: 8px;
+            padding-bottom: 8px;
+            border-bottom: 1px solid var(--border-color);
+        }
+        
+        .transcript-column h3.input {
+            color: var(--accent-cyan);
+        }
+        
+        .transcript-column h3.output {
+            color: var(--accent-magenta);
+        }
+        
+        .transcript-item {
+            font-size: 14px;
+            line-height: 1.5;
+            padding: 8px 12px;
+            margin-bottom: 8px;
+            background: var(--bg-secondary);
+            border-radius: 8px;
+            border-left: 3px solid var(--border-color);
+        }
+        
+        .transcript-item.input {
+            border-left-color: var(--accent-cyan);
+        }
+        
+        .transcript-item.output {
+            border-left-color: var(--accent-magenta);
+        }
+        
+        .transcript-empty {
+            color: var(--text-muted);
+            font-style: italic;
+            font-size: 13px;
+        }
+        
+        /* Signals panel */
+        .signals-panel {
+            max-height: 250px;
+        }
+        
+        .signals-container {
+            display: flex;
+            flex-direction: column;
+            gap: 12px;
+        }
+        
+        .signal-row {
+            display: flex;
+            align-items: center;
+            gap: 12px;
+        }
+        
+        .signal-label {
+            font-family: 'JetBrains Mono', monospace;
+            font-size: 11px;
+            color: var(--text-secondary);
+            min-width: 100px;
+        }
+        
+        .signal-bar-container {
+            flex: 1;
+            height: 20px;
+            background: var(--bg-secondary);
+            border-radius: 4px;
+            overflow: hidden;
+            position: relative;
+        }
+        
+        .signal-bar {
+            height: 100%;
+            transition: width 0.1s ease-out;
+            border-radius: 4px;
+        }
+        
+        .signal-bar.vad {
+            background: linear-gradient(90deg, var(--accent-green), var(--accent-cyan));
+        }
+        
+        .signal-bar.rms {
+            background: linear-gradient(90deg, var(--accent-yellow), var(--accent-orange));
+        }
+        
+        .signal-bar.yamnet {
+            background: linear-gradient(90deg, var(--accent-magenta), var(--accent-cyan));
+        }
+        
+        .signal-value {
+            font-family: 'JetBrains Mono', monospace;
+            font-size: 11px;
+            color: var(--text-primary);
+            min-width: 50px;
+            text-align: right;
+        }
+        
+        /* Events timeline */
+        .events-panel {
+            max-height: 250px;
+        }
+        
+        .events-container {
+            max-height: 200px;
+            overflow-y: auto;
+        }
+        
+        .event-item {
+            display: flex;
+            align-items: flex-start;
+            gap: 12px;
+            padding: 8px 0;
+            border-bottom: 1px solid var(--border-color);
+            font-size: 13px;
+        }
+        
+        .event-item:last-child {
+            border-bottom: none;
+        }
+        
+        .event-time {
+            font-family: 'JetBrains Mono', monospace;
+            font-size: 11px;
+            color: var(--text-muted);
+            min-width: 70px;
+        }
+        
+        .event-category {
+            font-family: 'JetBrains Mono', monospace;
+            font-size: 11px;
+            padding: 2px 6px;
+            border-radius: 4px;
+            min-width: 80px;
+            text-align: center;
+        }
+        
+        .event-category.wake_word { background: rgba(0, 255, 136, 0.2); color: var(--accent-green); }
+        .event-category.conversation { background: rgba(0, 212, 255, 0.2); color: var(--accent-cyan); }
+        .event-category.system { background: rgba(136, 136, 160, 0.2); color: var(--text-secondary); }
+        .event-category.error { background: rgba(255, 51, 102, 0.2); color: var(--accent-red); }
+        .event-category.transcript_input { background: rgba(0, 212, 255, 0.2); color: var(--accent-cyan); }
+        .event-category.transcript_output { background: rgba(255, 0, 170, 0.2); color: var(--accent-magenta); }
+        
+        .event-message {
+            flex: 1;
+            color: var(--text-primary);
+        }
+        
+        /* Scrollbar styling */
+        ::-webkit-scrollbar {
+            width: 6px;
+            height: 6px;
+        }
+        
+        ::-webkit-scrollbar-track {
+            background: var(--bg-secondary);
+            border-radius: 3px;
+        }
+        
+        ::-webkit-scrollbar-thumb {
+            background: var(--border-color);
+            border-radius: 3px;
+        }
+        
+        ::-webkit-scrollbar-thumb:hover {
+            background: var(--text-muted);
+        }
+        
+        /* Responsive */
+        @media (max-width: 900px) {
+            main {
+                grid-template-columns: 1fr;
+            }
+            
+            .transcript-panel {
+                grid-column: span 1;
+            }
+            
+            .transcript-container {
+                grid-template-columns: 1fr;
+            }
+        }
+    </style>
+</head>
+<body>
+    <header>
+        <div class="logo">
+            <div class="logo-icon">K</div>
+            <h1>Kin <span>AI</span></h1>
+        </div>
+        <div class="header-controls">
+            <div class="connection-status">
+                <div class="status-dot" id="statusDot"></div>
+                <span id="statusText">Disconnected</span>
+            </div>
+            <button class="btn btn-primary" id="wakeWordBtn" onclick="injectWakeWord()">
+                <span>&#127908;</span> Inject Wake Word
+            </button>
+        </div>
+    </header>
+    
+    <main>
+        <!-- Left Spectrogram -->
+        <div class="panel">
+            <div class="panel-header">
+                <span class="panel-title">Audio Stream 1</span>
+                <select id="streamSelect1" onchange="changeStream(0, this.value)">
+                    <!-- Populated by JS -->
+                </select>
+            </div>
+            <div class="panel-content">
+                <div class="spectrogram-container">
+                    <canvas class="spectrogram-canvas" id="spectrogram1"></canvas>
+                    <div class="spectrogram-overlay" id="specInfo1">0 Hz - 8000 Hz</div>
+                </div>
+            </div>
+        </div>
+        
+        <!-- Right Spectrogram -->
+        <div class="panel">
+            <div class="panel-header">
+                <span class="panel-title">Audio Stream 2</span>
+                <select id="streamSelect2" onchange="changeStream(1, this.value)">
+                    <!-- Populated by JS -->
+                </select>
+            </div>
+            <div class="panel-content">
+                <div class="spectrogram-container">
+                    <canvas class="spectrogram-canvas" id="spectrogram2"></canvas>
+                    <div class="spectrogram-overlay" id="specInfo2">0 Hz - 8000 Hz</div>
+                </div>
+            </div>
+        </div>
+        
+        <!-- Transcripts -->
+        <div class="panel transcript-panel">
+            <div class="panel-header">
+                <span class="panel-title">Conversation Transcripts</span>
+            </div>
+            <div class="panel-content">
+                <div class="transcript-container">
+                    <div class="transcript-column">
+                        <h3 class="input">User Input</h3>
+                        <div id="transcriptInput">
+                            <div class="transcript-empty">Waiting for speech...</div>
+                        </div>
+                    </div>
+                    <div class="transcript-column">
+                        <h3 class="output">Agent Response</h3>
+                        <div id="transcriptOutput">
+                            <div class="transcript-empty">Waiting for response...</div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+        
+        <!-- Signal Plots -->
+        <div class="panel signals-panel">
+            <div class="panel-header">
+                <span class="panel-title">Signal Levels</span>
+            </div>
+            <div class="panel-content">
+                <div class="signals-container">
+                    <div class="signal-row">
+                        <span class="signal-label">VAD Prob</span>
+                        <div class="signal-bar-container">
+                            <div class="signal-bar vad" id="vadBar" style="width: 0%"></div>
+                        </div>
+                        <span class="signal-value" id="vadValue">0.00</span>
+                    </div>
+                    <div class="signal-row">
+                        <span class="signal-label">Input RMS</span>
+                        <div class="signal-bar-container">
+                            <div class="signal-bar rms" id="rmsBar" style="width: 0%"></div>
+                        </div>
+                        <span class="signal-value" id="rmsValue">0.00</span>
+                    </div>
+                    <div class="signal-row">
+                        <span class="signal-label">Speech Score</span>
+                        <div class="signal-bar-container">
+                            <div class="signal-bar yamnet" id="yamnetBar" style="width: 0%"></div>
+                        </div>
+                        <span class="signal-value" id="yamnetValue">0.00</span>
+                    </div>
+                </div>
+            </div>
+        </div>
+        
+        <!-- Events Timeline -->
+        <div class="panel events-panel">
+            <div class="panel-header">
+                <span class="panel-title">Event Timeline</span>
+            </div>
+            <div class="panel-content">
+                <div class="events-container" id="eventsContainer">
+                    <!-- Populated by JS -->
+                </div>
+            </div>
+        </div>
+    </main>
+    
+    <script>
+        // ========================================
+        // Configuration
+        // ========================================
+        const SPECTROGRAM_WIDTH = 300;  // Number of time columns
+        const FFT_SIZE = 512;
+        const SAMPLE_RATE = 16000;
+        
+        // ========================================
+        // State
+        // ========================================
+        let ws = null;
+        let audioContext = null;
+        let streams = [];
+        let selectedStreams = ['aec_input', 'agent_output'];
+        let spectrogramData = [null, null];
+        let spectrogramCtx = [null, null];
+        let events = [];
+        const MAX_EVENTS = 50;
+        const MAX_TRANSCRIPTS = 10;
+        let startTime = Date.now();
+        
+        // ========================================
+        // Initialization
+        // ========================================
+        function init() {
+            // Initialize canvases
+            for (let i = 0; i < 2; i++) {
+                const canvas = document.getElementById(`spectrogram${i + 1}`);
+                const container = canvas.parentElement;
+                canvas.width = container.clientWidth * window.devicePixelRatio;
+                canvas.height = container.clientHeight * window.devicePixelRatio;
+                canvas.style.width = '100%';
+                canvas.style.height = '100%';
+                spectrogramCtx[i] = canvas.getContext('2d');
+                
+                // Initialize spectrogram data array
+                const freqBins = FFT_SIZE / 2;
+                spectrogramData[i] = new Float32Array(SPECTROGRAM_WIDTH * freqBins);
+                spectrogramData[i].fill(-80);  // Silence
+                
+                // Initial render
+                renderSpectrogram(i);
+            }
+            
+            // Handle resize
+            window.addEventListener('resize', () => {
+                for (let i = 0; i < 2; i++) {
+                    const canvas = document.getElementById(`spectrogram${i + 1}`);
+                    const container = canvas.parentElement;
+                    canvas.width = container.clientWidth * window.devicePixelRatio;
+                    canvas.height = container.clientHeight * window.devicePixelRatio;
+                    renderSpectrogram(i);
+                }
+            });
+            
+            // Connect WebSocket
+            connect();
+        }
+        
+        // ========================================
+        // WebSocket Connection
+        // ========================================
+        function connect() {
+            const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
+            const wsUrl = `${protocol}//${window.location.host}/ws`;
+            
+            ws = new WebSocket(wsUrl);
+            
+            ws.onopen = () => {
+                console.log('WebSocket connected');
+                document.getElementById('statusDot').classList.add('connected');
+                document.getElementById('statusText').textContent = 'Connected';
+                addEvent('system', 'Dashboard connected');
+            };
+            
+            ws.onclose = () => {
+                console.log('WebSocket disconnected');
+                document.getElementById('statusDot').classList.remove('connected');
+                document.getElementById('statusText').textContent = 'Disconnected';
+                addEvent('system', 'Dashboard disconnected');
+                
+                // Reconnect after delay
+                setTimeout(connect, 2000);
+            };
+            
+            ws.onerror = (error) => {
+                console.error('WebSocket error:', error);
+            };
+            
+            ws.onmessage = (event) => {
+                handleMessage(JSON.parse(event.data));
+            };
+        }
+        
+        // ========================================
+        // Message Handling
+        // ========================================
+        function handleMessage(msg) {
+            switch (msg.type) {
+                case 'config':
+                    handleConfig(msg);
+                    break;
+                case 'audio':
+                    handleAudio(msg);
+                    break;
+                case 'scalar':
+                    handleScalar(msg);
+                    break;
+                case 'text':
+                    handleText(msg);
+                    break;
+            }
+        }
+        
+        function handleConfig(msg) {
+            streams = msg.streams || [];
+            
+            // Populate stream selectors
+            for (let i = 0; i < 2; i++) {
+                const select = document.getElementById(`streamSelect${i + 1}`);
+                select.innerHTML = '';
+                
+                streams.forEach(([id, name]) => {
+                    const option = document.createElement('option');
+                    option.value = id;
+                    option.textContent = name;
+                    if (id === selectedStreams[i]) {
+                        option.selected = true;
+                    }
+                    select.appendChild(option);
+                });
+            }
+            
+            console.log('Configured with sample rate:', msg.sample_rate);
+        }
+        
+        function handleAudio(msg) {
+            // Find which spectrogram index this stream maps to
+            const streamIndex = selectedStreams.indexOf(msg.stream);
+            if (streamIndex === -1) return;
+            
+            // Decode base64 audio
+            const binaryStr = atob(msg.data);
+            const bytes = new Uint8Array(binaryStr.length);
+            for (let i = 0; i < binaryStr.length; i++) {
+                bytes[i] = binaryStr.charCodeAt(i);
+            }
+            
+            // Convert to Int16Array then Float32Array
+            const int16 = new Int16Array(bytes.buffer);
+            const float32 = new Float32Array(int16.length);
+            for (let i = 0; i < int16.length; i++) {
+                float32[i] = int16[i] / 32768.0;
+            }
+            
+            // Compute FFT and update spectrogram
+            const fftResult = computeFFT(float32);
+            updateSpectrogram(streamIndex, fftResult);
+        }
+        
+        function handleScalar(msg) {
+            const value = Math.max(0, Math.min(1, msg.value));
+            const percent = (value * 100).toFixed(0);
+            
+            if (msg.name === 'vad_probability' || msg.name === 'vad') {
+                document.getElementById('vadBar').style.width = `${percent}%`;
+                document.getElementById('vadValue').textContent = value.toFixed(2);
+            } else if (msg.name === 'input_rms' || msg.name === 'rms') {
+                // RMS is typically much smaller, scale it up for display
+                const scaledPercent = Math.min(100, value * 1000);
+                document.getElementById('rmsBar').style.width = `${scaledPercent}%`;
+                document.getElementById('rmsValue').textContent = value.toFixed(3);
+            } else if (msg.name === 'yamnet_speech' || msg.name.includes('yamnet')) {
+                document.getElementById('yamnetBar').style.width = `${percent}%`;
+                document.getElementById('yamnetValue').textContent = value.toFixed(2);
+            }
+        }
+        
+        function handleText(msg) {
+            // Add to events timeline
+            addEvent(msg.category, msg.message, msg.level);
+            
+            // Handle transcripts separately
+            if (msg.category === 'transcript_input') {
+                addTranscript('input', msg.message);
+            } else if (msg.category === 'transcript_output') {
+                addTranscript('output', msg.message);
+            }
+        }
+        
+        // ========================================
+        // FFT Computation
+        // ========================================
+        function computeFFT(samples) {
+            const fftSize = FFT_SIZE;
+            const freqBins = fftSize / 2;
+            
+            // Ensure we have enough samples
+            if (samples.length < fftSize) {
+                const padded = new Float32Array(fftSize);
+                padded.set(samples);
+                samples = padded;
+            }
+            
+            // Take last fftSize samples
+            const windowed = new Float32Array(fftSize);
+            const offset = Math.max(0, samples.length - fftSize);
+            for (let i = 0; i < fftSize; i++) {
+                // Apply Hann window
+                const hannWindow = 0.5 * (1 - Math.cos(2 * Math.PI * i / (fftSize - 1)));
+                windowed[i] = samples[offset + i] * hannWindow;
+            }
+            
+            // Simple DFT (not optimized, but sufficient for 512 samples)
+            const real = new Float32Array(fftSize);
+            const imag = new Float32Array(fftSize);
+            
+            for (let k = 0; k < freqBins; k++) {
+                let sumReal = 0;
+                let sumImag = 0;
+                for (let n = 0; n < fftSize; n++) {
+                    const angle = -2 * Math.PI * k * n / fftSize;
+                    sumReal += windowed[n] * Math.cos(angle);
+                    sumImag += windowed[n] * Math.sin(angle);
+                }
+                real[k] = sumReal;
+                imag[k] = sumImag;
+            }
+            
+            // Convert to magnitude in dB
+            const magnitudeDb = new Float32Array(freqBins);
+            for (let i = 0; i < freqBins; i++) {
+                const magnitude = Math.sqrt(real[i] * real[i] + imag[i] * imag[i]);
+                magnitudeDb[i] = 20 * Math.log10(magnitude + 1e-10);
+                magnitudeDb[i] = Math.max(-80, Math.min(0, magnitudeDb[i]));
+            }
+            
+            return magnitudeDb;
+        }
+        
+        // ========================================
+        // Spectrogram Rendering
+        // ========================================
+        function updateSpectrogram(index, fftResult) {
+            const freqBins = FFT_SIZE / 2;
+            
+            // Shift data left
+            for (let t = 0; t < SPECTROGRAM_WIDTH - 1; t++) {
+                for (let f = 0; f < freqBins; f++) {
+                    spectrogramData[index][t * freqBins + f] = 
+                        spectrogramData[index][(t + 1) * freqBins + f];
+                }
+            }
+            
+            // Add new column on right
+            for (let f = 0; f < freqBins; f++) {
+                spectrogramData[index][(SPECTROGRAM_WIDTH - 1) * freqBins + f] = fftResult[f];
+            }
+            
+            renderSpectrogram(index);
+        }
+        
+        function renderSpectrogram(index) {
+            const ctx = spectrogramCtx[index];
+            const canvas = ctx.canvas;
+            const freqBins = FFT_SIZE / 2;
+            
+            // Create image data
+            const imageData = ctx.createImageData(SPECTROGRAM_WIDTH, freqBins);
+            const data = imageData.data;
+            
+            for (let t = 0; t < SPECTROGRAM_WIDTH; t++) {
+                for (let f = 0; f < freqBins; f++) {
+                    // Flip frequency axis (low frequencies at bottom)
+                    const yFlipped = freqBins - 1 - f;
+                    const value = spectrogramData[index][t * freqBins + f];
+                    
+                    // Map -80..0 dB to 0..1
+                    const normalized = (value + 80) / 80;
+                    
+                    // Viridis-inspired colormap
+                    const color = viridisColor(normalized);
+                    
+                    const pixelIndex = (yFlipped * SPECTROGRAM_WIDTH + t) * 4;
+                    data[pixelIndex] = color[0];
+                    data[pixelIndex + 1] = color[1];
+                    data[pixelIndex + 2] = color[2];
+                    data[pixelIndex + 3] = 255;
+                }
+            }
+            
+            // Scale to canvas size
+            const tempCanvas = document.createElement('canvas');
+            tempCanvas.width = SPECTROGRAM_WIDTH;
+            tempCanvas.height = freqBins;
+            tempCanvas.getContext('2d').putImageData(imageData, 0, 0);
+            
+            // Draw scaled
+            ctx.imageSmoothingEnabled = false;
+            ctx.drawImage(tempCanvas, 0, 0, canvas.width, canvas.height);
+        }
+        
+        function viridisColor(t) {
+            // Simplified viridis colormap
+            t = Math.max(0, Math.min(1, t));
+            
+            // Key colors from viridis
+            const colors = [
+                [68, 1, 84],      // 0.0 - dark purple
+                [59, 82, 139],    // 0.25 - blue
+                [33, 145, 140],   // 0.5 - teal
+                [94, 201, 98],    // 0.75 - green
+                [253, 231, 37]    // 1.0 - yellow
+            ];
+            
+            const idx = t * (colors.length - 1);
+            const lower = Math.floor(idx);
+            const upper = Math.min(lower + 1, colors.length - 1);
+            const frac = idx - lower;
+            
+            return [
+                Math.round(colors[lower][0] + frac * (colors[upper][0] - colors[lower][0])),
+                Math.round(colors[lower][1] + frac * (colors[upper][1] - colors[lower][1])),
+                Math.round(colors[lower][2] + frac * (colors[upper][2] - colors[lower][2]))
+            ];
+        }
+        
+        // ========================================
+        // UI Updates
+        // ========================================
+        function changeStream(index, streamId) {
+            selectedStreams[index] = streamId;
+            
+            // Clear spectrogram data
+            const freqBins = FFT_SIZE / 2;
+            spectrogramData[index].fill(-80);
+            renderSpectrogram(index);
+        }
+        
+        function addEvent(category, message, level = 'info') {
+            const elapsed = ((Date.now() - startTime) / 1000).toFixed(1);
+            
+            events.unshift({
+                time: elapsed,
+                category: category,
+                message: message,
+                level: level
+            });
+            
+            // Limit events
+            if (events.length > MAX_EVENTS) {
+                events.pop();
+            }
+            
+            renderEvents();
+        }
+        
+        function renderEvents() {
+            const container = document.getElementById('eventsContainer');
+            container.innerHTML = events.map(e => `
+                <div class="event-item">
+                    <span class="event-time">${e.time}s</span>
+                    <span class="event-category ${e.category}">${e.category}</span>
+                    <span class="event-message">${escapeHtml(e.message)}</span>
+                </div>
+            `).join('');
+        }
+        
+        function addTranscript(type, message) {
+            const containerId = type === 'input' ? 'transcriptInput' : 'transcriptOutput';
+            const container = document.getElementById(containerId);
+            
+            // Remove empty placeholder
+            const empty = container.querySelector('.transcript-empty');
+            if (empty) empty.remove();
+            
+            // Add new transcript
+            const div = document.createElement('div');
+            div.className = `transcript-item ${type}`;
+            div.textContent = message;
+            container.insertBefore(div, container.firstChild);
+            
+            // Limit transcripts
+            while (container.children.length > MAX_TRANSCRIPTS) {
+                container.removeChild(container.lastChild);
+            }
+        }
+        
+        function escapeHtml(text) {
+            const div = document.createElement('div');
+            div.textContent = text;
+            return div.innerHTML;
+        }
+        
+        // ========================================
+        // Actions
+        // ========================================
+        function injectWakeWord() {
+            if (ws && ws.readyState === WebSocket.OPEN) {
+                ws.send(JSON.stringify({ type: 'inject_wake_word' }));
+                addEvent('wake_word', 'Wake word injected (manual)');
+            }
+        }
+        
+        // Start on load
+        window.addEventListener('DOMContentLoaded', init);
+    </script>
+</body>
+</html>
+

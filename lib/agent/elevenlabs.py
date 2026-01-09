@@ -21,12 +21,14 @@ from scipy import signal
 from lib.agent.context import ContextManager
 from lib.agent.orchestrator import OrchestratorClient
 from lib.config import Config
+from lib.signals.publisher import SignalPublisher
 
 if TYPE_CHECKING:
     from lib.audio.manager import AudioManager
+    from lib.signals.bus import SignalBus
 
 
-class ElevenLabsConversationClient:
+class ElevenLabsConversationClient(SignalPublisher):
     """WebSocket-based conversation client for ElevenLabs with full telemetry.
     
     Now uses AudioManager for unified audio handling with AEC support.
@@ -38,7 +40,8 @@ class ElevenLabsConversationClient:
         agent_id: str,
         audio_manager: "AudioManager",
         user_terminate_flag=None,
-        led_controller=None
+        led_controller=None,
+        signal_bus: Optional["SignalBus"] = None
     ):
         """
         Initialize ElevenLabs conversation client.
@@ -49,7 +52,11 @@ class ElevenLabsConversationClient:
             audio_manager: AudioManager for audio input/output with AEC
             user_terminate_flag: Mutable flag [False] for user termination
             led_controller: LEDController instance for visual feedback (optional)
+            signal_bus: SignalBus for publishing transcript signals (optional)
         """
+        # Initialize SignalPublisher mixin
+        SignalPublisher.__init__(self, signal_bus, "elevenlabs")
+        
         self.web_socket_url = web_socket_url
         self.agent_id = agent_id
         self._audio_manager = audio_manager
@@ -708,12 +715,16 @@ class ElevenLabsConversationClient:
                     transcript = data['user_transcription_event'].get('user_transcript', '')
                     if transcript:
                         print(f"👤 You: {transcript}")
+                        # Publish transcript signal for GUI
+                        self.publish_text("transcript_input", transcript)
                         self.last_audio_time = time.time()  # Reset silence timer
                 
                 elif 'agent_response_event' in data:
                     response = data['agent_response_event'].get('agent_response', '')
                     if response:
                         print(f"🤖 Agent: {response}")
+                        # Publish transcript signal for GUI
+                        self.publish_text("transcript_output", response)
                 
                 elif 'audio_event' in data:
                     # Decode and queue agent audio (don't play directly)
