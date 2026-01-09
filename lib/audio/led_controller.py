@@ -45,6 +45,7 @@ class LEDController:
     STATE_THINKING = 7      # THINKING: User paused, agent preparing response, fast amber pulse
     STATE_WIFI_SETUP = 8    # WIFI_SETUP: Device in WiFi setup mode, ready for configuration
     STATE_ATTEMPTING_CONNECTION = 9  # ATTEMPTING_CONNECTION: Attempting WiFi/pairing connection
+    STATE_MUSIC = 10  # MUSIC: Music visualization mode - LEDs react to music playback
     
     # Color palette (RGB, 0-255)
     # Colors are applied with brightness multipliers for visibility
@@ -57,7 +58,11 @@ class LEDController:
         'conversation': (255, 180, 20),  # Amber/Gold - warm listening state
         'speaking': (255, 255, 255),     # White - clear speaking state
         'error': (255, 107, 107),       # Soft red - non-alarming indicator
-        'off': (0, 0, 0)                # No light
+        'off': (0, 0, 0),               # No light
+        # Music visualization colors (visible through red tinted glass)
+        'music_1': (255, 100, 0),       # Orange
+        'music_2': (255, 50, 150),      # Pink/Magenta
+        'music_3': (255, 200, 50),      # Gold
     }
     
     # -------------------------------------------------------------------------
@@ -138,7 +143,8 @@ class LEDController:
             self.STATE_SPEAKING: "SPEAKING (white audio-reactive, agent talking)",
             self.STATE_ERROR: "ERROR (soft red blink)",
             self.STATE_WIFI_SETUP: "WIFI_SETUP (soft amber slow blink 60%, ready for configuration)",
-            self.STATE_ATTEMPTING_CONNECTION: "ATTEMPTING_CONNECTION (soft amber fast blink 60%, connecting)"
+            self.STATE_ATTEMPTING_CONNECTION: "ATTEMPTING_CONNECTION (soft amber fast blink 60%, connecting)",
+            self.STATE_MUSIC: "MUSIC (audio-reactive music visualization)"
         }
         if Config.SHOW_LED_STATE_LOGS:
             print(f"💡 LED: {state_names.get(state, f'UNKNOWN({state})')}")
@@ -192,6 +198,17 @@ class LEDController:
         elif state == self.STATE_ATTEMPTING_CONNECTION:
             # ATTEMPTING_CONNECTION: Soft amber fast blink (0.5s on/off, 60% brightness)
             self._start_animation(self._attempting_connection_blink_loop)
+        
+        elif state == self.STATE_MUSIC:
+            # MUSIC: Audio-reactive visualization - no animation loop needed
+            # LEDs will be updated directly by update_music_leds()
+            # Start with a base color to show music mode is active
+            # Reset music tracking state
+            self._music_energy_history = []
+            self._music_smoothed_energy = 0.0
+            self._music_peak_brightness = 0.0
+            self._music_last_beat_time = 0.0
+            self._start_animation(self._music_idle_loop)
     
     # -------------------------------------------------------------------------
     # Animation Control Methods
@@ -573,6 +590,181 @@ class LEDController:
             pass
         except Exception as e:
             print(f"  ⚠ LED attempting connection animation error: {e}")
+    
+    async def _music_idle_loop(self):
+        """
+        Gentle breathing animation when in music mode but no audio detected.
+        Uses warm colors to indicate music mode is active.
+        """
+        if not self.enabled or not self.pixel_ring:
+            return
+        
+        CYCLE_SECONDS = 2.0  # 2 second breathing cycle
+        UPDATE_INTERVAL = 0.05  # 50ms updates
+        MIN_BRIGHTNESS = 0.1  # 10% minimum
+        MAX_BRIGHTNESS = 0.4  # 40% maximum
+        
+        base_color = self.COLORS['music_1']  # Orange
+        start_time = time.time()
+        
+        try:
+            while self.current_state == self.STATE_MUSIC:
+                elapsed = time.time() - start_time
+                cycle_position = (elapsed % CYCLE_SECONDS) / CYCLE_SECONDS
+                
+                # Sine wave for smooth breathing
+                sine_value = (math.sin(cycle_position * 2 * math.pi) + 1) / 2
+                brightness = MIN_BRIGHTNESS + (sine_value * (MAX_BRIGHTNESS - MIN_BRIGHTNESS))
+                
+                color = self._rgb_to_int_with_brightness(base_color, brightness)
+                self.pixel_ring.mono(color)
+                
+                await asyncio.sleep(UPDATE_INTERVAL)
+                
+        except asyncio.CancelledError:
+            pass
+        except Exception as e:
+            print(f"  ⚠ LED music idle animation error: {e}")
+    
+    def update_music_leds(self, ref_audio):
+        """
+        Update LEDs based on music energy from Ch5 (playback reference channel).
+        
+        Uses beat detection and energy tracking for reactive visualization.
+        Color shifts based on audio intensity, not time.
+        
+        Args:
+            ref_audio: numpy array of int16 audio samples from Ch5 (playback loopback)
+        """
+        # Skip if LEDs are disabled or unavailable
+        if not self.enabled or not self.pixel_ring:
+            return
+        
+        # Only process during music state
+        if self.current_state != self.STATE_MUSIC:
+            return
+        
+        # Initialize tracking state if needed
+        if not hasattr(self, '_music_energy_history'):
+            self._music_energy_history = []  # Recent energy values for beat detection
+            self._music_smoothed_energy = 0.0  # Smoothed baseline
+            self._music_peak_brightness = 0.0  # For decay effect
+            self._music_last_beat_time = 0.0  # For beat cooldown
+        
+        # Calculate RMS energy from reference audio
+        rms = np.sqrt(np.mean(ref_audio.astype(float) ** 2))
+        
+        # Skip if silence/very quiet (no music playing or between tracks)
+        if rms < 600:
+            # Decay peak brightness when silent
+            self._music_peak_brightness *= 0.85
+            if self._music_peak_brightness < 0.05:
+                # Let idle animation handle extended silence
+                return
+            # Show fading glow
+            brightness = self._music_peak_brightness
+            color = self._rgb_to_int_with_brightness(self.COLORS['music_1'], brightness)
+            self.pixel_ring.mono(color)
+            return
+        
+        # Stop idle animation when music is playing
+        if self.animation_task and not self.animation_task.done():
+            self.animation_task.cancel()
+            self.animation_task = None
+        
+        # -------------------------------------------------------------------------
+        # Beat Detection - detect sudden energy increases
+        # -------------------------------------------------------------------------
+        
+        # Update smoothed baseline (slow adaptation)
+        self._music_smoothed_energy = self._music_smoothed_energy * 0.95 + rms * 0.05
+        
+        # Keep history for local average (last ~10 frames = ~300ms)
+        self._music_energy_history.append(rms)
+        if len(self._music_energy_history) > 10:
+            self._music_energy_history.pop(0)
+        
+        local_avg = sum(self._music_energy_history) / len(self._music_energy_history)
+        
+        # Beat detection: current energy significantly above recent average
+        beat_threshold = max(local_avg * 1.4, self._music_smoothed_energy * 1.3)
+        is_beat = rms > beat_threshold
+        
+        # Beat cooldown (prevent rapid flashing, ~100ms between beats)
+        now = time.time()
+        if is_beat and (now - self._music_last_beat_time) < 0.08:
+            is_beat = False
+        
+        if is_beat:
+            self._music_last_beat_time = now
+        
+        # -------------------------------------------------------------------------
+        # Brightness calculation - much more reactive
+        # -------------------------------------------------------------------------
+        
+        # Normalize current energy (typical music peaks 15000-25000)
+        normalized_energy = min(rms / 18000.0, 1.0)
+        
+        # Apply strong gamma for punch (quiet = dim, loud = bright)
+        normalized_energy = normalized_energy ** 0.7  # Lower gamma = more reactive
+        
+        # Base brightness from energy
+        instant_brightness = 0.05 + (0.95 * normalized_energy)
+        
+        # On beat: flash to full brightness
+        if is_beat:
+            self._music_peak_brightness = 1.0
+        else:
+            # Fast decay from peaks (creates punch effect)
+            self._music_peak_brightness = max(
+                self._music_peak_brightness * 0.75,  # Fast decay
+                instant_brightness
+            )
+        
+        brightness = max(0.05, min(1.0, self._music_peak_brightness))
+        
+        # -------------------------------------------------------------------------
+        # Color based on energy level (not time) - reacts to music!
+        # -------------------------------------------------------------------------
+        
+        # Use energy level to pick color (low=warm, high=hot)
+        if normalized_energy < 0.3:
+            # Low energy: warm orange
+            base_color = self.COLORS['music_1']  # Orange
+        elif normalized_energy < 0.6:
+            # Medium energy: blend orange -> pink
+            blend = (normalized_energy - 0.3) / 0.3
+            c1 = self.COLORS['music_1']
+            c2 = self.COLORS['music_2']
+            base_color = (
+                int(c1[0] * (1 - blend) + c2[0] * blend),
+                int(c1[1] * (1 - blend) + c2[1] * blend),
+                int(c1[2] * (1 - blend) + c2[2] * blend)
+            )
+        elif normalized_energy < 0.85:
+            # High energy: pink/magenta
+            base_color = self.COLORS['music_2']  # Pink
+        else:
+            # Peak energy: bright gold flash
+            base_color = self.COLORS['music_3']  # Gold
+        
+        # On beat: flash white-ish for extra punch
+        if is_beat and normalized_energy > 0.4:
+            # Add white to the color for flash effect
+            base_color = (
+                min(255, base_color[0] + 60),
+                min(255, base_color[1] + 60),
+                min(255, base_color[2] + 40)
+            )
+        
+        # Apply brightness
+        r = int(base_color[0] * brightness)
+        g = int(base_color[1] * brightness)
+        b = int(base_color[2] * brightness)
+        
+        # Set all LEDs to this color
+        color_int = (r << 16) | (g << 8) | b
+        self.pixel_ring.mono(color_int)
     
     def update_speaking_leds(self, audio_chunk):
         """

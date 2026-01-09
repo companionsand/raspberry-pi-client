@@ -675,7 +675,9 @@ class KinClient:
             await _execute_conversation()
     
     async def _run_music_mode(self):
-        """Run music playback mode with voice command control."""
+        """Run music playback mode with voice command control and wake word detection."""
+        from lib.music.mode import MusicExitReason
+        
         genre = getattr(self, '_requested_music_genre', None)
         controller = MusicModeController(
             audio_manager=self.audio_manager,
@@ -683,7 +685,28 @@ class KinClient:
             led_controller=self.led_controller,
             logger=self.logger
         )
-        await controller.run(genre=genre)
+        
+        # Run music mode with wake word detector active
+        exit_reason = await controller.run(
+            genre=genre,
+            wake_word_detector=self.wake_detector
+        )
+        
+        # If exited due to wake word, start a conversation
+        if exit_reason == MusicExitReason.WAKE_WORD:
+            print("\n🎯 Wake word triggered during music - starting conversation...")
+            
+            if self.logger:
+                self.logger.info(
+                    "music_mode_exited_by_wake_word",
+                    extra={
+                        "user_id": Config.USER_ID,
+                        "device_id": Config.DEVICE_ID
+                    }
+                )
+            
+            # Start a conversation (same as normal wake word flow)
+            await self._handle_conversation()
     
     async def _handle_orchestrator_message(self, message: dict):
         """Handle messages from conversation-orchestrator"""

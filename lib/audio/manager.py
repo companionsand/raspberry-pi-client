@@ -83,10 +83,18 @@ class AudioManager:
         self._consumers: List[Callable[[np.ndarray], None]] = []
         self._consumers_lock = threading.Lock()
         
+        # Reference channel (Ch5) consumers for music LED visualization
+        # These receive the playback loopback audio
+        self._ref_consumers: List[Callable[[np.ndarray], None]] = []
+        
         # Audio distribution queue and thread (non-blocking consumer callbacks)
+        # Queue contains tuples: (processed_audio, ref_audio) where ref_audio may be None
         self._audio_distribution_queue: queue.Queue = queue.Queue(maxsize=10)  # Limit queue size to prevent memory buildup
         self._distribution_thread: Optional[threading.Thread] = None
         self._stop_distribution_event = threading.Event()
+        
+        # Store last ref channel for distribution (set in _process_input)
+        self._last_ref_channel: Optional[np.ndarray] = None
         
         # Output queue for playback
         self._output_queue: queue.Queue = queue.Queue()
@@ -232,6 +240,36 @@ class AudioManager:
             if callback in self._consumers:
                 self._consumers.remove(callback)
                 print(f"✓ AudioManager: Consumer unregistered ({len(self._consumers)} remaining)")
+    
+    def register_ref_channel_consumer(self, callback: Callable[[np.ndarray], None]) -> None:
+        """
+        Register a callback to receive Ch5 (playback reference/loopback) audio.
+        
+        This is useful for music LED visualization - the callback receives the
+        audio being played through the speaker, captured by ReSpeaker's Ch5.
+        
+        Callback receives numpy array of int16 audio samples (mono).
+        Called from distribution thread - keep processing minimal.
+        
+        Args:
+            callback: Function that accepts numpy array of reference audio samples.
+        """
+        with self._consumers_lock:
+            if callback not in self._ref_consumers:
+                self._ref_consumers.append(callback)
+                print(f"✓ AudioManager: Ref channel consumer registered ({len(self._ref_consumers)} total)")
+    
+    def unregister_ref_channel_consumer(self, callback: Callable) -> None:
+        """
+        Remove a reference channel consumer callback.
+        
+        Args:
+            callback: Previously registered callback function.
+        """
+        with self._consumers_lock:
+            if callback in self._ref_consumers:
+                self._ref_consumers.remove(callback)
+                print(f"✓ AudioManager: Ref channel consumer unregistered ({len(self._ref_consumers)} remaining)")
     
     def play(self, audio: np.ndarray) -> None:
         """
@@ -462,13 +500,15 @@ class AudioManager:
         # Update watchdog timestamp
         self._last_callback_time = time.time()
         
-        # Process input
+        # Process input (also sets self._last_ref_channel if ReSpeaker is available)
         processed_audio = self._process_input(indata)
         
         # Enqueue for non-blocking distribution to consumers
+        # Include ref channel for music LED visualization
         # Use non-blocking put to avoid blocking the audio callback if queue is full
         try:
-            self._audio_distribution_queue.put_nowait(processed_audio.copy())
+            ref_audio = self._last_ref_channel.copy() if self._last_ref_channel is not None else None
+            self._audio_distribution_queue.put_nowait((processed_audio.copy(), ref_audio))
         except queue.Full:
             # Queue is full - drop this frame to prevent blocking
             # This is better than blocking the audio callback
@@ -549,6 +589,9 @@ class AudioManager:
         if self._has_respeaker and indata.ndim == 2 and indata.shape[1] >= Config.RESPEAKER_CHANNELS:
             mic_channel = indata[:, Config.RESPEAKER_AEC_CHANNEL].copy()
             ref_channel = indata[:, Config.RESPEAKER_REFERENCE_CHANNEL].copy()
+            
+            # Store ref channel for distribution to music LED consumers
+            self._last_ref_channel = ref_channel
             
             # Debug logging
             self._log_channel_debug(indata, mic_channel, ref_channel)
@@ -675,8 +718,15 @@ class AudioManager:
         while not self._stop_distribution_event.is_set():
             try:
                 # Get audio from queue with timeout to allow checking stop event
+                # Queue contains tuples: (processed_audio, ref_audio)
                 try:
-                    processed_audio = self._audio_distribution_queue.get(timeout=0.1)
+                    item = self._audio_distribution_queue.get(timeout=0.1)
+                    # Handle both old format (just audio) and new format (tuple)
+                    if isinstance(item, tuple):
+                        processed_audio, ref_audio = item
+                    else:
+                        processed_audio = item
+                        ref_audio = None
                 except queue.Empty:
                     continue
                 
@@ -687,6 +737,14 @@ class AudioManager:
                             callback(processed_audio)
                         except Exception as e:
                             print(f"⚠️  Consumer callback error: {e}")
+                    
+                    # Distribute ref channel to ref consumers (for music LED viz)
+                    if ref_audio is not None and self._ref_consumers:
+                        for callback in self._ref_consumers:
+                            try:
+                                callback(ref_audio)
+                            except Exception as e:
+                                print(f"⚠️  Ref consumer callback error: {e}")
                             
             except Exception as e:
                 # Log but continue - don't let one error stop distribution
@@ -791,4 +849,8 @@ class AudioManager:
         # Clear consumers
         with self._consumers_lock:
             self._consumers.clear()
+            self._ref_consumers.clear()
+        
+        # Clear ref channel state
+        self._last_ref_channel = None
 

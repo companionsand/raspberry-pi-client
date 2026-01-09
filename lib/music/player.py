@@ -20,7 +20,7 @@ import os
 import signal
 import sys
 import time
-from typing import Optional
+from typing import Optional, List
 
 from lib.config import Config
 from lib.music.stations import StationRegistry, Station
@@ -53,6 +53,11 @@ class MusicPlayer:
         self.logger = Config.LOGGER
         self._registry = StationRegistry()
         self._volume = 100  # Current volume level (0-100)
+        
+        # Station navigation state (for next/previous)
+        self._current_genre: Optional[str] = None  # Genre used for current playback
+        self._genre_stations: List[Station] = []   # All stations in current genre
+        self._station_index: int = 0               # Current position in genre list
     
     # =========================================================================
     # HIGH-LEVEL PLAYBACK METHODS (use these)
@@ -65,9 +70,22 @@ class MusicPlayer:
         Returns:
             True if playback started, False otherwise
         """
+        # Build station list for this genre (for next/previous navigation)
+        self._current_genre = genre
+        self._genre_stations = self._registry.get_stations_for_genre(genre)
+        self._station_index = 0
+        
         station = self._registry.find_by_genre(genre)
         if station:
+            # Find station index in the list
+            for i, s in enumerate(self._genre_stations):
+                if s.url == station.url:
+                    self._station_index = i
+                    break
+            
             print(f"🎵 Genre '{genre}' → {station.name} ({station.source})")
+            if len(self._genre_stations) > 1:
+                print(f"   ({self._station_index + 1}/{len(self._genre_stations)} stations available)")
             self.current_station = station
             return self.start(station.url)
         return self._play_fallback()
@@ -93,8 +111,22 @@ class MusicPlayer:
         Returns:
             True if playback started, False otherwise
         """
+        # Build station list for popular/default (for next/previous navigation)
+        self._current_genre = "popular"
+        self._genre_stations = self._registry.get_stations_for_genre("popular")
+        self._station_index = 0
+        
         station = self._registry.get_default()
+        
+        # Find station index in the list
+        for i, s in enumerate(self._genre_stations):
+            if s.url == station.url:
+                self._station_index = i
+                break
+        
         print(f"🎵 Default → {station.name} ({station.source})")
+        if len(self._genre_stations) > 1:
+            print(f"   ({self._station_index + 1}/{len(self._genre_stations)} stations available)")
         self.current_station = station
         return self.start(station.url)
     
@@ -377,6 +409,97 @@ class MusicPlayer:
             sock.sendall((command + "\n").encode())
         finally:
             sock.close()
+    
+    # =========================================================================
+    # STATION NAVIGATION (next/previous)
+    # =========================================================================
+    
+    def play_next(self) -> bool:
+        """
+        Switch to the next station in the current genre.
+        
+        Wraps around to the first station when at the end.
+        Does nothing silently if only one station is available.
+        
+        Returns:
+            True if switched to a new station, False otherwise
+        """
+        # Check if we have multiple stations
+        if len(self._genre_stations) <= 1:
+            # Only one station available - do nothing silently
+            return False
+        
+        # Move to next station (with wrap-around)
+        self._station_index = (self._station_index + 1) % len(self._genre_stations)
+        new_station = self._genre_stations[self._station_index]
+        
+        return self._switch_station(new_station)
+    
+    def play_previous(self) -> bool:
+        """
+        Switch to the previous station in the current genre.
+        
+        Wraps around to the last station when at the beginning.
+        Does nothing silently if only one station is available.
+        
+        Returns:
+            True if switched to a new station, False otherwise
+        """
+        # Check if we have multiple stations
+        if len(self._genre_stations) <= 1:
+            # Only one station available - do nothing silently
+            return False
+        
+        # Move to previous station (with wrap-around)
+        self._station_index = (self._station_index - 1) % len(self._genre_stations)
+        new_station = self._genre_stations[self._station_index]
+        
+        return self._switch_station(new_station)
+    
+    def _switch_station(self, new_station: Station) -> bool:
+        """
+        Switch to a different station (internal helper).
+        
+        Stops current playback and starts new station.
+        
+        Args:
+            new_station: Station to switch to
+            
+        Returns:
+            True if switch successful, False otherwise
+        """
+        # Stop current playback (but don't reset navigation state)
+        was_playing = self.is_playing
+        if self.process is not None:
+            try:
+                os.killpg(os.getpgid(self.process.pid), signal.SIGTERM)
+                self.process.wait(timeout=2.0)
+            except Exception:
+                pass
+            self.process = None
+            self.is_playing = False
+            self.is_paused = False
+        
+        # Start new station
+        print(f"📻 Switching to: {new_station.name}")
+        print(f"   ({self._station_index + 1}/{len(self._genre_stations)})")
+        
+        self.current_station = new_station
+        success = self.start(new_station.url)
+        
+        if success and self.logger:
+            self.logger.info(
+                "music_station_switched",
+                extra={
+                    "station_name": new_station.name,
+                    "station_index": self._station_index,
+                    "total_stations": len(self._genre_stations),
+                    "genre": self._current_genre,
+                    "device_id": Config.DEVICE_ID
+                }
+            )
+        
+        return success
     
     def is_active(self) -> bool:
         """Check if music is currently playing (not stopped)"""
