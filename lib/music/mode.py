@@ -70,21 +70,33 @@ class MusicModeController:
         Run music playback mode until stop command is received.
         
         This method:
-        1. Sets LED to idle state (could add music-specific state)
-        2. Starts the music player with requested genre
-        3. Starts voice command detector
-        4. Handles commands until "stop" is detected
-        5. Cleans up resources
+        1. Sets LED to music visualization state
+        2. Registers callback to sync LEDs with music via Ch5 (reference channel)
+        3. Starts the music player with requested genre
+        4. Starts voice command detector
+        5. Handles commands until "stop" is detected
+        6. Cleans up resources
         
         Args:
             genre: Optional genre to play (e.g., "jazz", "rock")
         """
+        # Music LED callback for reference channel audio
+        self._music_led_callback = None
+        
         try:
-            # Set LED to indicate music mode
+            # Set LED to music mode and register callback for music visualization
             if self.led_controller:
                 # Import here to avoid circular dependency
                 from lib.audio import LEDController
-                self.led_controller.set_state(LEDController.STATE_IDLE)
+                self.led_controller.set_state(LEDController.STATE_MUSIC)
+                
+                # Register callback to receive Ch5 (playback reference) for LED sync
+                def music_led_callback(ref_audio):
+                    self.led_controller.update_music_leds(ref_audio)
+                
+                self._music_led_callback = music_led_callback
+                self._audio_manager.register_ref_channel_consumer(music_led_callback)
+                print("✓ Music LED visualization enabled (synced with Ch5)")
             
             # Start music player
             self._music_player = MusicPlayer(speaker_device_index=self.speaker_device_index)
@@ -176,7 +188,12 @@ class MusicModeController:
             print("✓ Returning to wake word mode")
     
     def _cleanup(self) -> None:
-        """Clean up music player and voice detector resources."""
+        """Clean up music player, voice detector, and LED resources."""
+        # Unregister music LED callback
+        if self._music_led_callback:
+            self._audio_manager.unregister_ref_channel_consumer(self._music_led_callback)
+            self._music_led_callback = None
+        
         if self._music_player:
             self._music_player.stop()
             self._music_player = None

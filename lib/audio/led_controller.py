@@ -45,6 +45,7 @@ class LEDController:
     STATE_THINKING = 7      # THINKING: User paused, agent preparing response, fast amber pulse
     STATE_WIFI_SETUP = 8    # WIFI_SETUP: Device in WiFi setup mode, ready for configuration
     STATE_ATTEMPTING_CONNECTION = 9  # ATTEMPTING_CONNECTION: Attempting WiFi/pairing connection
+    STATE_MUSIC = 10  # MUSIC: Music visualization mode - LEDs react to music playback
     
     # Color palette (RGB, 0-255)
     # Colors are applied with brightness multipliers for visibility
@@ -57,7 +58,11 @@ class LEDController:
         'conversation': (255, 180, 20),  # Amber/Gold - warm listening state
         'speaking': (255, 255, 255),     # White - clear speaking state
         'error': (255, 107, 107),       # Soft red - non-alarming indicator
-        'off': (0, 0, 0)                # No light
+        'off': (0, 0, 0),               # No light
+        # Music visualization colors (visible through red tinted glass)
+        'music_1': (255, 100, 0),       # Orange
+        'music_2': (255, 50, 150),      # Pink/Magenta
+        'music_3': (255, 200, 50),      # Gold
     }
     
     # -------------------------------------------------------------------------
@@ -138,7 +143,8 @@ class LEDController:
             self.STATE_SPEAKING: "SPEAKING (white audio-reactive, agent talking)",
             self.STATE_ERROR: "ERROR (soft red blink)",
             self.STATE_WIFI_SETUP: "WIFI_SETUP (soft amber slow blink 60%, ready for configuration)",
-            self.STATE_ATTEMPTING_CONNECTION: "ATTEMPTING_CONNECTION (soft amber fast blink 60%, connecting)"
+            self.STATE_ATTEMPTING_CONNECTION: "ATTEMPTING_CONNECTION (soft amber fast blink 60%, connecting)",
+            self.STATE_MUSIC: "MUSIC (audio-reactive music visualization)"
         }
         if Config.SHOW_LED_STATE_LOGS:
             print(f"💡 LED: {state_names.get(state, f'UNKNOWN({state})')}")
@@ -192,6 +198,12 @@ class LEDController:
         elif state == self.STATE_ATTEMPTING_CONNECTION:
             # ATTEMPTING_CONNECTION: Soft amber fast blink (0.5s on/off, 60% brightness)
             self._start_animation(self._attempting_connection_blink_loop)
+        
+        elif state == self.STATE_MUSIC:
+            # MUSIC: Audio-reactive visualization - no animation loop needed
+            # LEDs will be updated directly by update_music_leds()
+            # Start with a base color to show music mode is active
+            self._start_animation(self._music_idle_loop)
     
     # -------------------------------------------------------------------------
     # Animation Control Methods
@@ -573,6 +585,127 @@ class LEDController:
             pass
         except Exception as e:
             print(f"  ⚠ LED attempting connection animation error: {e}")
+    
+    async def _music_idle_loop(self):
+        """
+        Gentle breathing animation when in music mode but no audio detected.
+        Uses warm colors to indicate music mode is active.
+        """
+        if not self.enabled or not self.pixel_ring:
+            return
+        
+        CYCLE_SECONDS = 2.0  # 2 second breathing cycle
+        UPDATE_INTERVAL = 0.05  # 50ms updates
+        MIN_BRIGHTNESS = 0.1  # 10% minimum
+        MAX_BRIGHTNESS = 0.4  # 40% maximum
+        
+        base_color = self.COLORS['music_1']  # Orange
+        start_time = time.time()
+        
+        try:
+            while self.current_state == self.STATE_MUSIC:
+                elapsed = time.time() - start_time
+                cycle_position = (elapsed % CYCLE_SECONDS) / CYCLE_SECONDS
+                
+                # Sine wave for smooth breathing
+                sine_value = (math.sin(cycle_position * 2 * math.pi) + 1) / 2
+                brightness = MIN_BRIGHTNESS + (sine_value * (MAX_BRIGHTNESS - MIN_BRIGHTNESS))
+                
+                color = self._rgb_to_int_with_brightness(base_color, brightness)
+                self.pixel_ring.mono(color)
+                
+                await asyncio.sleep(UPDATE_INTERVAL)
+                
+        except asyncio.CancelledError:
+            pass
+        except Exception as e:
+            print(f"  ⚠ LED music idle animation error: {e}")
+    
+    def update_music_leds(self, ref_audio):
+        """
+        Update LEDs based on music energy from Ch5 (playback reference channel).
+        
+        Creates colorful, energetic visualization that reacts to music playback.
+        Color cycles through warm tones visible through the red-tinted ReSpeaker glass.
+        
+        Args:
+            ref_audio: numpy array of int16 audio samples from Ch5 (playback loopback)
+        """
+        # Skip if LEDs are disabled or unavailable
+        if not self.enabled or not self.pixel_ring:
+            return
+        
+        # Only process during music state
+        if self.current_state != self.STATE_MUSIC:
+            return
+        
+        # Calculate RMS energy from reference audio
+        rms = np.sqrt(np.mean(ref_audio.astype(float) ** 2))
+        
+        # Skip if silence/very quiet (no music playing or between tracks)
+        # Music typically has higher baseline than speech
+        if rms < 800:
+            # Let the idle animation handle quiet periods
+            return
+        
+        # Stop idle animation when music is playing (we're handling LEDs directly)
+        if self.animation_task and not self.animation_task.done():
+            self.animation_task.cancel()
+            self.animation_task = None
+        
+        # -------------------------------------------------------------------------
+        # Calculate brightness from music energy
+        # -------------------------------------------------------------------------
+        
+        # Normalize: music streams typically peak around 20000-30000 RMS
+        normalized_energy = min(rms / 25000.0, 1.0)
+        
+        # Apply gamma curve for punchier visual response to beats
+        # Lower gamma = more responsive to quiet parts, higher = only react to loud
+        normalized_energy = normalized_energy ** 1.2
+        
+        # Map to brightness range: 15% (base) to 100% (peak)
+        brightness = 0.15 + (0.85 * normalized_energy)
+        brightness = max(0.15, min(1.0, brightness))
+        
+        # -------------------------------------------------------------------------
+        # Color cycling for fun effect
+        # -------------------------------------------------------------------------
+        
+        # Cycle through colors based on time (creates flowing effect)
+        t = time.time()
+        color_phase = (t * 1.5) % 3.0  # Complete cycle every 2 seconds
+        
+        # Blend between colors for smooth transitions
+        if color_phase < 1.0:
+            # Blend music_1 (orange) -> music_2 (pink)
+            blend = color_phase
+            c1 = self.COLORS['music_1']
+            c2 = self.COLORS['music_2']
+        elif color_phase < 2.0:
+            # Blend music_2 (pink) -> music_3 (gold)
+            blend = color_phase - 1.0
+            c1 = self.COLORS['music_2']
+            c2 = self.COLORS['music_3']
+        else:
+            # Blend music_3 (gold) -> music_1 (orange)
+            blend = color_phase - 2.0
+            c1 = self.COLORS['music_3']
+            c2 = self.COLORS['music_1']
+        
+        # Linear interpolation between colors
+        r = int(c1[0] * (1 - blend) + c2[0] * blend)
+        g = int(c1[1] * (1 - blend) + c2[1] * blend)
+        b = int(c1[2] * (1 - blend) + c2[2] * blend)
+        
+        # Apply brightness
+        r = int(r * brightness)
+        g = int(g * brightness)
+        b = int(b * brightness)
+        
+        # Set all LEDs to this color
+        color_int = (r << 16) | (g << 8) | b
+        self.pixel_ring.mono(color_int)
     
     def update_speaking_leds(self, audio_chunk):
         """

@@ -14,6 +14,7 @@
 | **THINKING**              | 7    | Amber/Gold (255,180,20) | Fast pulse        | 15-70%     | 0.5s cycle      | Processing response             |
 | **WIFI_SETUP**            | 8    | Soft Amber (244,162,97) | Slow blink        | 60%        | 2s on/off       | WiFi setup mode active          |
 | **ATTEMPTING_CONNECTION** | 9    | Soft Amber (244,162,97) | Fast blink        | 60%        | 0.5s on/off     | Connecting to WiFi/pairing      |
+| **MUSIC**                 | 10   | Orange/Pink/Gold cycle  | Audio-reactive    | 15-100%    | Real-time       | Music visualization mode        |
 
 ## State Transition Flow
 
@@ -30,6 +31,14 @@ OFF → BOOT → IDLE → WAKE_WORD_DETECTED → CONVERSATION ⇄ SPEAKING/THINK
 
 ```
 BOOT → WIFI_SETUP → ATTEMPTING_CONNECTION → {SUCCESS: IDLE | FAILURE: WIFI_SETUP}
+```
+
+### Music Mode Flow
+
+```
+IDLE → (agent triggers music) → MUSIC → (stop command) → IDLE
+                                   ↓
+                         (voice commands: pause/resume/volume)
 ```
 
 ### Error Handling
@@ -114,7 +123,7 @@ Any state → ERROR → (after timeout) → Previous state or IDLE
 - **Brightness**: 60% (clear but not harsh)
 - **Design**: Calm, patient waiting pattern for user to configure WiFi
 
-### ATTEMPTING_CONNECTION (9) ⭐ NEW
+### ATTEMPTING_CONNECTION (9)
 
 - **When**: Attempting to connect to WiFi and authenticate with backend
 - **Visual**: Soft amber fast blink
@@ -122,6 +131,21 @@ Any state → ERROR → (after timeout) → Previous state or IDLE
 - **Timing**: 0.5 seconds on, 0.5 seconds off
 - **Brightness**: 60% (same as WIFI_SETUP for consistency)
 - **Design**: Fast blink conveys active connection attempt
+
+### MUSIC (10) ⭐ NEW
+
+- **When**: Music playback mode active (internet radio, etc.)
+- **Visual**: Dynamic color cycling that reacts to music energy
+- **Pattern**: Audio-reactive using Ch5 (playback loopback) from ReSpeaker
+- **Brightness**: 15-100% (reacts to music energy/beats)
+- **Colors**: Cycles through Orange (255,100,0) → Pink (255,50,150) → Gold (255,200,50)
+- **Color Cycle**: Smooth blend, complete cycle every ~2 seconds
+- **Design**: Fun, energetic visualization that syncs with music
+- **Idle Pattern**: When music is silent, shows gentle orange breathing (10-40%)
+- **Notes**: 
+  - Uses ReSpeaker Channel 5 (playback loopback) to capture music audio
+  - Same approach as SPEAKING but with color cycling for fun effect
+  - Works with any audio playing through speaker (music, TTS, etc.)
 
 ## Color Palette Rationale
 
@@ -144,6 +168,14 @@ Any state → ERROR → (after timeout) → Previous state or IDLE
 - Psychology: Notice me, but not emergency
 - Note: Intentionally kept soft (40% brightness) to avoid startling elderly users
 
+### Music Colors (Orange/Pink/Gold)
+
+- Used for: MUSIC
+- Purpose: Fun, energetic visualization for music playback
+- Colors: Orange (255,100,0), Pink (255,50,150), Gold (255,200,50)
+- Psychology: Playful, entertaining, brings joy
+- Note: Colors chosen to be visible through red-tinted ReSpeaker glass
+
 ## Design Philosophy
 
 1. **Elderly-Friendly**: All patterns avoid harsh brightness or rapid flashing that could be startling
@@ -161,5 +193,6 @@ Any state → ERROR → (after timeout) → Previous state or IDLE
 - Audio timeout detection for SPEAKING → CONVERSATION transition
 - Update rate: 30-100ms for smooth visual experience
 - Uses pixel_ring library for ReSpeaker hardware control
+- MUSIC mode uses ReSpeaker Ch5 (playback loopback) via AudioManager ref channel consumer
 
 
