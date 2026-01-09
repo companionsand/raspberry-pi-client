@@ -236,6 +236,7 @@ class MR60FDA1Sensor:
         Auto-detect MR60FDA1 on USB serial ports.
         
         Looks for the sensor's heartbeat frame on available ports.
+        Falls back to single available port if detection fails.
         
         Returns:
             Port path (e.g., "/dev/ttyUSB0") or None if not found.
@@ -244,22 +245,38 @@ class MR60FDA1Sensor:
         candidates = glob.glob('/dev/ttyUSB*') + glob.glob('/dev/ttyACM*')
         
         # Also check for our udev symlink
-        if glob.glob('/dev/radar0'):
-            candidates = ['/dev/radar0'] + candidates
+        radar_symlink = glob.glob('/dev/radar0')
+        if radar_symlink:
+            candidates = radar_symlink + candidates
         
+        if not candidates:
+            return None
+        
+        # Try to detect radar by looking for header bytes
         for port in candidates:
             try:
                 with serial.Serial(port, self.BAUD_RATE, timeout=0.5) as s:
-                    time.sleep(0.3)  # Wait for heartbeat
+                    time.sleep(0.5)  # Wait longer for heartbeat
                     if s.in_waiting:
                         data = s.read(s.in_waiting)
                         # Look for header bytes (sensor sends periodic heartbeats)
                         if self.HEADER in data:
-                            print(f"   Found MR60FDA1 on {port}")
+                            print(f"   Found MR60FDA1 on {port} (detected heartbeat)")
                             return port
-            except (serial.SerialException, OSError):
+            except (serial.SerialException, OSError) as e:
                 continue
         
+        # Fallback: If only one port available, use it (user can specify manually if wrong)
+        if len(candidates) == 1:
+            port = candidates[0]
+            print(f"   Using single available port: {port} (auto-detection inconclusive)")
+            return port
+        
+        # Multiple ports but none detected radar - return None (user must specify)
+        print(f"   Found {len(candidates)} ports but couldn't detect radar:")
+        for port in candidates:
+            print(f"     - {port}")
+        print(f"   Try specifying manually: --port /dev/ttyUSB0")
         return None
     
     # =========================================================================
