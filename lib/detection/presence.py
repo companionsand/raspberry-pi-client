@@ -173,16 +173,19 @@ class HumanPresenceDetector:
     
     Samples audio every 5 seconds and uses weighted classification to detect
     human presence without blocking the main thread.
+    
+    Also calculates busy score in parallel using separate busy weights.
     """
     
-    def __init__(self, mic_device_index=None, threshold=DETECTION_THRESHOLD, weights=None, orchestrator_client=None, on_detection=None, on_cycle=None, event_loop=None):
+    def __init__(self, mic_device_index=None, threshold=DETECTION_THRESHOLD, weights=None, busy_weights=None, orchestrator_client=None, on_detection=None, on_cycle=None, event_loop=None):
         """
         Initialize the human presence detector.
         
         Args:
             mic_device_index: Audio device index (None for system default).
             threshold: Detection threshold for weighted score (0.0-1.0).
-            weights: Dict mapping event names to weights (0.0-1.0). If None, uses fallback weights.
+            weights: Dict mapping event names to weights (0.0-1.0) for presence. If None, uses fallback weights.
+            busy_weights: Dict mapping event names to weights (0.0-1.0) for busy detection. If None, empty dict.
             orchestrator_client: OrchestratorClient instance for sending detections.
             on_detection: Optional callback(weighted_score, top_classes) when humans detected.
             on_cycle: Optional callback(weighted_score) called every detection cycle.
@@ -198,6 +201,9 @@ class HumanPresenceDetector:
         
         # Use provided weights or fallback to hardcoded weights
         self.event_weights = weights if weights is not None else FALLBACK_HUMAN_PRESENCE_WEIGHTS
+        
+        # Busy weights for availability detection (empty dict if not provided)
+        self.busy_weights = busy_weights if busy_weights is not None else {}
         
         # Thread control
         self._thread = None
@@ -249,11 +255,20 @@ class HumanPresenceDetector:
             for row in reader:
                 self._class_names[int(row['index'])] = row['display_name']
         
-        # Create mapping of class index -> weight for fast lookup
+        # Create mapping of class index -> weight for fast lookup (PRESENCE)
         self._class_weights = {}
         for class_idx, class_name in self._class_names.items():
             if class_name in self.event_weights:
                 self._class_weights[class_idx] = self.event_weights[class_name]
+        
+        # Create mapping of class index -> weight for fast lookup (BUSY)
+        # Only include events with weight > 0 (non-busy events have weight 0)
+        self._busy_class_weights = {}
+        for class_idx, class_name in self._class_names.items():
+            if class_name in self.busy_weights:
+                weight = self.busy_weights[class_name]
+                if weight > 0:  # Only include events that indicate busyness
+                    self._busy_class_weights[class_idx] = weight
         
         # Calculate sum of weights (used for weighted mean calculation)
         self._sum_of_weights = sum(self._class_weights.values())
@@ -265,10 +280,12 @@ class HumanPresenceDetector:
         avg_weight = sum(weights_list) / len(weights_list) if weights_list else 0
         
         weights_source = "runtime config" if weights is not None else "fallback"
+        busy_source = "runtime config" if busy_weights is not None and len(self._busy_class_weights) > 0 else "none"
+        
         print(f"✓ HumanPresenceDetector initialized")
         print(f"  - {len(self._class_names)} total YAMNet classes")
-        print(f"  - {len(self._class_weights)} weighted classes for human presence")
-        print(f"  - Weights source: {weights_source}")
+        print(f"  - {len(self._class_weights)} weighted classes for human presence ({weights_source})")
+        print(f"  - {len(self._busy_class_weights)} weighted classes for busy detection ({busy_source})")
         print(f"  - Weight range: [{min_weight:.2f}, {max_weight:.2f}], avg: {avg_weight:.2f}")
         print(f"  - Sum of weights: {self._sum_of_weights:.2f} (max possible denominator)")
         print(f"  - Detection threshold: {self.threshold} (score will be 0.0-1.0)")
@@ -448,6 +465,34 @@ class HumanPresenceDetector:
         contributing_classes.sort(key=lambda x: x[2], reverse=True)
         
         # -------------------------------------------------------------------------
+        # Calculate busy score in parallel (same algorithm, different weights)
+        # Only events with busy weight > 0 and probability > threshold contribute
+        # -------------------------------------------------------------------------
+        busy_weighted_sum = 0.0
+        busy_total_weights = 0.0
+        contributing_busy_classes = []
+        
+        for class_idx, weight in self._busy_class_weights.items():
+            class_prob = float(scores[class_idx])
+            
+            if class_prob > CONFIDENCE_THRESHOLD:
+                contribution = class_prob * weight
+                busy_weighted_sum += contribution
+                busy_total_weights += weight
+                
+                contributing_busy_classes.append((
+                    self._class_names[class_idx],
+                    class_prob,
+                    contribution
+                ))
+        
+        # Calculate busy score (0-1, then convert to 0-100 for consistency)
+        busy_score = busy_weighted_sum / busy_total_weights if busy_total_weights > 0 else 0.0
+        
+        # Sort by contribution
+        contributing_busy_classes.sort(key=lambda x: x[2], reverse=True)
+        
+        # -------------------------------------------------------------------------
         # Call cycle callback (if provided) with weighted score
         # -------------------------------------------------------------------------
         if self.on_cycle:
@@ -490,6 +535,15 @@ class HumanPresenceDetector:
                 for name, prob, contribution in contributing_classes[:5]
             ]
             
+            # Get top 5 busy events (if any detected)
+            busy_events = [
+                {
+                    "event": name,
+                    "percent_contribution": float((contribution / busy_weighted_sum) * 100) if busy_weighted_sum > 0 else 0.0
+                }
+                for name, prob, contribution in contributing_busy_classes[:5]
+            ]
+            
             # Get top 3 for logging
             top_classes = [
                 f"{name} ({prob:.2f})"
@@ -497,13 +551,15 @@ class HumanPresenceDetector:
             ]
             
             # Additional detail logging (main cycle log is printed above)
-            print(f"  ↳ Sending to orchestrator: probability={weighted_score*100:.1f}%, top_events={len(top_events)}")
+            busy_info = f", busy={busy_score*100:.1f}%" if busy_score > 0 else ""
+            print(f"  ↳ Sending to orchestrator: probability={weighted_score*100:.1f}%{busy_info}, top_events={len(top_events)}")
             
             if self.logger:
                 self.logger.info(
                     "human_detected",
                     extra={
                         "weighted_score": weighted_score,
+                        "busy_score": busy_score,
                         "top_classes": top_classes,
                         "threshold": self.threshold,
                     }
@@ -515,13 +571,16 @@ class HumanPresenceDetector:
                     # Convert weighted mean (0-1) to percentage (0-100)
                     # Since weighted_score is now a weighted mean, it's always 0-1
                     normalized_percent = float(weighted_score * 100)
+                    busy_score_percent = float(busy_score * 100)
                     
                     # Send asynchronously from background thread using stored event loop
                     asyncio.run_coroutine_threadsafe(
                         self.orchestrator_client.send_presence_detection(
                             probability=normalized_percent,
                             detected_at=datetime.now(timezone.utc).isoformat(),
-                            top_events=top_events
+                            top_events=top_events,
+                            busy_score=busy_score_percent,
+                            busy_events=busy_events
                         ),
                         self.event_loop
                     )

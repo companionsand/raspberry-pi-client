@@ -990,7 +990,9 @@ class OrchestratorClient:
         self,
         probability: float,
         detected_at: str,
-        top_events: list
+        top_events: list,
+        busy_score: float = 0.0,
+        busy_events: list = None
     ) -> bool:
         """Send human presence detection data to orchestrator (async).
         
@@ -998,6 +1000,8 @@ class OrchestratorClient:
             probability: Weighted probability score (0-100 scale)
             detected_at: ISO timestamp when presence was detected
             top_events: List of top contributing events with percent_contribution
+            busy_score: Busy score (0-100 scale) indicating if user is busy/unavailable
+            busy_events: List of top contributing busy events with percent_contribution
             
         Returns:
             True if sent successfully, False otherwise
@@ -1017,7 +1021,9 @@ class OrchestratorClient:
             "type": "human_presence_detection",
             "probability": probability,
             "detected_at": detected_at,
-            "top_events": top_events
+            "top_events": top_events,
+            "busy_score": busy_score,
+            "busy_events": busy_events or []
         }
         
         try:
@@ -1032,7 +1038,9 @@ class OrchestratorClient:
                     "presence_detection_sent",
                     extra={
                         "probability": probability,
+                        "busy_score": busy_score,
                         "top_events_count": len(top_events),
+                        "busy_events_count": len(busy_events or []),
                         "user_id": Config.USER_ID,
                         "device_id": Config.DEVICE_ID
                     }

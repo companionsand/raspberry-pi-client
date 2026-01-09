@@ -78,7 +78,8 @@ class Config:
     SPEAKER_VOLUME_PERCENT = 50  # Default speaker volume (0-100)
     
     # Presence detection settings (fetched from backend)
-    YAMNET_WEIGHTS = {}  # Dict mapping event names to weights (0.0-1.0)
+    YAMNET_WEIGHTS = {}  # Dict mapping event names to weights (0.0-1.0) for presence detection
+    YAMNET_BUSY_WEIGHTS = {}  # Dict mapping event names to weights (0.0-1.0) for busy detection
     HUMAN_PRESENCE_DETECTION_SCORE_THRESHOLD = 0.3  # Threshold for positive detection
     
     # Default reactive agent (cached from backend for faster wake word response)
@@ -163,6 +164,7 @@ class Config:
         
         # Set presence detection settings
         cls.YAMNET_WEIGHTS = system_config.get("yamnet_weights", {})
+        cls.YAMNET_BUSY_WEIGHTS = system_config.get("yamnet_busy_weights", {})
         cls.HUMAN_PRESENCE_DETECTION_SCORE_THRESHOLD = float(system_config.get("human_presence_detection_score_threshold", "0.3"))
         
         # Set logging settings (default to True if not provided, except presence debug logs)
@@ -237,7 +239,7 @@ class Config:
         print(f"   Speaker Volume: {cls.SPEAKER_VOLUME_PERCENT}%")
         print(f"   Wake Word ASR Similarity Threshold: {cls.WAKE_WORD_ASR_SIMILARITY_THRESHOLD}")
         print(f"   Presence Detection Threshold: {cls.HUMAN_PRESENCE_DETECTION_SCORE_THRESHOLD}")
-        print(f"   YAMNet Weights Loaded: {len(cls.YAMNET_WEIGHTS)} events")
+        print(f"   YAMNet Weights Loaded: {len(cls.YAMNET_WEIGHTS)} presence, {len(cls.YAMNET_BUSY_WEIGHTS)} busy events")
         if radio_stations:
             total_stations = sum(len(v) for v in radio_stations.values())
             print(f"   Radio Stations: {total_stations} stations cached")
