@@ -266,13 +266,14 @@ class SpectrogramWidget(QWidget):
         Update the spectrogram display with latest audio.
         
         Called by timer in main app (~30 FPS).
-        Only processes audio if there's fresh data since last update.
+        Continuously scrolls to keep timelines synchronized across streams.
         """
         # Check if there's fresh data
         last_write_time = self.engine.get_stream_last_write_time(self.stream_name)
         
         if last_write_time <= self._last_processed_write_time:
-            # No new data - don't update (spectrogram stays static)
+            # No new data - scroll a silence column to keep timeline moving
+            self._scroll_silence()
             return
         
         # Have fresh data - update tracking
@@ -284,6 +285,25 @@ class SpectrogramWidget(QWidget):
         if len(audio) > 0:
             # Submit to FFT worker
             self.fft_worker.submit(audio, time.monotonic())
+        else:
+            # No audio available - show silence
+            self._scroll_silence()
+    
+    def _scroll_silence(self) -> None:
+        """
+        Scroll the spectrogram and add a silence column.
+        
+        Used when no new audio data is available to keep the timeline
+        moving and synchronized with other streams.
+        """
+        # Shift spectrogram left (scroll)
+        self.spectrogram_data = np.roll(self.spectrogram_data, -1, axis=1)
+        
+        # Fill rightmost column with silence (-80 dB)
+        self.spectrogram_data[:, -1] = -80
+        
+        # Update display
+        self.image_item.setImage(self.spectrogram_data.T)
     
     def _on_fft_result(self, magnitude_db: np.ndarray, timestamp: float) -> None:
         """

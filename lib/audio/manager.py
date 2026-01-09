@@ -343,9 +343,7 @@ class AudioManager:
         if audio.ndim > 1:
             audio = audio.flatten()
         
-        # Write to agent output ring buffer for visualization
-        self._agent_output_buffer.write(audio)
-        
+        # Queue for playback (buffer write happens in _process_output for accurate timing)
         self._output_queue.put(audio)
     
     def clear_playback_queue(self) -> int:
@@ -712,6 +710,14 @@ class AudioManager:
                 frames_written = self._write_chunk_to_output(chunk, outdata, frames_written)
             except queue.Empty:
                 break
+        
+        # Write actual output to agent_output buffer for visualization
+        # This captures exactly what's going to the speaker (audio or silence)
+        if outdata.ndim > 1:
+            # Extract mono channel for buffer
+            self._agent_output_buffer.write(outdata[:, 0].astype(np.int16))
+        else:
+            self._agent_output_buffer.write(outdata.astype(np.int16))
     
     def _write_chunk_to_output(self, chunk: np.ndarray, outdata: np.ndarray, 
                                 frames_written: int) -> int:

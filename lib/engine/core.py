@@ -594,7 +594,8 @@ class KinEngine:
                 agent_id,
                 audio_manager=self.audio_manager,
                 user_terminate_flag=self.user_terminate,
-                led_controller=self.led_controller
+                led_controller=self.led_controller,
+                signal_bus=self.signal_bus
             )
             
             self._publish_text("conversation", "Starting ElevenLabs conversation...")
